@@ -10,7 +10,7 @@ from playwright.async_api import async_playwright
 
 BASE = sys.argv[2] if len(sys.argv) > 2 else "http://localhost:3000"
 OUT = sys.argv[1]
-USER = {"id": 1, "username": "ramon", "is_admin": False}
+USER = {"id": 1, "username": "lephor", "is_admin": False}
 
 def srv(i, name, typ, ver, port, status, addr):
     return {"id": i, "name": name, "slug": name.lower().replace(" ", "-"), "type": typ,
@@ -18,7 +18,7 @@ def srv(i, name, typ, ver, port, status, addr):
             "runtime_status": status, "created_at": "2026-10-01T10:00:00", "local_only": False,
             "tunnels": [{"address": addr, "local_port": port, "external_port": 46801}] if addr else [],
             "dns_records": [], "cloudflare_available": False, "playit_configured": True,
-            "tunnel_error": None, "dns_error": None, "owner": {"id": 1, "username": "ramon"},
+            "tunnel_error": None, "dns_error": None, "owner": {"id": 1, "username": "lephor"},
             "icon_version": None, "progress": None}
 
 SIGNED_IN = True

@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+cloud/.data/
+*.log
+.DS_Store
+.env.*
+!.env.example
+.neon

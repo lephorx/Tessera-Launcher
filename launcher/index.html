@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en" data-design="modern">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tessera Launcher</title>
+    <script>
+      // Same boot logic as the dashboard's DESIGN_BOOT_SCRIPT: apply the look before the first paint.
+      (function () {
+        var d = localStorage.getItem("cscm-design") === "classic" ? "classic" : "modern";
+        var root = document.documentElement;
+        var media = window.matchMedia("(prefers-color-scheme: dark)");
+        function apply() {
+          var dark = d === "classic" || media.matches;
+          root.dataset.design = d;
+          root.classList.toggle("dark", dark);
+          root.style.colorScheme = dark ? "dark" : "light";
+        }
+        apply();
+        media.addEventListener("change", apply);
+        if (/Mac/.test(navigator.platform)) root.dataset.platform = "mac";
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

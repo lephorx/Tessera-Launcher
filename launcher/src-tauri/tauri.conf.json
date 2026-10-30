@@ -1,0 +1,55 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Tessera Launcher",
+  "version": "0.2.0",
+  "identifier": "dev.tessera.launcher",
+  "build": {
+    "beforeDevCommand": "pnpm dev:web",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build:web",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Tessera Launcher",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 960,
+        "minHeight": 640,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": {
+          "x": 20,
+          "y": 35
+        }
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "createUpdaterArtifacts": true,
+    "category": "Game",
+    "shortDescription": "Minecraft launcher for modpacks, friends and servers"
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEMzQTQ0NzkyOTY1MTNBRUMKUldUc09sR1dra2Vrd3ptbWpiaU9GaXRHaGhhc2srcHh0bWRnK1pGcHYyUXE2SUIrdVpjYWhiYkcK",
+      "endpoints": [
+        "https://github.com/lephorx/Tessera-Launcher/releases/latest/download/latest.json"
+      ]
+    }
+  }
+}

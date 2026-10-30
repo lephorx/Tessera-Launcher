@@ -1,11 +1,46 @@
-# CSCM Launcher & Cloud
+<p align="center">
+  <img src="launcher/src-tauri/icons/128x128@2x.png" width="112" height="112" alt="Tessera Launcher icon">
+</p>
 
-Concept for the next stage of [CSCM](https://github.com/lephorx/CSCM): one account for players and server owners, a Minecraft launcher with modpacks that sync to your servers, and two ways to get a server:
+<h1 align="center">Tessera Launcher</h1>
 
-- **Do it yourself (free):** install CSCM on your own computer with one installer and a step-by-step setup, Playit only or with your own domain.
-- **Hosted (paid):** click "Create server" and get one on our machines, with a small plan to start and more performance when you need it.
+<p align="center">
+  A Minecraft launcher for modpacks, friends and your own servers.<br>
+  <a href="https://github.com/lephorx/Tessera-Launcher/releases/latest"><b>Download</b></a> ·
+  <a href="https://github.com/lephorx/Tessera-Launcher/releases">Releases</a> ·
+  <a href="https://tesseralauncher.com">tesseralauncher.com</a> ·
+  <a href="https://github.com/lephorx/Tessera">Tessera server manager</a>
+</p>
 
-> Status: **concept**. Nothing here is built yet. CSCM itself is at 1.9.3.
+Tessera is **invite-only** for now: you need an invite link from someone who's in to create an account. Playing offline works without one.
+
+- **Play** Vanilla, Fabric, Quilt, Forge and NeoForge; Java is installed for you.
+- **Mods and modpacks** from Modrinth, `.mrpack` import and export, and Tessera's own `.tapack`.
+- **Share** an instance with friends by username or link; let them play it or also add content; hand it over to someone else.
+- **Servers**: create a server from an instance on your [Tessera](https://github.com/lephorx/Tessera) machine; it keeps the instance's server-side mods in sync and joins with one click.
+- **Skins**, a library with groups and search, news, friends, and automatic updates.
+
+## Download
+
+Get the newest version from [Releases](https://github.com/lephorx/Tessera-Launcher/releases/latest) (macOS, Windows, Linux). The launcher updates itself: when a new version is out, the top bar shows **Reload to update**.
+
+The builds aren't signed with an Apple or Microsoft certificate yet. On macOS, right-click the app → **Open** the first time; on Windows, choose **More info → Run anyway**.
+
+## Releasing
+
+Push a version tag; GitHub Actions builds and signs every platform and publishes the release. The tag's message becomes the release notes and a post in the launcher's News.
+
+```sh
+# bump "version" in launcher/package.json, launcher/src-tauri/Cargo.toml and tauri.conf.json, then
+git tag -a v0.3.0 -m "What's new in this version"
+git push origin v0.3.0
+```
+
+Needs the repository secrets `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (the updater key; the launcher only installs updates signed with it).
+
+## Background
+
+This repo started as the concept for the next stage of [Tessera](https://github.com/lephorx/Tessera) (formerly CSCM): one account for players and server owners, a launcher with modpacks that sync to your servers, and two ways to get a server (do it yourself, or hosted later).
 
 ## Documents
 
@@ -26,5 +61,5 @@ Concept for the next stage of [CSCM](https://github.com/lephorx/CSCM): one accou
 
 | Repo | What |
 |---|---|
-| `lephorx/CSCM` | The server manager (agent + local dashboard). Stays usable on its own. |
-| `lephorx/CSCM-Launcher` | This repo: concept now, later the launcher (and possibly the cloud). |
+| [`lephorx/Tessera`](https://github.com/lephorx/Tessera) | The server manager (agent + local dashboard), formerly CSCM. Stays usable on its own. |
+| [`lephorx/Tessera-Launcher`](https://github.com/lephorx/Tessera-Launcher) | This repo (pnpm monorepo): [`launcher/`](launcher/) (desktop app), [`cloud/`](cloud/) (accounts and sharing API on Neon) and the concept docs. |

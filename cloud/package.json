@@ -1,0 +1,45 @@
+{
+  "name": "@tessera/cloud",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "db:generate": "drizzle-kit generate",
+    "fake-agent": "tsx test/fake-agent.ts",
+    "neon:schema": "psql \"$(grep -h ^DATABASE_URL_UNPOOLED= .env.local | cut -d= -f2- | tr -d \\\")\" -q -v ON_ERROR_STOP=1 -f functions/api/schema.sql"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1159.0",
+    "@aws-sdk/s3-presigned-post": "^3.1159.0",
+    "@aws-sdk/s3-request-presigner": "^3.1159.0",
+    "@electric-sql/pglite": "^0.5.13",
+    "@hono/node-server": "^2.1.5",
+    "@neon/functions": "^0.11.0",
+    "@node-rs/argon2": "^2.2.2",
+    "drizzle-orm": "^0.45.4",
+    "fflate": "^0.8.3",
+    "files-sdk": "^3.1.2",
+    "hono": "^4.13.14",
+    "jose": "^6.2.14",
+    "otplib": "^13.5.0",
+    "pg": "^8.23.1",
+    "pino": "^10.4.0",
+    "ws": "^8.22.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@neon/config": "^1.9.5",
+    "@types/node": "^26.6.6",
+    "@types/pg": "^8.23.1",
+    "@types/ws": "^8.18.2",
+    "drizzle-kit": "^0.31.11",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
+  }
+}

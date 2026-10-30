@@ -15,8 +15,9 @@ Each phase is useful on its own. Self-hosted CSCM never requires a later phase.
 **Done when:** a Fabric server can be created from a Modrinth pack in a few clicks.
 
 ## Phase 2 — Cloud MVP (self-hosted machines)
-- [ ] Cloud: accounts (email + 2FA), machines, pairing codes
-- [ ] Agent connector: outbound WebSocket, relay executor, identity mapping, audit log
+- [x] Cloud: accounts (email + 2FA), machines, pairing codes
+- [x] Cloud: relay hub (agent WebSocket, request/stream frames), tested with a fake agent
+- [x] Agent connector: outbound WebSocket, relay executor, identity mapping, audit log (CSCM branch `cloud-connector`)
 - [ ] Cloud web dashboard: pick a machine → existing CSCM pages through the relay
 - [ ] Console and file transfers through the relay
 **Done when:** a CSCM on a home PC behind NAT is fully manageable from the cloud dashboard.
