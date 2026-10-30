@@ -1,15 +1,16 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
-import { Check } from "lucide-vue-next";
+import { Check, Loader2 } from "lucide-vue-next";
 import { onBeforeRouteLeave, RouterLink, useRouter, type RouteLocationRaw } from "vue-router";
 import AppDialog from "@/components/AppDialog.vue";
+import MicrosoftLogo from "@/components/MicrosoftLogo.vue";
 import PlayerHead from "@/components/PlayerHead.vue";
 import AccountCard from "@/components/AccountCard.vue";
 import InvitesCard from "@/components/InvitesCard.vue";
 import { account } from "@/lib/account";
 import { api, type Settings } from "@/lib/api";
 import { currentDesign, setDesign, type Design } from "@/lib/design";
-import { player } from "@/lib/player";
+import { player, signInMicrosoft } from "@/lib/player";
 import { errorText, toast } from "@/lib/toast";
 
 const settings = ref<Settings | null>(null);
@@ -47,11 +48,23 @@ function leave() {
   void router.push(to);
 }
 
+const signingIn = ref(false);
+async function microsoft() {
+  signingIn.value = true;
+  try {
+    if (await signInMicrosoft()) toast.success(`Signed in as ${player.name}`);
+  } catch (e) {
+    toast.error(errorText(e));
+  } finally {
+    signingIn.value = false;
+  }
+}
+
 async function save() {
   if (!settings.value) return;
   try {
     // accounts are managed on Home; keep whatever is current
-    settings.value = await api.settings.save({ ...settings.value, design: design.value, player_name: player.name, players: player.players });
+    settings.value = await api.settings.save({ ...settings.value, design: design.value, player_name: player.name, players: player.players, microsoft: player.microsoft });
     saved.value = { ...settings.value };
     toast.success("Saved");
   } catch (e) {
@@ -62,7 +75,7 @@ async function save() {
 function pick(d: Design) {
   design.value = d;
   setDesign(d);
-  if (settings.value) void api.settings.save({ ...settings.value, design: d, player_name: player.name, players: player.players });
+  if (settings.value) void api.settings.save({ ...settings.value, design: d, player_name: player.name, players: player.players, microsoft: player.microsoft });
 }
 </script>
 
@@ -81,13 +94,19 @@ function pick(d: Design) {
           <PlayerHead :name="player.name" :size="40" />
           <div style="flex: 1">
             <div style="font-weight: 700">Playing as {{ player.name }}</div>
-            <span class="hint">
+            <span v-if="player.microsoft" class="hint">
+              Microsoft account: plays on any server, with your skin and capes. Switch accounts under
+              <RouterLink to="/" class="link">Playing as</RouterLink> on Home.
+            </span>
+            <span v-else class="hint">
               Offline account: works in singleplayer and on servers with online mode off. Add and switch accounts under
-              <RouterLink to="/" class="link">Playing as</RouterLink> on Home. Microsoft sign-in comes once Mojang approves the launcher's app ID.
+              <RouterLink to="/" class="link">Playing as</RouterLink> on Home.
             </span>
           </div>
         </div>
-        <button type="button" class="btn" disabled style="align-self: flex-start">Sign in with Microsoft</button>
+        <button type="button" class="btn" :disabled="signingIn" style="align-self: flex-start" @click="microsoft">
+          <Loader2 v-if="signingIn" class="spin" /><MicrosoftLogo v-else /> {{ player.accounts.length ? "Add another Microsoft account" : "Sign in with Microsoft" }}
+        </button>
       </div>
 
       <h2 class="section-title">Game</h2>

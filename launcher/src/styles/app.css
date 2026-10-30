@@ -477,6 +477,16 @@ html[data-design="modern"] .side-account-pick {
 .side-account-pick:hover {
   background: var(--fill);
 }
+.side-badge {
+  margin-left: auto;
+  flex-shrink: 0;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--fill);
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 600;
+}
 .side-radio {
   display: grid;
   place-items: center;

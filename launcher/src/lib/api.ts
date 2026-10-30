@@ -191,8 +191,23 @@ export interface Settings {
   design: "modern" | "classic";
   backend_url: string;
   groups: string[];
-  /** Minecraft accounts added to the launcher; player_name is the active one. */
+  /** Offline names added to the launcher; player_name is the active one. */
   players: string[];
+  /** The Microsoft account playing (its profile id), or null for an offline name. */
+  microsoft: string | null;
+}
+
+export interface MicrosoftAccount {
+  id: string;
+  name: string;
+}
+
+export interface Cape {
+  id: string;
+  name: string;
+  /** PNG as a data URL */
+  texture: string;
+  active: boolean;
 }
 
 export interface GameVersion {
@@ -365,6 +380,13 @@ export const api = {
     list: () => call<{ invites: Invite[]; limit: number | null; remaining: number | null }>("invites_list"),
     create: () => call<{ invite: { code: string; link: string } }>("invites_create").then((r) => r.invite),
     revoke: (code: string) => call<void>("invites_revoke", { code }),
+  },
+  microsoft: {
+    list: () => call<MicrosoftAccount[]>("ms_accounts"),
+    /** Opens Microsoft's sign-in window; null when it was closed. */
+    signIn: () => call<MicrosoftAccount | null>("ms_sign_in"),
+    remove: (id: string) => call<Settings>("ms_remove", { id }),
+    capes: () => call<Cape[]>("ms_capes"),
   },
   skins: {
     list: () => call<Skins>("skins_list"),

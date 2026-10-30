@@ -18,6 +18,9 @@ pub struct Settings {
     /// Minecraft accounts added to the launcher (offline names for now); `player_name` is the
     /// one playing.
     pub players: Vec<String>,
+    /// The Microsoft account playing (its profile id); None = the offline name in
+    /// `player_name`. While one plays, `player_name` is its Minecraft name.
+    pub microsoft: Option<String>,
 }
 
 impl Default for Settings {
@@ -29,6 +32,7 @@ impl Default for Settings {
             backend_url: "http://localhost:8080".into(),
             groups: Vec::new(),
             players: Vec::new(),
+            microsoft: None,
         }
     }
 }
@@ -39,7 +43,7 @@ pub fn load(paths: &Paths) -> Settings {
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default();
     // older settings only had the one name
-    if !s.players.iter().any(|p| p == &s.player_name) {
+    if s.microsoft.is_none() && !s.players.iter().any(|p| p == &s.player_name) {
         s.players.insert(0, s.player_name.clone());
     }
     s

@@ -12,10 +12,11 @@ let newsLoadedAt = 0;
 import { computed, onMounted, watch } from "vue";
 import { Check, ChevronDown, ExternalLink, Loader2, Plus, Search, Trash2, UserPlus, X } from "lucide-vue-next";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import MicrosoftLogo from "./MicrosoftLogo.vue";
 import PlayerHead from "./PlayerHead.vue";
 import { api } from "@/lib/api";
 import { account } from "@/lib/account";
-import { addPlayer, player, removePlayer, usePlayer } from "@/lib/player";
+import { addPlayer, player, removeMicrosoft, removePlayer, signInMicrosoft, useMicrosoft, usePlayer } from "@/lib/player";
 import { errorText, toast } from "@/lib/toast";
 
 /** Home's right column: the Minecraft account you play as, Tessera friends, and launcher news. */
@@ -34,6 +35,21 @@ async function add() {
     toast.error(errorText(e));
   }
 }
+
+const signingIn = ref(false);
+async function microsoft() {
+  signingIn.value = true;
+  try {
+    if (await signInMicrosoft()) toast.success(`Signed in as ${player.name}`);
+  } catch (e) {
+    toast.error(errorText(e));
+  } finally {
+    signingIn.value = false;
+  }
+}
+
+/** More than one account, so any one of them may go. */
+const removable = computed(() => player.players.length + player.accounts.length > 1);
 
 async function run(f: () => Promise<void>) {
   try {
@@ -125,21 +141,38 @@ onMounted(async () => {
           <PlayerHead :name="player.name" :size="36" />
           <span class="side-player-text">
             <strong>{{ player.name }}</strong>
-            <span class="hint">Offline account</span>
+            <span class="hint">{{ player.microsoft ? "Microsoft account" : "Offline account" }}</span>
           </span>
           <ChevronDown :size="18" class="muted side-chevron" :class="{ open: accountsOpen }" />
         </button>
         <div class="side-flow" :class="{ open: accountsOpen }" :inert="!accountsOpen">
         <div class="side-flow-inner">
         <div class="side-accounts">
-          <div v-for="p in player.players" :key="p" class="side-account" :class="{ on: p === player.name }">
+          <div v-for="a in player.accounts" :key="a.id" class="side-account" :class="{ on: a.id === player.microsoft }">
+            <button class="side-account-pick" :title="`Play as ${a.name}`" @click="run(() => useMicrosoft(a))">
+              <span class="side-radio"><Check v-if="a.id === player.microsoft" :size="12" :stroke-width="3" /></span>
+              <PlayerHead :name="a.name" :size="24" />
+              <span class="ellipsis">{{ a.name }}</span>
+              <span class="side-badge">Microsoft</span>
+            </button>
+            <button
+              v-if="removable"
+              class="btn btn-ghost btn-icon btn-sm"
+              :title="`Sign out ${a.name}`"
+              :aria-label="`Sign out ${a.name}`"
+              @click="run(() => removeMicrosoft(a))"
+            >
+              <Trash2 />
+            </button>
+          </div>
+          <div v-for="p in player.players" :key="p" class="side-account" :class="{ on: !player.microsoft && p === player.name }">
             <button class="side-account-pick" :title="`Play as ${p}`" @click="run(() => usePlayer(p))">
-              <span class="side-radio"><Check v-if="p === player.name" :size="12" :stroke-width="3" /></span>
+              <span class="side-radio"><Check v-if="!player.microsoft && p === player.name" :size="12" :stroke-width="3" /></span>
               <PlayerHead :name="p" :size="24" />
               <span class="ellipsis">{{ p }}</span>
             </button>
             <button
-              v-if="player.players.length > 1"
+              v-if="removable"
               class="btn btn-ghost btn-icon btn-sm"
               :title="`Remove ${p}`"
               :aria-label="`Remove ${p}`"
@@ -153,8 +186,13 @@ onMounted(async () => {
             <button class="btn btn-primary">Add</button>
             <button type="button" class="btn btn-ghost btn-icon" aria-label="Cancel" @click="adding = false"><X /></button>
           </form>
-          <button v-else class="btn side-wide" @click="adding = true"><Plus /> Add account</button>
-          <p class="hint">Offline accounts play singleplayer and servers with online mode off. Microsoft sign-in is coming.</p>
+          <template v-else>
+            <button class="btn btn-primary side-wide" :disabled="signingIn" @click="microsoft">
+              <Loader2 v-if="signingIn" class="spin" /><MicrosoftLogo v-else /> Sign in with Microsoft
+            </button>
+            <button class="btn side-wide" @click="adding = true"><Plus /> Add offline account</button>
+          </template>
+          <p class="hint">A Microsoft account plays on any server with your own skin and capes. Offline names play singleplayer and servers with online mode off.</p>
         </div>
         </div>
         </div>

@@ -29,6 +29,10 @@ pub struct Player {
     pub name: String,
     pub uuid: String,
     pub access_token: String,
+    /// Xbox user id (Microsoft accounts)
+    pub xuid: String,
+    /// A Microsoft account, signed in to Mojang's servers
+    pub online: bool,
 }
 
 impl Player {
@@ -37,7 +41,7 @@ impl Player {
         let mut bytes: [u8; 16] = Md5::digest(format!("OfflinePlayer:{name}").as_bytes()).into();
         bytes[6] = (bytes[6] & 0x0f) | 0x30;
         bytes[8] = (bytes[8] & 0x3f) | 0x80;
-        Self { name: name.into(), uuid: hex::encode(bytes), access_token: "0".into() }
+        Self { name: name.into(), uuid: hex::encode(bytes), access_token: "0".into(), xuid: String::new(), online: false }
     }
 }
 
@@ -229,8 +233,8 @@ pub async fn prepare(
         ("auth_access_token", player.access_token.clone()),
         ("auth_session", format!("token:{}", player.access_token)),
         ("clientid", String::new()),
-        ("auth_xuid", String::new()),
-        ("user_type", "legacy".into()),
+        ("auth_xuid", player.xuid.clone()),
+        ("user_type", if player.online { "msa".into() } else { "legacy".into() }),
         ("user_properties", "{}".into()),
         ("version_type", if vanilla.kind.is_empty() { "release".into() } else { vanilla.kind.clone() }),
         ("natives_directory", natives_dir.to_string_lossy().into_owned()),

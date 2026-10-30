@@ -8,7 +8,7 @@ import SkinViewer from "./SkinViewer.vue";
 
 /**
  * Name, arm width and cape of a skin. A default skin is saved as your own copy. Capes are
- * the ones your Minecraft account owns, which needs Microsoft sign-in.
+ * the ones the playing Microsoft account owns.
  */
 const props = defineProps<{ skin: Skin; capes: { id: string; name: string; texture: string }[] }>();
 const emit = defineEmits<{ close: []; saved: [id: string]; removed: [] }>();
@@ -76,7 +76,7 @@ async function remove() {
             </button>
           </div>
           <span v-if="!capes.length" class="hint">
-            Capes come from your Minecraft account. Once Microsoft sign-in is available, the capes you own show up here.
+            Capes come from your Minecraft account. Sign in with Microsoft and the capes you own show up here.
           </span>
         </div>
       </div>

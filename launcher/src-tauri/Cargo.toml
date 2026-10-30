@@ -29,5 +29,6 @@ chrono = { version = "0.4", features = ["serde"] }
 sysinfo = { version = "0.40.0", default-features = false, features = ["system"] }
 sha2 = "0.10"
 fastnbt = "2"
+getrandom = "0.3"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"

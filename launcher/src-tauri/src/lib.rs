@@ -2,7 +2,7 @@ mod core;
 
 use std::collections::{HashMap, VecDeque};
 use std::process::Stdio;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 use serde_json::Value;
@@ -15,7 +15,7 @@ use crate::core::instances::{self, ContentFile, Icon, Instance, Loader, Resoluti
 use crate::core::launch::{prepare, Player, QuickPlay};
 use crate::core::paths::Paths;
 use crate::core::settings::{self, Settings};
-use crate::core::{account, hostlocal, http_client, livesync, loaders, modrinth, mrpack, serverlist, serverpack, servers, share, skins, tapack, versions};
+use crate::core::{account, hostlocal, http_client, livesync, loaders, modrinth, mrpack, serverlist, serverpack, msauth, servers, share, skins, tapack, versions};
 
 const MAX_LOG_LINES: usize = 5000;
 
@@ -65,13 +65,18 @@ fn get_settings(state: State<AppState>) -> Settings {
 #[tauri::command]
 fn save_settings(state: State<AppState>, mut settings: Settings) -> CmdResult<Settings> {
     settings.player_name = settings.player_name.trim().to_string();
+    // a Microsoft account plays under its own Minecraft name
+    match settings.microsoft.as_deref().and_then(|id| msauth::get(&state.paths, id)) {
+        Some(a) => settings.player_name = a.name,
+        None => settings.microsoft = None,
+    }
     let valid = |name: &str| (3..=16).contains(&name.len()) && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
     if !valid(&settings.player_name) || !settings.players.iter().all(|p| valid(p)) {
         return Err("Player names are 3–16 letters, digits or underscores".into());
     }
     let mut seen = std::collections::HashSet::new();
     settings.players.retain(|p| seen.insert(p.to_lowercase()));
-    if !settings.players.iter().any(|p| p == &settings.player_name) {
+    if settings.microsoft.is_none() && !settings.players.iter().any(|p| p == &settings.player_name) {
         settings.players.insert(0, settings.player_name.clone());
     }
     settings::save(&state.paths, &settings).map_err(err)?;
@@ -400,15 +405,24 @@ fn launch_instance(app: AppHandle, state: State<AppState>, id: String, world: Op
 async fn run_instance(app: &AppHandle, mut inst: Instance, quick_play: Option<QuickPlay>) -> anyhow::Result<Option<i32>> {
     let state = app.state::<AppState>();
     let settings = settings::load(&state.paths);
-    let player = Player::offline(&settings.player_name);
     let id = inst.id.clone();
+    let player = match settings.microsoft.as_deref() {
+        Some(ms) => {
+            let (player, warning) = msauth::player(&state.client, &state.paths, ms).await?;
+            if let Some(w) = warning {
+                push_log(app, &id, &format!("[Tessera] {w}"));
+            }
+            player
+        }
+        None => Player::offline(&settings.player_name),
+    };
     let progress = |stage: &str, done: usize, total: usize| {
         let _ = app.emit("launch-progress", ProgressEvent { instance: &id, stage, done, total });
     };
     let plan = prepare(&state.client, &state.paths, &inst, &player, inst.memory_mb.unwrap_or(settings.memory_mb), quick_play.as_ref(), &progress).await?;
 
     // offline accounts: their chosen skin, through the instance's "Tessera Skin" resource pack
-    skins::prepare_instance(&state.paths, &state.paths.game_dir(&id), &player.name);
+    skins::prepare_instance(&state.paths, &state.paths.game_dir(&id), &player.name, player.online);
     push_log(app, &id, &format!("[Tessera] Starting Minecraft {} as {}", inst.game_version, player.name));
     let mut child = tokio::process::Command::new(&plan.java)
         .args(&plan.args)
@@ -1103,11 +1117,106 @@ fn skins_remove(state: State<AppState>, id: String) -> CmdResult<()> {
     skins::remove(&state.paths, &id).map_err(err)
 }
 
-/// The skin the active player uses (None = Minecraft's default for their name).
+/// The skin the active player uses (None = Minecraft's default for their name). For a
+/// Microsoft account it also becomes the account's skin and cape on Mojang's servers.
 #[tauri::command]
-fn skins_select(state: State<AppState>, id: Option<String>) -> CmdResult<()> {
-    let player = settings::load(&state.paths).player_name;
-    skins::select(&state.paths, &player, id.as_deref()).map_err(err)
+async fn skins_select(state: State<'_, AppState>, id: Option<String>) -> CmdResult<()> {
+    let settings = settings::load(&state.paths);
+    if let (Some(ms), Some(skin)) = (settings.microsoft.as_deref(), id.as_deref()) {
+        let (png, slim, cape) = skins::for_upload(&state.paths, skin).map_err(err)?;
+        msauth::apply_skin(&state.client, &state.paths, ms, png, slim, cape.as_deref()).await.map_err(err)?;
+    }
+    skins::select(&state.paths, &settings.player_name, id.as_deref()).map_err(err)
+}
+
+// ── Microsoft accounts ──
+
+#[tauri::command]
+fn ms_accounts(state: State<AppState>) -> Vec<msauth::AccountView> {
+    msauth::list(&state.paths)
+}
+
+/// Opens Microsoft's sign-in in a launcher window and adds the account, which then plays.
+/// None when the window was closed. Async: building a window from a sync command hangs
+/// WebView2 on Windows.
+#[tauri::command]
+async fn ms_sign_in(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Option<msauth::AccountView>> {
+    if let Some(w) = app.get_webview_window("ms-sign-in") {
+        let _ = w.set_focus();
+        return Ok(None);
+    }
+    let pkce = msauth::start().map_err(err)?;
+    let (tx, rx) = oneshot::channel::<Option<String>>();
+    let tx = Arc::new(Mutex::new(Some(tx)));
+    let finish = {
+        let tx = tx.clone();
+        move |url: Option<String>| {
+            if let Some(t) = tx.lock().unwrap().take() {
+                let _ = t.send(url);
+            }
+        }
+    };
+    let on_redirect = finish.clone();
+    let window = tauri::WebviewWindowBuilder::new(&app, "ms-sign-in", tauri::WebviewUrl::External(pkce.url.parse().map_err(err)?))
+        // the end page carries the code; it never loads
+        .on_navigation(move |u| {
+            if u.as_str().starts_with(msauth::REDIRECT) {
+                on_redirect(Some(u.to_string()));
+                return false;
+            }
+            true
+        })
+        .on_new_window(|u, _| {
+            let _ = tauri_plugin_opener::open_url(u.as_str(), None::<&str>);
+            tauri::webview::NewWindowResponse::Deny
+        })
+        // no cookies left behind, so the next sign-in can pick another account
+        .incognito(true)
+        .title("Sign in with Microsoft")
+        .inner_size(500.0, 680.0)
+        .resizable(false)
+        .build()
+        .map_err(err)?;
+    window.on_window_event(move |e| {
+        if matches!(e, tauri::WindowEvent::Destroyed) {
+            finish(None);
+        }
+    });
+    let url = rx.await.ok().flatten();
+    let _ = window.close();
+    let Some(url) = url else { return Ok(None) };
+    let code = msauth::parse_redirect(&url, &pkce.state).map_err(err)?;
+    let account = msauth::sign_in(&state.client, &state.paths, &code, &pkce.verifier).await.map_err(err)?;
+    let mut settings = settings::load(&state.paths);
+    settings.microsoft = Some(account.id.clone());
+    settings.player_name = account.name.clone();
+    settings::save(&state.paths, &settings).map_err(err)?;
+    Ok(Some(account))
+}
+
+/// Removes the account; if it was playing, the first offline name plays.
+#[tauri::command]
+fn ms_remove(state: State<AppState>, id: String) -> CmdResult<Settings> {
+    msauth::remove(&state.paths, &id).map_err(err)?;
+    let mut s = settings::load(&state.paths);
+    if s.microsoft.as_deref() == Some(id.as_str()) {
+        s.microsoft = None;
+        s.player_name = s.players.first().cloned().unwrap_or_else(|| "Player".into());
+        if s.players.is_empty() {
+            s.players.push(s.player_name.clone());
+        }
+        settings::save(&state.paths, &s).map_err(err)?;
+    }
+    Ok(s)
+}
+
+/// The capes the playing Microsoft account owns (empty for offline names).
+#[tauri::command]
+async fn ms_capes(state: State<'_, AppState>) -> CmdResult<Vec<msauth::Cape>> {
+    match settings::load(&state.paths).microsoft {
+        Some(id) => msauth::capes(&state.client, &state.paths, &id).await.map_err(err),
+        None => Ok(Vec::new()),
+    }
 }
 
 // ── host on this computer ──
@@ -1308,6 +1417,10 @@ pub fn run() {
             host_local_start_docker,
             host_local_open_setup,
             create_server_from_instance,
+            ms_accounts,
+            ms_sign_in,
+            ms_remove,
+            ms_capes,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Tessera Launcher");

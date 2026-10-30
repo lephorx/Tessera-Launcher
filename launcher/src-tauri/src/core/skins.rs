@@ -5,7 +5,7 @@
 //! skin. To still show the chosen skin in game, the launcher puts it into a small resource
 //! pack ("Tessera Skin") in the instance, replacing the default skins, and turns the pack
 //! on in options.txt. That shows in singleplayer and to anyone who has the same pack; with
-//! a Microsoft account (once sign-in is available) the skin is uploaded to Mojang instead.
+//! a Microsoft account the skin (and cape) is uploaded to Mojang instead.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -34,7 +34,7 @@ pub struct SavedSkin {
     pub id: String,
     pub name: String,
     pub model: Model,
-    /// Cape id from the Minecraft account, once there is one (Microsoft sign-in).
+    /// Cape id from the Microsoft account's Minecraft profile.
     #[serde(default)]
     pub cape: Option<String>,
 }
@@ -249,6 +249,13 @@ pub fn remove(paths: &Paths, id: &str) -> Result<()> {
     save(paths, &store)
 }
 
+/// The skin's picture, whether it's slim, and its cape: what Mojang gets for a Microsoft account.
+pub fn for_upload(paths: &Paths, id: &str) -> Result<(Vec<u8>, bool, Option<String>)> {
+    let (bytes, model) = texture_of(paths, id)?;
+    let cape = load(paths).skins.into_iter().find(|s| s.id == id).and_then(|s| s.cape);
+    Ok((bytes, model == Model::Slim, cape))
+}
+
 pub fn select(paths: &Paths, player: &str, id: Option<&str>) -> Result<()> {
     let mut store = load(paths);
     match id {
@@ -266,16 +273,17 @@ pub fn select(paths: &Paths, player: &str, id: Option<&str>) -> Result<()> {
 // ── in game (offline accounts) ──
 
 /// Before a launch: puts the player's skin into the instance's "Tessera Skin" resource pack
-/// and turns it on, or removes the pack when they use no skin. Never fails the launch.
-pub fn prepare_instance(paths: &Paths, game_dir: &Path, player: &str) {
-    if let Err(e) = try_prepare(paths, game_dir, player) {
+/// and turns it on, or removes the pack when they use no skin or play with a Microsoft
+/// account (whose skin comes from Mojang). Never fails the launch.
+pub fn prepare_instance(paths: &Paths, game_dir: &Path, player: &str, online: bool) {
+    if let Err(e) = try_prepare(paths, game_dir, player, online) {
         eprintln!("skin pack: {e:#}");
     }
 }
 
-fn try_prepare(paths: &Paths, game_dir: &Path, player: &str) -> Result<()> {
+fn try_prepare(paths: &Paths, game_dir: &Path, player: &str, online: bool) -> Result<()> {
     let pack = game_dir.join("resourcepacks").join(PACK_DIR);
-    let selected = load(paths).selected.get(&player.to_lowercase()).cloned();
+    let selected = if online { None } else { load(paths).selected.get(&player.to_lowercase()).cloned() };
     let Some(id) = selected else {
         if pack.exists() {
             std::fs::remove_dir_all(&pack)?;

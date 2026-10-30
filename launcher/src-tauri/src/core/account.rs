@@ -91,7 +91,7 @@ fn store_session(cookie: &str) -> Result<()> {
 
 /// Writes a file only the current user can read (0600 on macOS and Linux; Windows keeps
 /// files in the user's AppData private already).
-fn write_private(file: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_private(file: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     let tmp = file.with_extension("json.tmp");
     let _ = std::fs::remove_file(&tmp);
