@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { openUrl } from "@tauri-apps/plugin-opener";
-import { Check, CircleCheck, CircleX, Download, ExternalLink, Loader2, Play, Rocket, Settings2, X } from "lucide-vue-next";
+import { Check, CircleCheck, Download, Loader2, Play, Rocket, Settings2, X } from "lucide-vue-next";
 import AddMachineForm from "./AddMachineForm.vue";
 import { api, type Machine } from "@/lib/api";
 import { errorText, toast } from "@/lib/toast";
@@ -88,17 +87,11 @@ async function start() {
   }
 }
 
-async function startDocker() {
-  try {
-    await api.hostLocal.startDocker();
-    await refresh();
-  } catch (e) {
-    toast.error(errorText(e));
-  }
-}
+
+const isWindows = navigator.userAgent.includes("Windows");
 
 const STEPS = [
-  { id: "docker", label: "Check Docker", hint: "Starts Docker Desktop if it isn't running" },
+  { id: "docker", label: "Get Docker ready", hint: "Installs and starts Docker Desktop if needed" },
   { id: "download", label: "Download Tessera", hint: "From github.com/lephorx/Tessera" },
   { id: "start", label: "Build and start", hint: "The first time takes a few minutes" },
   { id: "ready", label: "Wait until it's ready", hint: "" },
@@ -119,10 +112,7 @@ const stepState = (id: string) => {
 
     <p v-if="stage === 'loading'" class="hint row"><Loader2 class="spin" :size="14" /> Checking this computer…</p>
 
-    <p v-else-if="stage === 'unsupported'" class="muted">
-      Hosting on this computer works on macOS and Linux for now. On Windows, install Tessera in WSL 2 and add it as
-      <b>another machine</b>.
-    </p>
+    <p v-else-if="stage === 'unsupported'" class="muted">Hosting on this computer isn't available on this system.</p>
 
     <!-- 1. one click -->
     <template v-else-if="stage === 'install'">
@@ -130,29 +120,18 @@ const stepState = (id: string) => {
         Installs <b>Tessera</b>, the server manager, on this computer. Your Minecraft servers run here while the computer is on;
         friends join through a public address you set up next.
       </p>
-      <div class="inset stack" style="gap: 8px">
-        <div class="row">
-          <CircleCheck v-if="status!.docker_running" :size="16" style="color: var(--status-green)" />
-          <CircleX v-else :size="16" style="color: var(--status-red)" />
-          <span v-if="status!.docker_running" style="flex: 1">Docker {{ status!.docker_version }} is running</span>
-          <span v-else-if="status!.docker_installed" style="flex: 1">Docker is installed but not running</span>
-          <span v-else style="flex: 1">Docker Desktop isn't installed</span>
-          <button v-if="status!.docker_installed && !status!.docker_running" class="btn btn-sm" @click="startDocker"><Play /> Start Docker</button>
-          <button v-if="!status!.docker_installed" class="btn btn-sm" @click="openUrl('https://www.docker.com/products/docker-desktop/')">
-            <Download /> Get Docker Desktop <ExternalLink :size="12" />
-          </button>
-        </div>
-        <div class="row">
-          <CircleCheck v-if="status!.git" :size="16" style="color: var(--status-green)" />
-          <CircleX v-else :size="16" style="color: var(--status-red)" />
-          <span v-if="status!.git">git is installed</span>
-          <span v-else>git is missing: in Terminal, run <span class="mono">xcode-select --install</span> once</span>
-        </div>
+      <div class="inset row" style="gap: 8px">
+        <CircleCheck v-if="status!.docker_running" :size="16" style="color: var(--status-green)" />
+        <Download v-else :size="16" class="muted" />
+        <span v-if="status!.docker_running" style="flex: 1">Docker {{ status!.docker_version }} is running</span>
+        <span v-else-if="status!.docker_installed" style="flex: 1">Docker is installed; it's started for you</span>
+        <span v-else style="flex: 1">
+          Docker Desktop (what runs the servers) is installed for you first<template v-if="isWindows">. Windows asks once for
+          permission, and may need one restart</template>.
+        </span>
       </div>
-      <button class="btn btn-cta" style="align-self: flex-start" :disabled="!status!.docker_installed || !status!.git" @click="install">
-        <Rocket /> Install Tessera
-      </button>
-      <p v-if="!status!.docker_installed" class="hint">Install Docker Desktop and open it once; this page notices when it's ready.</p>
+      <button class="btn btn-cta" style="align-self: flex-start" @click="install"><Rocket /> Install Tessera</button>
+      <p class="hint">Everything is set up for you; it takes a few minutes the first time.</p>
     </template>
 
     <!-- installing / starting -->
