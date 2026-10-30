@@ -21,6 +21,8 @@ pub struct Settings {
     /// The Microsoft account playing (its profile id); None = the offline name in
     /// `player_name`. While one plays, `player_name` is its Minecraft name.
     pub microsoft: Option<String>,
+    /// Files downloaded at once, 1–16.
+    pub max_downloads: u32,
 }
 
 impl Default for Settings {
@@ -33,6 +35,7 @@ impl Default for Settings {
             groups: Vec::new(),
             players: Vec::new(),
             microsoft: None,
+            max_downloads: 16,
         }
     }
 }

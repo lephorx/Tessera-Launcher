@@ -13,6 +13,7 @@ export const router = createRouter({
     { path: "/servers/host", component: () => import("./pages/HostPage.vue") },
     { path: "/servers/:id", component: () => import("./pages/MachinePage.vue"), props: true },
     { path: "/skins", component: () => import("./pages/SkinsPage.vue") },
-    { path: "/settings", component: () => import("./pages/SettingsPage.vue") },
+    // Settings is a popup now (App.vue); old links land on Home
+    { path: "/settings", redirect: "/" },
   ],
 });

@@ -3,6 +3,7 @@
 
 pub mod account;
 pub mod assets;
+pub mod debug;
 pub mod download;
 pub mod forge;
 pub mod hostlocal;
@@ -23,6 +24,7 @@ pub mod servers;
 pub mod settings;
 pub mod share;
 pub mod skins;
+pub mod storage;
 pub mod tapack;
 mod smoke;
 pub mod versions;

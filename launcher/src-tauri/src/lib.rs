@@ -15,7 +15,7 @@ use crate::core::instances::{self, ContentFile, Icon, Instance, Loader, Resoluti
 use crate::core::launch::{prepare, QuickPlay};
 use crate::core::paths::Paths;
 use crate::core::settings::{self, Settings};
-use crate::core::{account, hostlocal, http_client, livesync, loaders, modrinth, mrpack, serverlist, serverpack, msauth, servers, share, skins, tapack, versions};
+use crate::core::{account, hostlocal, http_client, livesync, loaders, modrinth, mrpack, serverlist, serverpack, msauth, servers, share, skins, storage, tapack, versions};
 
 const MAX_LOG_LINES: usize = 5000;
 
@@ -79,6 +79,8 @@ fn save_settings(state: State<AppState>, mut settings: Settings) -> CmdResult<Se
     if settings.microsoft.is_none() && !settings.players.iter().any(|p| p == &settings.player_name) {
         settings.players.insert(0, settings.player_name.clone());
     }
+    settings.max_downloads = settings.max_downloads.clamp(1, 16);
+    core::download::set_max_downloads(settings.max_downloads);
     settings::save(&state.paths, &settings).map_err(err)?;
     Ok(settings)
 }
@@ -747,6 +749,110 @@ async fn friend_remove(state: State<'_, AppState>, user_id: String) -> CmdResult
     Ok(())
 }
 
+// ── social settings ──
+
+#[tauri::command]
+async fn privacy_get(state: State<'_, AppState>) -> CmdResult<Value> {
+    let v = account::api(&state.client, reqwest::Method::GET, "/me/privacy", None, None).await.map_err(err)?;
+    Ok(v["privacy"].clone())
+}
+
+#[tauri::command]
+async fn privacy_set(state: State<'_, AppState>, friend_requests: Option<String>, share_invites: Option<String>) -> CmdResult<Value> {
+    let body = serde_json::json!({ "friend_requests": friend_requests, "share_invites": share_invites });
+    let v = account::api(&state.client, reqwest::Method::PUT, "/me/privacy", Some(body), None).await.map_err(err)?;
+    Ok(v["privacy"].clone())
+}
+
+#[tauri::command]
+async fn blocks_list(state: State<'_, AppState>) -> CmdResult<Value> {
+    let v = account::api(&state.client, reqwest::Method::GET, "/blocks", None, None).await.map_err(err)?;
+    Ok(v["blocks"].clone())
+}
+
+#[tauri::command]
+async fn block_add(state: State<'_, AppState>, username: String) -> CmdResult<()> {
+    account::api(&state.client, reqwest::Method::POST, "/blocks", Some(serde_json::json!({ "username": username.trim() })), None).await.map_err(err)?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn block_remove(state: State<'_, AppState>, user_id: String) -> CmdResult<()> {
+    let id = self::user_id(&user_id)?;
+    account::api(&state.client, reqwest::Method::DELETE, &format!("/blocks/{id}"), None, None).await.map_err(err)?;
+    Ok(())
+}
+
+// ── resources and troubleshooting ──
+
+#[derive(Serialize)]
+struct AppInfo {
+    version: &'static str,
+    os: String,
+    data_dir: String,
+}
+
+#[tauri::command]
+fn app_info(state: State<AppState>) -> AppInfo {
+    AppInfo {
+        version: env!("CARGO_PKG_VERSION"),
+        os: sysinfo::System::long_os_version().unwrap_or_else(|_| std::env::consts::OS.into()),
+        data_dir: state.paths.root.to_string_lossy().into_owned(),
+    }
+}
+
+/// Walking the files takes a moment, so off the main thread.
+#[tauri::command]
+async fn storage_usage(state: State<'_, AppState>) -> CmdResult<storage::Usage> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || storage::usage(&paths)).await.map_err(err)
+}
+
+#[tauri::command]
+async fn storage_clear_unused(state: State<'_, AppState>) -> CmdResult<u64> {
+    if !state.running.lock().unwrap().is_empty() {
+        return Err("Close the game first".into());
+    }
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || storage::clear_unused(&paths)).await.map_err(err)?.map_err(err)
+}
+
+#[tauri::command]
+fn open_data_dir(state: State<AppState>) -> CmdResult<()> {
+    tauri_plugin_opener::open_path(&state.paths.root, None::<&str>).map_err(err)
+}
+
+/// Cached web data (images, pages); it's fetched again when needed.
+#[tauri::command]
+fn clear_cache(app: AppHandle) -> CmdResult<u64> {
+    let dir = app.path().app_cache_dir().map_err(err)?;
+    let mut freed = 0;
+    for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+        let p = e.path();
+        let n = dir_size(&p);
+        let gone = if p.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
+        if gone.is_ok() {
+            freed += n;
+        }
+    }
+    Ok(freed)
+}
+
+fn dir_size(p: &std::path::Path) -> u64 {
+    match std::fs::symlink_metadata(p) {
+        Ok(m) if m.is_dir() => std::fs::read_dir(p).map(|rd| rd.flatten().map(|e| dir_size(&e.path())).sum()).unwrap_or(0),
+        Ok(m) => m.len(),
+        Err(_) => 0,
+    }
+}
+
+#[tauri::command]
+async fn export_debug(state: State<'_, AppState>, path: String) -> CmdResult<()> {
+    let logs: Vec<(String, Vec<String>)> = state.logs.lock().unwrap().iter().map(|(k, v)| (k.clone(), v.iter().cloned().collect())).collect();
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || core::debug::export(&paths, std::path::Path::new(&path), &logs)).await.map_err(err)?.map_err(err)
+}
+
 /// Launcher news; public, no sign-in needed.
 #[tauri::command]
 async fn news(state: State<'_, AppState>) -> CmdResult<Value> {
@@ -1317,6 +1423,7 @@ pub fn run() {
             let root = app.path().app_data_dir()?;
             std::fs::create_dir_all(&root)?;
             account::init(&root);
+            core::download::set_max_downloads(settings::load(&Paths::new(root.clone())).max_downloads);
             app.manage(AppState {
                 paths: Paths::new(root),
                 client: http_client(),
@@ -1419,6 +1526,17 @@ pub fn run() {
             ms_sign_in,
             ms_remove,
             ms_capes,
+            privacy_get,
+            privacy_set,
+            blocks_list,
+            block_add,
+            block_remove,
+            app_info,
+            storage_usage,
+            storage_clear_unused,
+            open_data_dir,
+            clear_cache,
+            export_debug,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Tessera Launcher");

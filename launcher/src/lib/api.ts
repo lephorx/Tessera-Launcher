@@ -193,8 +193,27 @@ export interface Settings {
   groups: string[];
   /** Offline names added to the launcher; player_name is the active one. */
   players: string[];
-  /** The Microsoft account playing (its profile id), or null for an offline name. */
+  /** The Microsoft account playing (its profile id), or null without one. */
   microsoft: string | null;
+  /** Files downloaded at once, 1–16. */
+  max_downloads: number;
+}
+
+export interface Privacy {
+  friend_requests: "everyone" | "friends_of_friends" | "no_one";
+  share_invites: "everyone" | "friends" | "no_one";
+}
+
+export interface Blocked {
+  user_id: string;
+  username: string;
+  created_at: string;
+}
+
+export interface StorageUsage {
+  unique: number;
+  shared: number;
+  unused: number;
 }
 
 export interface MicrosoftAccount {
@@ -375,6 +394,15 @@ export const api = {
     accept: (userId: string) => call<void>("friend_accept", { userId }),
     remove: (userId: string) => call<void>("friend_remove", { userId }),
   },
+  privacy: {
+    get: () => call<Privacy>("privacy_get"),
+    set: (p: Partial<Privacy>) => call<Privacy>("privacy_set", { friendRequests: p.friend_requests ?? null, shareInvites: p.share_invites ?? null }),
+  },
+  blocks: {
+    list: () => call<Blocked[]>("blocks_list"),
+    add: (username: string) => call<void>("block_add", { username }),
+    remove: (userId: string) => call<void>("block_remove", { userId }),
+  },
   news: () => call<NewsItem[]>("news"),
   invites: {
     list: () => call<{ invites: Invite[]; limit: number | null; remaining: number | null }>("invites_list"),
@@ -406,6 +434,12 @@ export const api = {
   system: {
     memoryMb: () => call<number>("total_memory_mb"),
     checkJava: (path: string) => call<string>("check_java", { path }),
+    info: () => call<{ version: string; os: string; data_dir: string }>("app_info"),
+    storage: () => call<StorageUsage>("storage_usage"),
+    clearUnused: () => call<number>("storage_clear_unused"),
+    openDataDir: () => call<void>("open_data_dir"),
+    clearCache: () => call<number>("clear_cache"),
+    exportDebug: (path: string) => call<void>("export_debug", { path }),
   },
   hostLocal: {
     status: () =>

@@ -84,3 +84,23 @@ create index if not exists invites_created_by_idx on invites (created_by);
 -- revisions, and send base_revision so an upload made from an old copy is refused (409).
 alter table shares add column if not exists revision integer not null default 1;
 alter table shares add column if not exists updated_by uuid references neon_auth."user"(id) on delete set null;
+
+-- Social settings: who may send me friend requests, and who may add me to a shared pack.
+alter table profiles add column if not exists friend_requests text not null default 'everyone';
+alter table profiles add column if not exists share_invites text not null default 'everyone';
+do $$ begin
+  alter table profiles add constraint profiles_friend_requests_check check (friend_requests in ('everyone', 'friends_of_friends', 'no_one'));
+exception when duplicate_object then null; end $$;
+do $$ begin
+  alter table profiles add constraint profiles_share_invites_check check (share_invites in ('everyone', 'friends', 'no_one'));
+exception when duplicate_object then null; end $$;
+
+-- Blocked users can't send me friend requests or add me to shared packs (and I can't them).
+create table if not exists blocks (
+  blocker_id uuid not null references neon_auth."user"(id) on delete cascade,
+  blocked_id uuid not null references neon_auth."user"(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (blocker_id, blocked_id),
+  check (blocker_id <> blocked_id)
+);
+create index if not exists blocks_blocked_idx on blocks (blocked_id);

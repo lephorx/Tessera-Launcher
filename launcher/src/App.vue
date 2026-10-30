@@ -11,6 +11,8 @@ import Toast from "./components/AppToast.vue";
 import AppDialog from "./components/AppDialog.vue";
 import AccountCard from "./components/AccountCard.vue";
 import HomeSidebar from "./components/HomeSidebar.vue";
+import SettingsDialog from "./components/SettingsDialog.vue";
+import { openSettings, settingsDialog } from "./lib/settingsDialog";
 import { api } from "./lib/api";
 import { account, loadAccount, signOut } from "./lib/account";
 import { packProgress, runs, startEvents } from "./lib/store";
@@ -134,9 +136,9 @@ const nav = [
         <RouterLink to="/library" class="run-status" :class="{ on: running }">
           <span class="run-dot" /><span class="run-text">{{ running ? `${running} running` : "Nothing running" }}</span>
         </RouterLink>
-        <RouterLink to="/settings" class="btn btn-ghost btn-icon" title="Settings" aria-label="Settings">
+        <button class="btn btn-ghost btn-icon" title="Settings" aria-label="Settings" @click="openSettings()">
           <SettingsIcon />
-        </RouterLink>
+        </button>
         <button v-if="account.loaded && !account.me" class="btn btn-primary" @click="account.dialog = true"><LogIn /> Sign in</button>
         <div v-else-if="account.me" class="account-menu-wrap">
           <button class="account-button" :aria-expanded="menuOpen" @click="menuOpen = !menuOpen">
@@ -149,7 +151,7 @@ const nav = [
               <strong class="ellipsis">{{ account.me.username ?? "No username yet" }}</strong>
               <span class="hint ellipsis">{{ account.me.email }}</span>
             </div>
-            <RouterLink to="/settings" class="account-menu-item" role="menuitem" @click="menuOpen = false"><UserRound /> Account settings</RouterLink>
+            <button class="account-menu-item" role="menuitem" @click="(menuOpen = false), openSettings('profile')"><UserRound /> Account settings</button>
             <button class="account-menu-item" role="menuitem" @click="doSignOut"><LogOut /> Sign out</button>
           </div>
         </div>
@@ -163,6 +165,7 @@ const nav = [
       </main>
       <HomeSidebar v-if="$route.path === '/'" />
     </div>
+    <SettingsDialog v-if="settingsDialog.open" />
     <AppDialog v-if="account.dialog" title="Tessera account" :width="440" @close="account.dialog = false">
       <AccountCard bare @signed-in="account.dialog = false" />
     </AppDialog>

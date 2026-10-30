@@ -127,6 +127,13 @@ async fn try_download(client: &reqwest::Client, d: &Download, tmp: &PathBuf) -> 
 }
 
 /// Downloads everything that is missing, 16 at a time. `progress(done, total)` after each file.
+/// Files downloaded at once (Settings → Resources).
+static MAX_DOWNLOADS: AtomicUsize = AtomicUsize::new(16);
+
+pub fn set_max_downloads(n: u32) {
+    MAX_DOWNLOADS.store(n.clamp(1, 16) as usize, Ordering::Relaxed);
+}
+
 pub async fn download_all(
     client: &reqwest::Client,
     items: Vec<Download>,
@@ -145,7 +152,7 @@ pub async fn download_all(
     let done = AtomicUsize::new(0);
     progress(0, total);
     futures::stream::iter(missing.into_iter().map(Ok::<_, anyhow::Error>))
-        .try_for_each_concurrent(16, |d| {
+        .try_for_each_concurrent(MAX_DOWNLOADS.load(Ordering::Relaxed), |d| {
             let done = &done;
             let progress = &progress;
             async move {

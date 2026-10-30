@@ -25,6 +25,11 @@
  *   POST   /v1/friends           {username}    send a request (accepts theirs if they asked first)
  *   POST   /v1/friends/:userId/accept
  *   DELETE /v1/friends/:userId                  unfriend, decline or cancel a request
+ *   GET    /v1/me/privacy                       who may send me friend requests / add me to shares
+ *   PUT    /v1/me/privacy        {friend_requests?, share_invites?}
+ *   GET    /v1/blocks                           people I blocked
+ *   POST   /v1/blocks            {username}    block: also unfriends and takes them off my shares
+ *   DELETE /v1/blocks/:userId
  *   GET    /v1/news                             public: launcher news and releases, newest first
  *
  * Closed beta: only accounts with a profile can use the API, and a profile is only made by
@@ -408,6 +413,9 @@ app.post("/shares/:code/members", async (c) => {
   const friend = rows[0];
   if (!friend) return err(c, 404, "user_not_found", "No Tessera account with that username.");
   if (friend.user_id === c.var.userId) return err(c, 400, "self", "That's you.");
+  if (!(await mayInviteToShare(c.var.userId, friend.user_id))) {
+    return err(c, 403, "not_accepting", `${friend.username} doesn't accept shared packs from you.`);
+  }
   await pool.query(`insert into share_members (code, user_id, role) values ($1, $2, $3) on conflict do nothing`, [share.code, friend.user_id, body.data.role]);
   return c.json({ member: { ...friend, role: body.data.role } }, 201);
 });
@@ -588,6 +596,7 @@ app.post("/friends", async (c) => {
   const other = rows[0];
   if (!other) return err(c, 404, "user_not_found", "No Tessera account with that username.");
   if (other.user_id === c.var.userId) return err(c, 400, "self", "That's you.");
+  if (await blockedEitherWay(c.var.userId, other.user_id)) return err(c, 403, "not_accepting", `${other.username} doesn't accept friend requests from you.`);
   const { rows: count } = await pool.query(
     `select count(*)::int as n from friendships where requester_id = $1 or addressee_id = $1`,
     [c.var.userId],
@@ -599,6 +608,9 @@ app.post("/friends", async (c) => {
     [c.var.userId, other.user_id],
   );
   if (accepted.rowCount) return c.json({ friend: { ...other, status: "friend" } });
+  if (!(await mayRequestFriendship(c.var.userId, other.user_id))) {
+    return err(c, 403, "not_accepting", `${other.username} doesn't accept friend requests from you.`);
+  }
   const { rows: made } = await pool.query(
     `insert into friendships (requester_id, addressee_id) values ($1, $2)
      on conflict (requester_id, addressee_id) do update set requester_id = excluded.requester_id
@@ -623,6 +635,110 @@ app.delete("/friends/:userId", async (c) => {
     `delete from friendships where (requester_id = $1 and addressee_id = $2) or (requester_id = $2 and addressee_id = $1)`,
     [c.var.userId, c.req.param("userId")],
   );
+  return c.json({ ok: true });
+});
+
+// ── privacy and blocking ─────────────────────────────────────────────────
+
+async function blockedEitherWay(a: string, b: string) {
+  const { rowCount } = await pool.query(
+    `select 1 from blocks where (blocker_id = $1 and blocked_id = $2) or (blocker_id = $2 and blocked_id = $1)`,
+    [a, b],
+  );
+  return !!rowCount;
+}
+
+/** `from` may send `to` a friend request: not blocked, and `to`'s setting allows it. */
+async function mayRequestFriendship(from: string, to: string) {
+  const { rows } = await pool.query(`select friend_requests from profiles where user_id = $1`, [to]);
+  const setting = rows[0]?.friend_requests ?? "everyone";
+  if (setting === "everyone") return true;
+  if (setting === "no_one") return false;
+  // friends of friends: someone is friends with both
+  const { rowCount } = await pool.query(
+    `with mine as (
+       select case when requester_id = $1 then addressee_id else requester_id end as id
+       from friendships where status = 'accepted' and (requester_id = $1 or addressee_id = $1)
+     )
+     select 1 from friendships f join mine m on m.id = case when f.requester_id = $2 then f.addressee_id else f.requester_id end
+     where f.status = 'accepted' and (f.requester_id = $2 or f.addressee_id = $2) limit 1`,
+    [from, to],
+  );
+  return !!rowCount;
+}
+
+/** `from` may add `to` to a shared pack. */
+async function mayInviteToShare(from: string, to: string) {
+  if (await blockedEitherWay(from, to)) return false;
+  const { rows } = await pool.query(`select share_invites from profiles where user_id = $1`, [to]);
+  const setting = rows[0]?.share_invites ?? "everyone";
+  if (setting === "everyone") return true;
+  if (setting === "no_one") return false;
+  const { rowCount } = await pool.query(
+    `select 1 from friendships where status = 'accepted'
+       and ((requester_id = $1 and addressee_id = $2) or (requester_id = $2 and addressee_id = $1))`,
+    [from, to],
+  );
+  return !!rowCount;
+}
+
+const privacy = z.object({
+  friend_requests: z.enum(["everyone", "friends_of_friends", "no_one"]).optional(),
+  share_invites: z.enum(["everyone", "friends", "no_one"]).optional(),
+});
+
+app.get("/me/privacy", async (c) => {
+  const { rows } = await pool.query(`select friend_requests, share_invites from profiles where user_id = $1`, [c.var.userId]);
+  return rows[0] ? c.json({ privacy: rows[0] }) : err(c, 404, "not_found");
+});
+
+app.put("/me/privacy", async (c) => {
+  const body = privacy.safeParse(await c.req.json().catch(() => null));
+  if (!body.success) return err(c, 400, "invalid_privacy");
+  const { rows } = await pool.query(
+    `update profiles set friend_requests = coalesce($2, friend_requests), share_invites = coalesce($3, share_invites)
+     where user_id = $1 returning friend_requests, share_invites`,
+    [c.var.userId, body.data.friend_requests ?? null, body.data.share_invites ?? null],
+  );
+  return rows[0] ? c.json({ privacy: rows[0] }) : err(c, 404, "not_found");
+});
+
+app.get("/blocks", async (c) => {
+  const { rows } = await pool.query(
+    `select b.blocked_id as user_id, p.username, b.created_at
+     from blocks b join profiles p on p.user_id = b.blocked_id
+     where b.blocker_id = $1 order by p.username`,
+    [c.var.userId],
+  );
+  return c.json({ blocks: rows });
+});
+
+app.post("/blocks", async (c) => {
+  const body = z.object({ username: z.string().max(24) }).safeParse(await c.req.json().catch(() => null));
+  if (!body.success) return err(c, 400, "invalid_username");
+  const { rows } = await pool.query(`select user_id, username from profiles where username = $1`, [body.data.username.trim()]);
+  const other = rows[0];
+  if (!other) return err(c, 404, "user_not_found", "No Tessera account with that username.");
+  if (other.user_id === c.var.userId) return err(c, 400, "self", "That's you.");
+  const { rows: count } = await pool.query(`select count(*)::int as n from blocks where blocker_id = $1`, [c.var.userId]);
+  if (count[0].n >= 500) return err(c, 409, "too_many_blocks", "You've blocked 500 people already.");
+  await pool.query(`insert into blocks (blocker_id, blocked_id) values ($1, $2) on conflict do nothing`, [c.var.userId, other.user_id]);
+  await pool.query(
+    `delete from friendships where (requester_id = $1 and addressee_id = $2) or (requester_id = $2 and addressee_id = $1)`,
+    [c.var.userId, other.user_id],
+  );
+  // off each other's shared packs
+  await pool.query(
+    `delete from share_members m using shares s
+     where m.code = s.code and ((s.owner_id = $1 and m.user_id = $2) or (s.owner_id = $2 and m.user_id = $1))`,
+    [c.var.userId, other.user_id],
+  );
+  return c.json({ block: { user_id: other.user_id, username: other.username } }, 201);
+});
+
+app.delete("/blocks/:userId", async (c) => {
+  if (!UUID.test(c.req.param("userId"))) return err(c, 404, "not_found");
+  await pool.query(`delete from blocks where blocker_id = $1 and blocked_id = $2`, [c.var.userId, c.req.param("userId")]);
   return c.json({ ok: true });
 });
 
