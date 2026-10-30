@@ -344,6 +344,8 @@ export const api = {
     installModpack: (projectId: string) => call<Instance>("install_modpack", { projectId }),
     /** .tapack or .mrpack */
     importPack: (path: string) => call<Instance>("import_pack", { path }),
+    /** "Get local pack": a new instance that can join this server. */
+    fromServer: (machineId: string, serverId: number) => call<Instance>("server_local_pack", { machineId, serverId }),
     entries: (id: string) => call<PackEntry[]>("pack_entries", { id }),
     export: (id: string, path: string, options: { name: string; version: string; author: string; summary: string; include: string[]; format: "tapack" | "mrpack" }) =>
       call<{ linked: number; embedded: number; bytes: number }>("export_pack", { id, path, options }),

@@ -540,6 +540,17 @@ async fn install_modpack(app: AppHandle, state: State<'_, AppState>, project_id:
     result
 }
 
+/// "Get local pack": a new instance that can join a server on a machine.
+#[tauri::command]
+async fn server_local_pack(app: AppHandle, state: State<'_, AppState>, machine_id: String, server_id: i64) -> CmdResult<Instance> {
+    let progress = |stage: &str, done: usize, total: usize| {
+        let _ = app.emit("pack-progress", PackProgress { stage, done, total });
+    };
+    let result = core::serverclient::make(&state.client, &state.paths, &machine_id, server_id, &progress).await;
+    let _ = app.emit("pack-progress", PackProgress { stage: "", done: 0, total: 0 });
+    result.map_err(err)
+}
+
 /// Imports a .tapack or .mrpack file as a new instance.
 #[tauri::command]
 async fn import_pack(app: AppHandle, state: State<'_, AppState>, path: String) -> CmdResult<Instance> {
@@ -1537,6 +1548,7 @@ pub fn run() {
             open_data_dir,
             clear_cache,
             export_debug,
+            server_local_pack,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Tessera Launcher");

@@ -18,6 +18,7 @@ pub mod mrpack;
 pub mod msauth;
 pub mod modrinth;
 pub mod paths;
+pub mod serverclient;
 pub mod serverlist;
 pub mod serverpack;
 pub mod servers;

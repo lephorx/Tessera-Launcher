@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { RouterLink, useRouter } from "vue-router";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { ArrowLeft, Copy, ExternalLink, KeyRound, Loader2, Play, RefreshCw, ShieldCheck, Square, Trash2 } from "lucide-vue-next";
+import { ArrowLeft, Copy, ExternalLink, KeyRound, Loader2, PackagePlus, Play, RefreshCw, ShieldCheck, Square, Trash2 } from "lucide-vue-next";
 import AppDialog from "@/components/AppDialog.vue";
 import { api, type Machine } from "@/lib/api";
 import { serverAddresses } from "@/lib/serverAddress";
@@ -35,6 +35,21 @@ const password = ref("");
 const otp = ref("");
 const signingIn = ref(false);
 const confirmRemove = ref(false);
+const packing = ref<number | null>(null);
+
+/** "Get local pack": an instance with the server's version and mods, with the server in its list. */
+async function localPack(s: CscmServer) {
+  packing.value = s.id;
+  try {
+    const inst = await api.projects.fromServer(props.id, s.id);
+    toast.success(`${inst.name} is in your library, ready to join the server`);
+    void router.push(`/instance/${inst.id}`);
+  } catch (e) {
+    toast.error(errorText(e));
+  } finally {
+    packing.value = null;
+  }
+}
 let timer: ReturnType<typeof setInterval> | undefined;
 
 const signedIn = computed(() => machine.value?.signed_in);
@@ -172,6 +187,16 @@ async function copy(text: string) {
             </button>
             <button v-else class="btn btn-stop" :disabled="busy === s.id" @click="action(s, 'stop')">
               <Loader2 v-if="busy === s.id" class="spin" /><Square v-else /> Stop
+            </button>
+            <span class="spacer" />
+            <button
+              v-if="s.type !== 'bedrock'"
+              class="btn"
+              :disabled="packing !== null"
+              title="Make an instance with this server's Minecraft version and mods"
+              @click="localPack(s)"
+            >
+              <Loader2 v-if="packing === s.id" class="spin" /><PackagePlus v-else /> Get local pack
             </button>
           </div>
         </div>

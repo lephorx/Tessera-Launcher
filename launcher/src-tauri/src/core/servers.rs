@@ -167,6 +167,27 @@ pub async fn request(client: &reqwest::Client, paths: &Paths, id: &str, method: 
     Ok(ApiResponse { status, body })
 }
 
+/// A file from a server's folder (CSCM's file manager), or None when it isn't there.
+pub async fn download_file(client: &reqwest::Client, paths: &Paths, id: &str, server_id: i64, path: &str) -> Result<Option<Vec<u8>>> {
+    let machines = load(paths);
+    let m = machines.iter().find(|m| m.id == id).ok_or_else(|| anyhow!("Unknown server"))?;
+    let token = m.token.clone().ok_or_else(|| anyhow!("Sign in to {} first", m.name))?;
+    let mut url = reqwest::Url::parse(&format!("{}/api/servers/{server_id}/files/download", m.url))?;
+    url.query_pairs_mut().append_pair("path", path);
+    let res = client
+        .get(url)
+        .bearer_auth(token)
+        .timeout(std::time::Duration::from_secs(300))
+        .send()
+        .await
+        .map_err(|e| anyhow!("Can't reach {}: {}", m.name, e.without_url()))?;
+    match res.status().as_u16() {
+        404 => Ok(None),
+        s if (200..300).contains(&s) => Ok(Some(res.bytes().await?.to_vec())),
+        s => bail!("{} answered {s} for {path}", m.name),
+    }
+}
+
 /// How players reach a CSCM server, best first.
 #[derive(Serialize, Clone, Debug, Default, PartialEq)]
 pub struct Addresses {
