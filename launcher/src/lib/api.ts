@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { Consent } from "./legal";
 
 export type Loader = "vanilla" | "fabric" | "quilt" | "forge" | "neoforge";
 export type ProjectType = "modpack" | "mod" | "resourcepack" | "datapack" | "shader";
@@ -71,6 +72,9 @@ export interface Me {
   /** Joined with an invite (Tessera is invite-only for now). */
   member: boolean;
   is_admin: boolean;
+  /** The Terms version accepted; asked again when it isn't TERMS_VERSION. */
+  terms_version: string | null;
+  age_declaration: "16+" | "13-15" | null;
 }
 
 export interface Invite {
@@ -367,8 +371,15 @@ export const api = {
   account: {
     status: () => call<Me | null>("account_status"),
     signIn: (email: string, password: string) => call<Me>("account_sign_in", { email, password }),
-    signUp: (email: string, invite: string, username: string, password: string) => call<Me>("account_sign_up", { email, invite, username, password }),
-    redeem: (invite: string, username: string) => call<Me>("account_redeem", { invite, username }),
+    signUp: (email: string, invite: string, username: string, password: string, consent: Consent) =>
+      call<Me>("account_sign_up", { email, invite, username, password, consent }),
+    redeem: (invite: string, username: string, consent: Consent) => call<Me>("account_redeem", { invite, username, consent }),
+    /** Accepts the current Terms (accounts from before them, or when they change). */
+    consent: (consent: Consent) => call<Me>("account_consent", { consent }),
+    /** Saves everything Tessera stores about the account as JSON. */
+    exportData: (path: string) => call<void>("account_export", { path }),
+    /** Deletes the account, its shares and their packs, and signs out here. */
+    remove: () => call<void>("account_delete"),
     signOut: () => call<void>("account_sign_out"),
     setUsername: (username: string) => call<void>("account_set_username", { username }),
   },
@@ -426,12 +437,14 @@ export const api = {
     remove: (id: string) => call<void>("skins_remove", { id }),
     select: (id: string | null) => call<void>("skins_select", { id }),
   },
-  createServer: (instanceId: string, machineId: string, name: string, memGb: number) =>
+  /** `eula`: the user accepted the Minecraft EULA for this server. */
+  createServer: (instanceId: string, machineId: string, name: string, memGb: number, eula: boolean) =>
     call<{ server_id: number; linked: number; embedded: number; client_only: number }>("create_server_from_instance", {
       instanceId,
       machineId,
       name,
       memGb,
+      eula,
     }),
   system: {
     memoryMb: () => call<number>("total_memory_mb"),

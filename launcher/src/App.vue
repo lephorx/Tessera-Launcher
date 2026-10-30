@@ -10,11 +10,13 @@ import markWhiteUrl from "./assets/mark-white.svg";
 import Toast from "./components/AppToast.vue";
 import AppDialog from "./components/AppDialog.vue";
 import AccountCard from "./components/AccountCard.vue";
+import ConsentDialog from "./components/ConsentDialog.vue";
 import HomeSidebar from "./components/HomeSidebar.vue";
 import SettingsDialog from "./components/SettingsDialog.vue";
 import { openSettings, settingsDialog } from "./lib/settingsDialog";
 import { api } from "./lib/api";
 import { account, loadAccount, signOut } from "./lib/account";
+import { TERMS_VERSION } from "./lib/legal";
 import { packProgress, runs, startEvents } from "./lib/store";
 import { loadPlayers } from "./lib/player";
 import { errorText, toast } from "./lib/toast";
@@ -169,6 +171,8 @@ const nav = [
     <AppDialog v-if="account.dialog" title="Tessera account" :width="440" @close="account.dialog = false">
       <AccountCard bare @signed-in="account.dialog = false" />
     </AppDialog>
+    <!-- members from before the current Terms agree once (or sign out) -->
+    <ConsentDialog v-if="account.me?.member && account.me.terms_version !== TERMS_VERSION" />
     <div v-if="packProgress.stage" class="pack-progress stack" style="gap: 8px" role="status">
       <div class="row"><span style="font-weight: 600">{{ packProgress.stage }}</span><span class="spacer" /><span class="hint num">{{ packProgress.total ? `${packProgress.done} / ${packProgress.total}` : "" }}</span></div>
       <div class="progress"><div :style="{ width: packProgress.total ? `${(packProgress.done / packProgress.total) * 100}%` : '8%' }" /></div>

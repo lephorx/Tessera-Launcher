@@ -12,13 +12,19 @@
   <a href="https://github.com/lephorx/Tessera">Tessera server manager</a>
 </p>
 
-Tessera is **invite-only** for now: you need an invite link from someone who's in to create an account. Playing offline works without one.
+Tessera accounts are **invite-only** for now: you need an invite link from someone who's in to create one. The launcher works without a Tessera account; to play Minecraft you still sign in with the Microsoft account you bought it with. Tessera accounts are for ages 13 and up.
 
 - **Play** Vanilla, Fabric, Quilt, Forge and NeoForge; Java is installed for you.
 - **Mods and modpacks** from Modrinth, `.mrpack` import and export, and Tessera's own `.tapack`.
 - **Share** an instance with friends by username or link; let them play it or also add content; hand it over to someone else.
 - **Servers**: create a server from an instance on your [Tessera](https://github.com/lephorx/Tessera) machine; it keeps the instance's server-side mods in sync and joins with one click.
 - **Skins**, a library with groups and search, news, friends, and automatic updates.
+
+## Legal
+
+Tessera is not an official Minecraft product. Not approved by or associated with Mojang or Microsoft. Mod listings come from [Modrinth](https://modrinth.com); Tessera is not affiliated with Modrinth.
+
+[Privacy Policy](https://tesseralauncher.com/privacy) · [Terms](https://tesseralauncher.com/terms) · [Imprint](https://tesseralauncher.com/imprint) · [Open-source licenses](https://tesseralauncher.com/licenses) ([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)) · [Minecraft EULA](https://aka.ms/MinecraftEULA)
 
 ## Download
 

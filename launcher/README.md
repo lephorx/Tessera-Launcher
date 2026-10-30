@@ -2,6 +2,8 @@
 
 Desktop app: build instances, add mods from Modrinth, launch Minecraft, and manage your CSCM servers. Tauri v2 with a Rust core and a Vue 3 + TypeScript UI, written for Tessera (no Modrinth App code). UI spec: [10 UI design](../docs/10-ui-design.md).
 
+Tessera is not an official Minecraft product. Not approved by or associated with Mojang or Microsoft.
+
 ## Run
 
 Needs Node 22+, pnpm and Rust (`rustup`, stable).
@@ -20,7 +22,7 @@ Data lives in the app data dir (macOS: `~/Library/Application Support/dev.tesser
 
 - **Create instance:** search, *Custom setup* (Vanilla, Fabric, NeoForge, Forge, Quilt; any game version; loader version Stable/Latest/pick one), *Start from a modpack*, *Upload a modpack* (.mrpack), *Import instance* (Prism Launcher, MultiMC, CurseForge; found automatically or from a launcher path).
 - **Icons:** every instance gets a random one; the icon editor mixes 12 gradients with 25 pixel blocks drawn in code, or takes an uploaded image. Modpacks use their own icon.
-- **Play:** Java, libraries and assets download automatically; Forge/NeoForge installers are processed by the launcher itself (no installer window). Live logs, stop. Offline player name until Microsoft sign-in is approved.
+- **Play:** Java, libraries and assets download automatically; Forge/NeoForge installers are processed by the launcher itself (no installer window). Live logs, stop. You play with your Microsoft account (Settings → Profile → Minecraft accounts).
 - **Discover:** Modpacks, Mods, Resource Packs, Data Packs, Shaders from Modrinth with sort, page size and pages. Installing a modpack creates an instance; anything else goes into a compatible instance you pick (datapacks into a world). Mods bring their required dependencies.
 - **Content tab:** everything in the instance (also files added by hand or imported), turn on/off, remove.
 - **Tessera packs (.tapack):** *Export* on an instance page saves a pack; *Upload a modpack* opens .tapack and .mrpack. See below.

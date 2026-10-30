@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { AtSign, KeyRound, Link2, Loader2, LogOut, Mail, User } from "lucide-vue-next";
 import { api } from "@/lib/api";
 import { account, loadAccount, signOut } from "@/lib/account";
+import { consentOf, type AgeBand } from "@/lib/legal";
+import ConsentFields from "./ConsentFields.vue";
 import { errorText, toast } from "@/lib/toast";
 
 /** Sign in to / create a Tessera account, or show who is signed in. */
@@ -16,6 +18,11 @@ const newUsername = ref("");
 const invite = ref("");
 const busy = ref(false);
 const error = ref("");
+// age and Terms, for creating an account or joining with an invite
+const age = ref<AgeBand | null>(null);
+const parental = ref(false);
+const agreed = ref(false);
+const consent = computed(() => consentOf(age.value, parental.value, agreed.value));
 
 onMounted(() => {
   if (!account.loaded) void loadAccount();
@@ -25,7 +32,9 @@ async function submit() {
   busy.value = true;
   error.value = "";
   try {
-    account.me = mode.value === "in" ? await api.account.signIn(email.value, password.value) : await api.account.signUp(email.value, invite.value, username.value, password.value);
+    if (mode.value === "in") account.me = await api.account.signIn(email.value, password.value);
+    else if (consent.value) account.me = await api.account.signUp(email.value, invite.value, username.value, password.value, consent.value);
+    else return;
     password.value = "";
     toast.success(`Signed in as ${account.me.username ?? account.me.email}`);
     emit("signedIn");
@@ -42,7 +51,10 @@ async function saveUsername() {
   error.value = "";
   try {
     // signed in but not in yet: joining needs an invite
-    if (account.me && !account.me.member) account.me = await api.account.redeem(invite.value, newUsername.value.trim());
+    if (account.me && !account.me.member) {
+      if (!consent.value) return;
+      account.me = await api.account.redeem(invite.value, newUsername.value.trim(), consent.value);
+    }
     else await api.account.setUsername(newUsername.value.trim());
     await loadAccount();
     newUsername.value = "";
@@ -73,11 +85,16 @@ async function saveUsername() {
       </div>
       <form v-if="!account.me.member" class="stack" style="gap: 8px" @submit.prevent="saveUsername">
         <span class="hint">Tessera is invite-only for now. Paste the invite link a friend sent you and pick a username.</span>
-        <div class="input-icon"><Link2 /><input v-model="invite" class="input" placeholder="Invite link" required /></div>
-        <div class="row">
-          <div class="input-icon" style="flex: 1"><AtSign /><input v-model="newUsername" class="input" placeholder="username" pattern="[A-Za-z0-9_]{3,24}" required /></div>
-          <button class="btn btn-primary" :disabled="busy"><Loader2 v-if="busy" class="spin" />Join</button>
+        <div class="field">
+          <label for="acc-join-invite">Invite link</label>
+          <div class="input-icon"><Link2 /><input id="acc-join-invite" v-model="invite" class="input" placeholder="tesseralauncher.com/invite/…" required /></div>
         </div>
+        <div class="field">
+          <label for="acc-join-username">Username</label>
+          <div class="input-icon"><AtSign /><input id="acc-join-username" v-model="newUsername" class="input" placeholder="Friends add you by this" pattern="[A-Za-z0-9_]{3,24}" title="3–24 letters, digits or underscores" required /></div>
+        </div>
+        <ConsentFields v-model:age="age" v-model:parental="parental" v-model:agreed="agreed" />
+        <button class="btn btn-primary" style="align-self: flex-start" :disabled="busy || !consent"><Loader2 v-if="busy" class="spin" />Join</button>
       </form>
       <p v-if="error" class="error-text">{{ error }}</p>
     </template>
@@ -89,18 +106,40 @@ async function saveUsername() {
       </div>
       <template v-if="mode === 'up'">
         <p class="hint" style="margin: 0">Tessera is invite-only for now. You need an invite link from a friend; each one works once.</p>
-        <div class="input-icon"><Link2 /><input v-model="invite" class="input" placeholder="Invite link (tesseralauncher.com/invite/…)" required /></div>
+        <div class="field">
+          <label for="acc-invite">Invite link</label>
+          <div class="input-icon"><Link2 /><input id="acc-invite" v-model="invite" class="input" placeholder="tesseralauncher.com/invite/…" required /></div>
+        </div>
+        <div class="field">
+          <label for="acc-username">Username</label>
+          <div class="input-icon">
+            <User /><input id="acc-username" v-model="username" class="input" placeholder="Friends add you by this" pattern="[A-Za-z0-9_]{3,24}" title="3–24 letters, digits or underscores" required />
+          </div>
+        </div>
       </template>
-      <div v-if="mode === 'up'" class="input-icon">
-        <User /><input v-model="username" class="input" placeholder="Username (friends add you by this)" pattern="[A-Za-z0-9_]{3,24}" title="3–24 letters, digits or underscores" required />
+      <div class="field">
+        <label for="acc-email">Email</label>
+        <div class="input-icon"><Mail /><input id="acc-email" v-model="email" class="input" type="email" placeholder="you@example.com" autocomplete="email" required /></div>
       </div>
-      <div class="input-icon"><Mail /><input v-model="email" class="input" type="email" placeholder="Email" autocomplete="email" required /></div>
-      <div class="input-icon">
-        <KeyRound /><input v-model="password" class="input" type="password" :placeholder="mode === 'up' ? 'Password (at least 8 characters)' : 'Password'" :minlength="mode === 'up' ? 8 : undefined" required />
+      <div class="field">
+        <label for="acc-password">Password</label>
+        <div class="input-icon">
+          <KeyRound /><input
+            id="acc-password"
+            v-model="password"
+            class="input"
+            type="password"
+            :placeholder="mode === 'up' ? 'At least 8 characters' : ''"
+            :autocomplete="mode === 'up' ? 'new-password' : 'current-password'"
+            :minlength="mode === 'up' ? 8 : undefined"
+            required
+          />
+        </div>
       </div>
+      <ConsentFields v-if="mode === 'up'" v-model:age="age" v-model:parental="parental" v-model:agreed="agreed" />
       <p v-if="error" class="error-text">{{ error }}</p>
       <div class="row">
-        <button class="btn btn-primary btn-lg" :disabled="busy"><Loader2 v-if="busy" class="spin" />{{ mode === "in" ? "Sign in" : "Create account" }}</button>
+        <button class="btn btn-primary btn-lg" :disabled="busy || (mode === 'up' && !consent)"><Loader2 v-if="busy" class="spin" />{{ mode === "in" ? "Sign in" : "Create account" }}</button>
         <span class="hint">You stay signed in on this computer.</span>
       </div>
     </form>

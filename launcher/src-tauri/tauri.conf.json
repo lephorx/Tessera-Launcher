@@ -42,7 +42,10 @@
     ],
     "createUpdaterArtifacts": true,
     "category": "Game",
-    "shortDescription": "Minecraft launcher for modpacks, friends and servers"
+    "shortDescription": "Minecraft launcher for modpacks, friends and servers",
+    "resources": {
+      "../../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md"
+    }
   },
   "plugins": {
     "updater": {

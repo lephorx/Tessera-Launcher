@@ -1,7 +1,7 @@
 import { reactive } from "vue";
 import { api, type Settings } from "./api";
 
-export type SettingsSection = "appearance" | "profile" | "social" | "memory" | "resources" | "troubleshooting";
+export type SettingsSection = "appearance" | "profile" | "social" | "memory" | "resources" | "troubleshooting" | "about";
 
 /** The Settings popup: whether it's open, and on which section. */
 export const settingsDialog = reactive<{ open: boolean; section: SettingsSection }>({ open: false, section: "appearance" });

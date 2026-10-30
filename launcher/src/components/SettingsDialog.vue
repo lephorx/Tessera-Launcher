@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, type Component } from "vue";
-import { Coffee, Gauge, HeartHandshake, Paintbrush, User, Wrench, X } from "lucide-vue-next";
+import { Coffee, Gauge, HeartHandshake, Info, Paintbrush, User, Wrench, X } from "lucide-vue-next";
+import AboutSection from "./settings/AboutSection.vue";
 import AppearanceSection from "./settings/AppearanceSection.vue";
 import MemorySection from "./settings/MemorySection.vue";
 import ProfileSection from "./settings/ProfileSection.vue";
@@ -27,6 +28,7 @@ const groups: { title: string; items: { id: SettingsSection; label: string; icon
     items: [
       { id: "resources", label: "Resources", icon: Gauge, view: ResourcesSection },
       { id: "troubleshooting", label: "Troubleshooting", icon: Wrench, view: TroubleshootingSection },
+      { id: "about", label: "About", icon: Info, view: AboutSection },
     ],
   },
 ];

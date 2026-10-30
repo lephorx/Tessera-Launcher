@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import { RouterLink, useRouter } from "vue-router";
 import { Check, Loader2, Server, X } from "lucide-vue-next";
 import { api, type Instance, type Machine } from "@/lib/api";
+import { LEGAL, openLegal } from "@/lib/legal";
 import { packProgress } from "@/lib/store";
 import { errorText, toast } from "@/lib/toast";
 import AppDialog from "./AppDialog.vue";
@@ -20,6 +21,8 @@ const machines = ref<Machine[] | null>(null);
 const machineId = ref("");
 const name = ref(props.instance.name);
 const memGb = ref(4);
+// Tessera only creates a server once you accept the Minecraft EULA for it
+const eula = ref(false);
 const error = ref("");
 const usable = computed(() => (machines.value ?? []).filter((m) => m.signed_in));
 const machine = computed(() => usable.value.find((m) => m.id === machineId.value));
@@ -97,7 +100,7 @@ async function create() {
     if (step.value === "build" && uploading.value) step.value = "upload";
   }, 100);
   try {
-    const r = await api.createServer(props.instance.id, machineId.value, name.value.trim() || props.instance.name, memGb.value);
+    const r = await api.createServer(props.instance.id, machineId.value, name.value.trim() || props.instance.name, memGb.value, eula.value);
     serverId.value = r.server_id;
     summary.value = `${r.linked} mod${r.linked === 1 ? "" : "s"} download on the server${r.client_only ? `, ${r.client_only} client-only left out` : ""}.`;
     step.value = "setup";
@@ -218,9 +221,13 @@ onUnmounted(stopPolling);
             <span class="mono num" style="width: 56px; text-align: right; font-weight: 600">{{ memGb }} GB</span>
           </div>
         </div>
+        <label class="row" style="gap: 8px; font-size: 13px; cursor: pointer">
+          <input v-model="eula" type="checkbox" required />
+          <span>I accept the <a class="link" :href="LEGAL.eula" @click.prevent="openLegal('eula')">Minecraft EULA</a></span>
+        </label>
         <div class="dialog-footer" style="margin-top: 0">
           <button class="btn btn-lg" @click="emit('close')">Cancel</button>
-          <button class="btn btn-primary btn-lg" :disabled="!machineId" @click="create"><Server /> Create server</button>
+          <button class="btn btn-primary btn-lg" :disabled="!machineId || !eula" @click="create"><Server /> Create server</button>
         </div>
       </template>
     </div>
