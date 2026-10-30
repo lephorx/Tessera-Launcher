@@ -75,7 +75,7 @@ async fn present(d: &Download) -> bool {
 }
 
 async fn download_one(client: &reqwest::Client, d: &Download) -> Result<()> {
-    ensure_parent(&d.path)?;
+    ensure_parent(&d.path).with_context(|| format!("creating the folder for {}", d.path.display()))?;
     let tmp = d.path.with_extension("part");
     let mut last_err = None;
     for attempt in 0..3 {
@@ -84,7 +84,7 @@ async fn download_one(client: &reqwest::Client, d: &Download) -> Result<()> {
         }
         match try_download(client, d, &tmp).await {
             Ok(()) => {
-                tokio::fs::rename(&tmp, &d.path).await?;
+                rename_retrying(&tmp, &d.path).await.with_context(|| format!("saving {}", d.path.display()))?;
                 #[cfg(unix)]
                 if d.executable {
                     use std::os::unix::fs::PermissionsExt;
@@ -97,6 +97,20 @@ async fn download_one(client: &reqwest::Client, d: &Download) -> Result<()> {
     }
     let _ = tokio::fs::remove_file(&tmp).await;
     Err(last_err.unwrap()).with_context(|| format!("downloading {}", d.url))
+}
+
+/// Antivirus scanners on Windows hold a fresh file for a moment; moving it then fails.
+async fn rename_retrying(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    let mut tries = 0;
+    loop {
+        match tokio::fs::rename(from, to).await {
+            Err(_) if tries < 5 => {
+                tries += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(200 * tries)).await;
+            }
+            done => return done,
+        }
+    }
 }
 
 async fn try_download(client: &reqwest::Client, d: &Download, tmp: &PathBuf) -> Result<()> {
@@ -140,7 +154,13 @@ pub async fn download_all(
     progress: impl Fn(usize, usize) + Send + Sync,
 ) -> Result<()> {
     let mut missing = Vec::new();
+    // the same file listed twice (e.g. a library both vanilla and the loader name) would be
+    // downloaded into the same .part file twice at once
+    let mut seen = std::collections::HashSet::new();
     for d in items {
+        if !seen.insert(d.path.clone()) {
+            continue;
+        }
         if !present(&d).await {
             missing.push(d);
         }

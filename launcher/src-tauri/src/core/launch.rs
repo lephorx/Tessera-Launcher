@@ -107,10 +107,32 @@ fn resolve_libraries(paths: &Paths, libraries: &[Library]) -> Result<Resolved> {
     Ok(out)
 }
 
+/// Empties a folder for a fresh start. It's renamed away before it's deleted: Windows finishes
+/// deleting in the background, and a folder made again at the same path right away could
+/// vanish under the files written into it ("The system cannot find the path specified").
+fn clear_dir(dir: &Path) {
+    let Some(parent) = dir.parent() else { return };
+    let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    // leftovers from earlier launches
+    for e in std::fs::read_dir(parent).into_iter().flatten().flatten() {
+        if e.file_name().to_string_lossy().starts_with(&format!("{name}.old-")) {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+    if !dir.exists() {
+        return;
+    }
+    let aside = parent.join(format!("{name}.old-{}", chrono::Utc::now().timestamp_millis()));
+    // if it can't be moved (a file still in use), the new files are written over the old
+    if std::fs::rename(dir, &aside).is_ok() {
+        let _ = std::fs::remove_dir_all(&aside);
+    }
+}
+
 fn extract_natives(jars: &[PathBuf], dir: &Path) -> Result<()> {
     std::fs::create_dir_all(dir)?;
     for jar in jars {
-        let file = std::fs::File::open(jar)?;
+        let file = std::fs::File::open(jar).with_context(|| format!("opening {}", jar.display()))?;
         let mut zip = zip::ZipArchive::new(file)?;
         for i in 0..zip.len() {
             let mut entry = zip.by_index(i)?;
@@ -121,7 +143,7 @@ fn extract_natives(jars: &[PathBuf], dir: &Path) -> Result<()> {
             let target = dir.join(name.file_name().unwrap_or_default());
             let mut buf = Vec::new();
             entry.read_to_end(&mut buf)?;
-            std::fs::write(target, buf)?;
+            std::fs::write(&target, buf).with_context(|| format!("writing {}", target.display()))?;
         }
     }
     Ok(())
@@ -196,10 +218,10 @@ pub async fn prepare(
 
     progress("Starting", 0, 0);
     let natives_dir = paths.natives(&inst.id);
-    let _ = std::fs::remove_dir_all(&natives_dir);
-    extract_natives(&resolved.natives_jars, &natives_dir)?;
+    clear_dir(&natives_dir);
+    extract_natives(&resolved.natives_jars, &natives_dir).context("unpacking the game's native libraries")?;
     let game_dir = paths.game_dir(&inst.id);
-    std::fs::create_dir_all(&game_dir)?;
+    std::fs::create_dir_all(&game_dir).with_context(|| format!("creating {}", game_dir.display()))?;
 
     let sep = if cfg!(windows) { ";" } else { ":" };
     let classpath = resolved.classpath.iter().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>().join(sep);
@@ -290,6 +312,19 @@ pub async fn prepare(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clears_a_folder_by_moving_it_away() {
+        let root = std::env::temp_dir().join(format!("tessera-clear-{}", std::process::id()));
+        let natives = root.join("natives");
+        std::fs::create_dir_all(&natives).unwrap();
+        std::fs::write(natives.join("old.dll"), b"x").unwrap();
+        std::fs::create_dir_all(root.join("natives.old-1")).unwrap(); // left from an earlier launch
+        clear_dir(&natives);
+        assert!(!natives.exists());
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn offline_uuid_matches_vanilla_server() {
