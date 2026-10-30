@@ -330,6 +330,8 @@ pub async fn create_from_pack(
         .text("name", name.to_string())
         .text("mem_min", "1")
         .text("mem_max", mem_gb.max(1).to_string())
+        // the user ticked "I accept the Minecraft EULA" before creating it; Tessera requires it
+        .text("eula", "true")
         .part("pack", upload_part(pack, progress).file_name("pack.mrpack").mime_str("application/zip")?);
     let res = client
         .post(format!("{}/api/servers/from-pack", m.url))

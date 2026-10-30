@@ -13,7 +13,7 @@ watch(
 
 <template>
   <span class="player-head" :style="{ width: `${size}px`, height: `${size}px`, fontSize: `${Math.round(size * 0.42)}px` }">
-    <img v-if="!failed" :src="headUrl(name)" alt="" draggable="false" @error="failed = true" />
+    <img v-if="!failed" :src="headUrl(name)" :alt="name" draggable="false" @error="failed = true" />
     <template v-else>{{ name.slice(0, 1) }}</template>
   </span>
 </template>

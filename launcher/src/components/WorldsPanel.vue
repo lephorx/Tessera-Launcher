@@ -127,7 +127,7 @@ const size = (n: number) => (n > 1e9 ? `${(n / 1e9).toFixed(1)} GB` : n > 1e6 ? 
           </div>
           <div v-if="s.addresses.public || s.addresses.lan" class="row" style="gap: 6px">
             <span class="mono selectable wp-address">{{ s.addresses.public ?? s.addresses.lan }}</span>
-            <button class="btn btn-ghost btn-icon btn-sm" title="Copy address" @click="copy((s.addresses.public ?? s.addresses.lan)!)"><Copy /></button>
+            <button class="btn btn-ghost btn-icon btn-sm" title="Copy address" aria-label="Copy address" @click="copy((s.addresses.public ?? s.addresses.lan)!)"><Copy /></button>
           </div>
           <span class="hint">
             Your server on {{ s.machine_name }}<template v-if="s.addresses.playit"> · also {{ s.addresses.playit }}</template
@@ -137,7 +137,7 @@ const size = (n: number) => (n > 1e9 ? `${(n / 1e9).toFixed(1)} GB` : n > 1e6 ? 
           <span v-else-if="syncOf(s)?.state === 'failed'" class="error-text">{{ syncOf(s)?.message }}</span>
           <span v-else class="hint">Gets this instance's server-side mods automatically when you change them.</span>
         </div>
-        <button class="btn btn-ghost btn-icon" title="Send the mods to the server now" :disabled="syncing || syncOf(s)?.state === 'syncing'" @click="syncNow">
+        <button class="btn btn-ghost btn-icon" title="Send the mods to the server now" aria-label="Send the mods to the server now" :disabled="syncing || syncOf(s)?.state === 'syncing'" @click="syncNow">
           <RefreshCw :class="{ spin: syncing }" />
         </button>
         <button
@@ -162,7 +162,7 @@ const size = (n: number) => (n > 1e9 ? `${(n / 1e9).toFixed(1)} GB` : n > 1e6 ? 
 
     <div v-if="worlds && worlds.length" class="input-icon">
       <Search />
-      <input v-model="query" class="input" placeholder="Search worlds…" />
+      <input v-model="query" class="input" placeholder="Search worlds…" aria-label="Search worlds" />
     </div>
     <div v-if="worlds === null" class="empty"><Loader2 class="spin" /></div>
     <div v-else-if="!worlds.length" class="card empty">
@@ -177,8 +177,8 @@ const size = (n: number) => (n > 1e9 ? `${(n / 1e9).toFixed(1)} GB` : n > 1e6 ? 
         <div style="font-weight: 700; font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{ w.folder }}</div>
         <div class="hint num">{{ w.last_played ? `Played ${relative(w.last_played).toLowerCase()}` : "Never played" }} · {{ size(w.size) }}</div>
       </div>
-      <button class="btn" title="Open folder" @click="openFolder(w)"><FolderOpen /></button>
-      <button class="btn btn-ghost btn-icon" :title="`Delete ${w.folder}`" :disabled="run.state !== 'idle'" @click="deleting = w"><Trash2 /></button>
+      <button class="btn" title="Open folder" :aria-label="`Open the folder of ${w.folder}`" @click="openFolder(w)"><FolderOpen /></button>
+      <button class="btn btn-ghost btn-icon" :title="`Delete ${w.folder}`" :aria-label="`Delete ${w.folder}`" :disabled="run.state !== 'idle'" @click="deleting = w"><Trash2 /></button>
       <button
         class="btn btn-play"
         :disabled="run.state !== 'idle' || !quickPlay"

@@ -226,7 +226,7 @@ onUnmounted(() => {
     <div class="row" style="gap: 10px; margin-bottom: 12px">
       <div class="input-icon" style="flex: 1">
         <Search />
-        <input v-model="query" class="input" placeholder="Search" />
+        <input v-model="query" class="input" placeholder="Search" aria-label="Search instances" />
       </div>
       <button class="btn btn-lg" @click="openGroupDialog('new')"><FolderPlus /> New group</button>
       <button class="btn btn-primary btn-lg" @click="creating = true"><Plus /> New instance</button>
@@ -235,7 +235,7 @@ onUnmounted(() => {
     <div class="row" style="gap: 8px; margin-bottom: 22px; flex-wrap: wrap">
       <label class="lib-select" title="Sort by">
         <ArrowDownUp :size="16" />
-        <select :value="sort" @change="setSort(($event.target as HTMLSelectElement).value as Sort)">
+        <select :value="sort" aria-label="Sort by" @change="setSort(($event.target as HTMLSelectElement).value as Sort)">
           <option value="name">Name</option>
           <option value="played">Last played</option>
           <option value="created">Newest</option>
@@ -244,7 +244,7 @@ onUnmounted(() => {
       </label>
       <label class="lib-select" title="Group by">
         <LayoutGrid :size="16" />
-        <select :value="groupBy" @change="setGroupBy(($event.target as HTMLSelectElement).value as GroupBy)">
+        <select :value="groupBy" aria-label="Group by" @change="setGroupBy(($event.target as HTMLSelectElement).value as GroupBy)">
           <option value="custom">Custom groups</option>
           <option value="loader">Loader</option>
           <option value="version">Game version</option>

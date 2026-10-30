@@ -104,3 +104,17 @@ create table if not exists blocks (
   check (blocker_id <> blocked_id)
 );
 create index if not exists blocks_blocked_idx on blocks (blocked_id);
+
+-- Terms and age (2026-10-31): which Terms version a member accepted and when, and their age
+-- band ('16+' or '13-15', the latter with a parent's or guardian's agreement). No birthdate.
+alter table profiles add column if not exists terms_version text;
+alter table profiles add column if not exists terms_accepted_at timestamptz;
+alter table profiles add column if not exists age_declaration text;
+do $$ begin
+  alter table profiles add constraint profiles_age_declaration_check check (age_declaration in ('16+', '13-15'));
+exception when duplicate_object then null; end $$;
+
+-- Private by default for new members: friend requests only from friends of friends, shared
+-- packs only from friends. Existing members keep what they have.
+alter table profiles alter column friend_requests set default 'friends_of_friends';
+alter table profiles alter column share_invites set default 'friends';

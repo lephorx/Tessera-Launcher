@@ -118,8 +118,8 @@ const gb = (mb: number) => (mb / 1024).toFixed(mb % 1024 ? 1 : 0);
       <p v-if="javaMode === 'auto'" class="hint">Tessera downloads and uses the Java version Mojang lists for Minecraft {{ instance.game_version }}. Recommended.</p>
       <template v-else>
         <div class="row">
-          <button type="button" class="btn btn-icon" title="Browse" @click="browseJava"><FolderSearch /></button>
-          <input v-model="javaPath" class="input mono" placeholder="/Library/Java/JavaVirtualMachines/…/bin/java" @change="testJava" />
+          <button type="button" class="btn btn-icon" title="Browse" aria-label="Browse for Java" @click="browseJava"><FolderSearch /></button>
+          <input v-model="javaPath" class="input mono" placeholder="/Library/Java/JavaVirtualMachines/…/bin/java" aria-label="Java path" @change="testJava" />
           <button type="button" class="btn" :disabled="!javaPath || checking" @click="testJava"><Loader2 v-if="checking" class="spin" />Test</button>
         </div>
         <p v-if="javaCheck" class="row hint" :style="{ color: javaCheck.ok ? 'var(--status-green)' : 'var(--destructive)' }">

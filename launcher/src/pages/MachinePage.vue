@@ -135,17 +135,17 @@ async function copy(text: string) {
         <p class="page-sub mono">{{ machine.url }} · {{ machine.username }}</p>
       </div>
       <div class="row">
-        <button class="btn btn-lg" title="Refresh" @click="load"><RefreshCw /></button>
+        <button class="btn btn-lg" title="Refresh" aria-label="Refresh" @click="load"><RefreshCw /></button>
         <button class="btn btn-lg" @click="openUrl(machine.url)"><ExternalLink /> Dashboard</button>
-        <button class="btn btn-lg btn-danger" title="Remove from launcher" @click="confirmRemove = true"><Trash2 /></button>
+        <button class="btn btn-lg btn-danger" title="Remove from launcher" aria-label="Remove from launcher" @click="confirmRemove = true"><Trash2 /></button>
       </div>
     </div>
 
     <form v-if="!signedIn" class="card stack" style="max-width: 440px" @submit.prevent="signIn">
       <h2 style="font-size: 17px; font-weight: 700">Sign in to {{ machine.name }}</h2>
       <p class="hint">Your CSCM login has expired. Sign in again as {{ machine.username }}.</p>
-      <div class="input-icon"><KeyRound /><input v-model="password" class="input" type="password" placeholder="Password" required /></div>
-      <div class="input-icon"><ShieldCheck /><input v-model="otp" class="input num" maxlength="6" inputmode="numeric" placeholder="One-time code" required /></div>
+      <div class="input-icon"><KeyRound /><input v-model="password" class="input" type="password" placeholder="Password" aria-label="Password" required /></div>
+      <div class="input-icon"><ShieldCheck /><input v-model="otp" class="input num" maxlength="6" inputmode="numeric" placeholder="One-time code" aria-label="One-time code" required /></div>
       <div class="row"><button class="btn btn-primary" :disabled="signingIn"><Loader2 v-if="signingIn" class="spin" /> Sign in</button></div>
     </form>
 
@@ -170,7 +170,7 @@ async function copy(text: string) {
           <div v-if="addresses(s).public" class="inset stack" style="gap: 2px">
             <div class="row">
               <span class="mono selectable" style="flex: 1; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis">{{ addresses(s).public }}</span>
-              <button class="btn btn-ghost btn-icon btn-sm" title="Copy address" @click="copy(addresses(s).public!)"><Copy /></button>
+              <button class="btn btn-ghost btn-icon btn-sm" title="Copy address" aria-label="Copy public address" @click="copy(addresses(s).public!)"><Copy /></button>
             </div>
             <span v-if="addresses(s).playit" class="hint mono selectable" style="font-size: 12px">Playit: {{ addresses(s).playit }}</span>
             <span v-if="addresses(s).lan" class="hint mono selectable" style="font-size: 12px">On your network: {{ addresses(s).lan }}</span>
@@ -178,7 +178,7 @@ async function copy(text: string) {
           <div v-else-if="addresses(s).lan" class="inset row">
             <span class="mono selectable" style="flex: 1; font-size: 13px; font-weight: 600">{{ addresses(s).lan }}</span>
             <span class="hint" style="white-space: nowrap">{{ s.local_only ? "Local network only" : "No public address yet" }}</span>
-            <button class="btn btn-ghost btn-icon btn-sm" title="Copy address" @click="copy(addresses(s).lan!)"><Copy /></button>
+            <button class="btn btn-ghost btn-icon btn-sm" title="Copy address" aria-label="Copy LAN address" @click="copy(addresses(s).lan!)"><Copy /></button>
           </div>
           <div v-else class="inset hint">{{ s.local_only ? "Only on the local network" : "No public address yet" }}</div>
           <div class="row">

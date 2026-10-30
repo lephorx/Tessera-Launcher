@@ -71,7 +71,7 @@ async function remove() {
           <span class="label">Cape</span>
           <div class="cape-grid">
             <button type="button" class="cape-none" :class="{ on: cape === null }" @click="cape = null"><X :size="18" /> None</button>
-            <button v-for="c in capes" :key="c.id" type="button" class="cape-option" :class="{ on: cape === c.id }" :title="c.name" @click="cape = c.id">
+            <button v-for="c in capes" :key="c.id" type="button" class="cape-option" :class="{ on: cape === c.id }" :title="c.name" :aria-label="c.name" @click="cape = c.id">
               <span class="cape-front" :style="{ backgroundImage: `url(${c.texture})` }" />
             </button>
           </div>

@@ -5,7 +5,10 @@
  * Neon Auth's /token). The JWT is checked against Neon Auth's JWKS before any work, and every
  * query is scoped to the caller. DATABASE_URL and the bucket credentials only exist here.
  *
- *   GET    /v1/me                               who am I (+ username)
+ *   GET    /v1/me                               who am I (+ username, accepted Terms version)
+ *   POST   /v1/me/consent  {terms_version, age, parental_consent?}   accept the current Terms
+ *   GET    /v1/me/export                        everything stored about me, as a JSON download
+ *   DELETE /v1/me                               delete my account, my shares and their packs
  *   PUT    /v1/me/username        {username}    pick the name friends add you by
  *   POST   /v1/shares             .tapack body  share an instance (?name=&game_version=&loader=)
  *   PUT    /v1/shares/:code       .tapack body  upload a newer version (owner, or an editor: same
@@ -35,7 +38,8 @@
  * Closed beta: only accounts with a profile can use the API, and a profile is only made by
  * redeeming an invite (each works once):
  *   GET    /v1/invites/:code                    public: is this invite still good?
- *   POST   /v1/invites/:code/redeem  {username}  join with an invite (right after sign-up)
+ *   POST   /v1/invites/:code/redeem  {username, terms_version?, age?, parental_consent?}
+ *                                               join with an invite (right after sign-up)
  *   GET    /v1/invites                          mine, and how many I may still make
  *   POST   /v1/invites                          make one (3 for members, any number for admins)
  *   DELETE /v1/invites/:code                    revoke an unused one
@@ -131,6 +135,32 @@ function packVersions(body: Uint8Array): { game_version: string; loader: string;
   } catch {
     return null;
   }
+}
+
+// ── Terms and age ────────────────────────────────────────────────────────
+
+/** Bump together with the website's Terms and Privacy Policy; launchers then ask again. */
+const CURRENT_TERMS_VERSION = "2026-10-31";
+
+/**
+ * Consent sent at sign-up or later: the current Terms version and an age band. We keep the
+ * band, never a birthdate; 13–15 needs a parent's or guardian's agreement, under 13 can't
+ * have an account (the launcher stops them before they get here).
+ */
+const consentBody = z.object({
+  terms_version: z.string().max(40),
+  age: z.enum(["16+", "13-15"]),
+  parental_consent: z.boolean().optional(),
+});
+
+function checkConsent(c: Context, raw: unknown): { terms_version: string; age: "16+" | "13-15" } | Response {
+  const body = consentBody.safeParse(raw);
+  if (!body.success) return err(c, 400, "invalid_consent", "Choose your age and accept the Terms and Privacy Policy.");
+  if (body.data.terms_version !== CURRENT_TERMS_VERSION) return err(c, 400, "outdated_terms", "Those Terms are out of date. Update the launcher and try again.");
+  if (body.data.age === "13-15" && body.data.parental_consent !== true) {
+    return err(c, 400, "parental_consent_required", "Between 13 and 15, a parent or guardian has to agree to your account.");
+  }
+  return { terms_version: body.data.terms_version, age: body.data.age };
 }
 
 const SHARE_COLUMNS = `s.code, s.name, s.game_version, s.loader, s.size_bytes, s.created_at, s.updated_at, s.expires_at, s.revision, p.username as owner`;
@@ -235,7 +265,11 @@ app.use("*", async (c, next) => {
   if (!perUser.take(c.var.userId)) return err(c, 429, "rate_limited", "Too many requests. Slow down a little.");
   // closed beta: everything but "who am I" and joining needs a redeemed invite
   const path = new URL(c.req.url).pathname.replace(/^\/v1/, "");
-  const open = (c.req.method === "GET" && path === "/me") || (c.req.method === "POST" && /^\/invites\/[^/]+\/redeem$/.test(path));
+  // also open: your own data (export, delete) and accepting the Terms, member or not
+  const open =
+    (c.req.method === "GET" && (path === "/me" || path === "/me/export")) ||
+    (c.req.method === "DELETE" && path === "/me") ||
+    (c.req.method === "POST" && (path === "/me/consent" || /^\/invites\/[^/]+\/redeem$/.test(path)));
   if (!open) {
     const { rows } = await pool.query(`select is_admin from profiles where user_id = $1`, [c.var.userId]);
     if (!rows[0]) return err(c, 403, "invite_required", "Tessera is invite-only for now. Join with an invite link from a friend.");
@@ -246,11 +280,104 @@ app.use("*", async (c, next) => {
 
 app.get("/me", async (c) => {
   const { rows } = await pool.query(
-    `select u.id, u.email, u.name, p.username, coalesce(p.is_admin, false) as is_admin, p.user_id is not null as member
+    `select u.id, u.email, u.name, p.username, coalesce(p.is_admin, false) as is_admin, p.user_id is not null as member,
+       p.terms_version, p.age_declaration
      from neon_auth."user" u left join profiles p on p.user_id = u.id where u.id = $1`,
     [c.var.userId],
   );
   return rows[0] ? c.json({ user: rows[0] }) : err(c, 401, "unauthenticated");
+});
+
+// Existing members accept new Terms (and say how old they are) here.
+app.post("/me/consent", async (c) => {
+  const consent = checkConsent(c, await c.req.json().catch(() => null));
+  if (consent instanceof Response) return consent;
+  const { rows } = await pool.query(
+    `update profiles set terms_version = $2, terms_accepted_at = now(), age_declaration = $3 where user_id = $1
+     returning terms_version, terms_accepted_at, age_declaration`,
+    [c.var.userId, consent.terms_version, consent.age],
+  );
+  return rows[0] ? c.json({ consent: rows[0] }) : err(c, 403, "invite_required", "Join with an invite first.");
+});
+
+// Everything stored about the caller (GDPR art. 15 and 20): one JSON file.
+app.get("/me/export", async (c) => {
+  const id = c.var.userId;
+  const q = async (sql: string) => (await pool.query(sql, [id])).rows;
+  const [account, profile, sharesOwned, memberships, friendships, invitesCreated, inviteUsed, blocks] = await Promise.all([
+    // Better Auth's columns are camelCase; read created_at either way
+    q(`select u.email, u.name, coalesce(to_jsonb(u)->>'createdAt', to_jsonb(u)->>'created_at') as created_at
+       from neon_auth."user" u where u.id = $1`),
+    q(`select username, created_at, is_admin, friend_requests, share_invites, terms_version, terms_accepted_at, age_declaration
+       from profiles where user_id = $1`),
+    q(`select s.code, s.name, s.game_version, s.loader, s.loader_version, s.size_bytes, s.created_at, s.updated_at, s.expires_at, s.revision,
+         coalesce((select json_agg(json_build_object('username', mp.username, 'role', m.role, 'added_at', m.added_at) order by mp.username)
+                   from share_members m join profiles mp on mp.user_id = m.user_id where m.code = s.code), '[]') as members
+       from shares s where s.owner_id = $1 order by s.created_at`),
+    q(`select s.code, s.name, p.username as owner, m.role, m.added_at
+       from share_members m join shares s on s.code = m.code left join profiles p on p.user_id = s.owner_id
+       where m.user_id = $1 order by m.added_at`),
+    q(`select p.username, f.status, case when f.requester_id = $1 then 'sent' else 'received' end as direction, f.created_at
+       from friendships f left join profiles p on p.user_id = case when f.requester_id = $1 then f.addressee_id else f.requester_id end
+       where f.requester_id = $1 or f.addressee_id = $1 order by f.created_at`),
+    q(`select i.code, i.created_at, i.used_at, i.revoked_at, p.username as used_by
+       from invites i left join profiles p on p.user_id = i.used_by where i.created_by = $1 order by i.created_at`),
+    q(`select i.code, i.used_at, p.username as invited_by
+       from invites i left join profiles p on p.user_id = i.created_by where i.used_by = $1`),
+    q(`select p.username, b.created_at from blocks b left join profiles p on p.user_id = b.blocked_id where b.blocker_id = $1 order by b.created_at`),
+  ]);
+  return c.json(
+    {
+      account: account[0] ?? null,
+      profile: profile[0] ?? null,
+      shares_owned: sharesOwned,
+      share_memberships: memberships,
+      friendships,
+      invites_created: invitesCreated,
+      invite_used: inviteUsed[0] ?? null,
+      blocks,
+      exported_at: new Date().toISOString(),
+    },
+    200,
+    { "content-disposition": 'attachment; filename="tessera-data.json"' },
+  );
+});
+
+// Deletes the account (GDPR art. 17): the packs of every share I own from the bucket, then the
+// Neon Auth user; profiles, shares, memberships, friendships, invites I made and blocks go with
+// it by foreign-key cascade (invites I used and shares I last updated keep a null in my place).
+app.delete("/me", async (c) => {
+  const id = c.var.userId;
+  const { rows: mine } = await pool.query(`select object_key from shares where owner_id = $1`, [id]);
+  await Promise.all(mine.map((s) => files.delete(s.object_key).catch((e) => console.error("delete pack", s.object_key, e))));
+  const db = await pool.connect();
+  try {
+    await db.query("begin");
+    await db.query("savepoint auth_user");
+    try {
+      await db.query(`delete from neon_auth."user" where id = $1`, [id]);
+    } catch (e) {
+      // no rights on neon_auth: delete everything of ours; the bare sign-in stays at Neon Auth
+      if ((e as { code?: string }).code !== "42501") throw e;
+      console.error("delete /me: no permission on neon_auth.user, deleting app data only");
+      await db.query("rollback to savepoint auth_user");
+      await db.query(`delete from shares where owner_id = $1`, [id]);
+      await db.query(`delete from share_members where user_id = $1`, [id]);
+      await db.query(`delete from friendships where requester_id = $1 or addressee_id = $1`, [id]);
+      await db.query(`delete from blocks where blocker_id = $1 or blocked_id = $1`, [id]);
+      await db.query(`delete from invites where created_by = $1`, [id]);
+      await db.query(`update invites set used_by = null where used_by = $1`, [id]);
+      await db.query(`update shares set updated_by = null where updated_by = $1`, [id]);
+      await db.query(`delete from profiles where user_id = $1`, [id]);
+    }
+    await db.query("commit");
+  } catch (e) {
+    await db.query("rollback").catch(() => {});
+    throw e;
+  } finally {
+    db.release();
+  }
+  return c.body(null, 204);
 });
 
 app.put("/me/username", async (c) => {
@@ -500,8 +627,13 @@ function newInviteCode(): string {
 }
 
 app.post("/invites/:code/redeem", async (c) => {
-  const body = z.object({ username: z.string().regex(/^[A-Za-z0-9_]{3,24}$/) }).safeParse(await c.req.json().catch(() => null));
+  const raw = await c.req.json().catch(() => null);
+  const body = z.object({ username: z.string().regex(/^[A-Za-z0-9_]{3,24}$/) }).safeParse(raw);
   if (!body.success) return err(c, 400, "invalid_username", "Usernames are 3–24 letters, digits or underscores.");
+  // launchers from before the Terms send no consent; they're asked via /me/consent afterwards
+  const sent = raw && typeof raw === "object" && ["terms_version", "age", "parental_consent"].some((k) => k in raw);
+  const consent = sent ? checkConsent(c, raw) : null;
+  if (consent instanceof Response) return consent;
   const db = await pool.connect();
   try {
     await db.query("begin");
@@ -519,7 +651,11 @@ app.post("/invites/:code/redeem", async (c) => {
       return err(c, 410, "invite_used", "That invite was already used or doesn't exist. Ask for a new one.");
     }
     try {
-      await db.query(`insert into profiles (user_id, username) values ($1, $2)`, [c.var.userId, body.data.username]);
+      await db.query(
+        `insert into profiles (user_id, username, terms_version, terms_accepted_at, age_declaration)
+         values ($1, $2, $3, case when $3::text is null then null else now() end, $4)`,
+        [c.var.userId, body.data.username, consent?.terms_version ?? null, consent?.age ?? null],
+      );
     } catch (e) {
       await db.query("rollback");
       if ((e as { code?: string }).code === "23505") return err(c, 409, "username_taken", "That username is taken.");

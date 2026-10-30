@@ -70,8 +70,8 @@ async function copy(i: Invite) {
         <span class="badge" data-state="running"><Check :size="13" /> Used by {{ i.used_by ?? "someone" }}</span>
       </template>
       <template v-else>
-        <button class="btn btn-ghost btn-icon btn-sm" title="Copy invite link" @click="copy(i)"><Copy /></button>
-        <button class="btn btn-ghost btn-icon btn-sm" title="Revoke (gives the slot back)" @click="revoke(i)"><X /></button>
+        <button class="btn btn-ghost btn-icon btn-sm" title="Copy invite link" aria-label="Copy invite link" @click="copy(i)"><Copy /></button>
+        <button class="btn btn-ghost btn-icon btn-sm" title="Revoke (gives the slot back)" aria-label="Revoke invite" @click="revoke(i)"><X /></button>
       </template>
     </div>
   </div>

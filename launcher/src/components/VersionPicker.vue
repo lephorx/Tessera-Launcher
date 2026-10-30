@@ -50,16 +50,20 @@ function pick(id: string) {
 
 <template>
   <div ref="root" class="version-picker">
-    <button type="button" class="select vp-trigger" :aria-expanded="open" :disabled="!versions.length" @click="toggle">
-      <span :class="{ muted: !model }">{{ model || placeholder || "Any version" }}</span>
-      <span class="spacer" />
-      <X v-if="clearable && model" :size="15" class="muted" role="button" aria-label="Clear" @click.stop="model = ''" />
-      <ChevronDown :size="16" class="muted" :style="{ rotate: open ? '180deg' : '0deg' }" />
-    </button>
+    <div class="vp-field">
+      <button type="button" class="select vp-trigger" :aria-expanded="open" :disabled="!versions.length" @click="toggle">
+        <span :class="{ muted: !model }">{{ model || placeholder || "Any version" }}</span>
+        <span class="spacer" />
+        <span v-if="clearable && model" class="vp-clear-slot" />
+        <ChevronDown :size="16" class="muted" :style="{ rotate: open ? '180deg' : '0deg' }" />
+      </button>
+      <!-- beside the trigger, not inside it: a button in a button can't be reached with Tab -->
+      <button v-if="clearable && model" type="button" class="vp-clear" title="Clear" aria-label="Clear version" @click="model = ''"><X :size="15" /></button>
+    </div>
     <div v-if="open" class="vp-panel inset stack" style="gap: 8px">
       <div class="input-icon">
         <Search />
-        <input ref="input" v-model="query" class="input" placeholder="Search…" @keydown.esc.stop="open = false" />
+        <input ref="input" v-model="query" class="input" placeholder="Search…" aria-label="Search versions" @keydown.esc.stop="open = false" />
       </div>
       <div class="vp-list">
         <button v-if="clearable" type="button" class="vp-item" :class="{ on: !model }" @click="pick('')">
@@ -85,6 +89,35 @@ function pick(id: string) {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+.vp-field {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+.vp-clear {
+  position: absolute;
+  top: 50%;
+  right: 34px;
+  translate: 0 -50%;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+.vp-clear:hover {
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--foreground) 8%, transparent);
+}
+.vp-clear-slot {
+  width: 22px;
+  flex-shrink: 0;
 }
 .vp-trigger {
   display: flex;

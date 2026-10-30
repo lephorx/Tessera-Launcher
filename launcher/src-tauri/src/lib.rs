@@ -626,14 +626,33 @@ async fn account_sign_in(state: State<'_, AppState>, email: String, password: St
 }
 
 #[tauri::command]
-async fn account_sign_up(state: State<'_, AppState>, email: String, invite: String, username: String, password: String) -> CmdResult<account::Me> {
-    account::sign_up(&state.client, &email, &invite, &username, &password).await.map_err(err)
+async fn account_sign_up(state: State<'_, AppState>, email: String, invite: String, username: String, password: String, consent: account::Consent) -> CmdResult<account::Me> {
+    account::sign_up(&state.client, &email, &invite, &username, &password, &consent).await.map_err(err)
 }
 
 #[tauri::command]
-async fn account_redeem(state: State<'_, AppState>, invite: String, username: String) -> CmdResult<account::Me> {
-    account::redeem(&state.client, &invite, &username).await.map_err(err)?;
+async fn account_redeem(state: State<'_, AppState>, invite: String, username: String, consent: account::Consent) -> CmdResult<account::Me> {
+    account::redeem(&state.client, &invite, &username, Some(&consent)).await.map_err(err)?;
     account::current(&state.client).await.ok_or_else(|| "Sign in again".into())
+}
+
+#[tauri::command]
+async fn account_consent(state: State<'_, AppState>, consent: account::Consent) -> CmdResult<account::Me> {
+    account::consent(&state.client, &consent).await.map_err(err)?;
+    account::current(&state.client).await.ok_or_else(|| "Sign in again".into())
+}
+
+/// Saves everything Tessera stores about the account as JSON at `path`.
+#[tauri::command]
+async fn account_export(state: State<'_, AppState>, path: String) -> CmdResult<()> {
+    let data = account::export(&state.client).await.map_err(err)?;
+    let bytes = serde_json::to_vec_pretty(&data).map_err(err)?;
+    std::fs::write(&path, bytes).map_err(err)
+}
+
+#[tauri::command]
+async fn account_delete(state: State<'_, AppState>) -> CmdResult<()> {
+    account::delete(&state.client).await.map_err(err)
 }
 
 #[tauri::command]
@@ -1020,7 +1039,11 @@ async fn create_server_from_instance(
     machine_id: String,
     name: String,
     mem_gb: u32,
+    eula: bool,
 ) -> CmdResult<CreatedServer> {
+    if !eula {
+        return Err("Accept the Minecraft EULA to create a server.".into());
+    }
     let progress = pack_progress(&app);
     let result = async {
         let built = serverpack::build(&state.client, &state.paths, &instance_id, &progress).await?;
@@ -1486,6 +1509,9 @@ pub fn run() {
             account_sign_in,
             account_sign_up,
             account_redeem,
+            account_consent,
+            account_export,
+            account_delete,
             invites_list,
             invites_create,
             invites_revoke,

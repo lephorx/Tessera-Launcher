@@ -154,6 +154,23 @@ pub struct Me {
     pub member: bool,
     #[serde(default)]
     pub is_admin: bool,
+    /// The Terms version this account accepted; asked again when it isn't the current one.
+    #[serde(default)]
+    pub terms_version: Option<String>,
+    /// "16+" or "13-15"
+    #[serde(default)]
+    pub age_declaration: Option<String>,
+}
+
+/// Agreeing to the Terms and Privacy Policy at sign-up (or when they change): which version,
+/// the age band ("16+" or "13-15"), and for 13–15 that a parent or guardian agreed.
+/// The API checks all of it again.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Consent {
+    pub terms_version: String,
+    pub age: String,
+    #[serde(default)]
+    pub parental_consent: bool,
 }
 
 pub async fn sign_in(client: &reqwest::Client, email: &str, password: &str) -> Result<Me> {
@@ -185,12 +202,15 @@ pub fn invite_code(input: &str) -> Result<String> {
 }
 
 /// Tessera is invite-only: checks the invite first, so nobody makes an account they can't use.
-pub async fn sign_up(client: &reqwest::Client, email: &str, invite: &str, username: &str, password: &str) -> Result<Me> {
+pub async fn sign_up(client: &reqwest::Client, email: &str, invite: &str, username: &str, password: &str, consent: &Consent) -> Result<Me> {
     if !super::limits::login_allowed("tessera-account") {
         bail!("Too many attempts. Wait a minute and try again.");
     }
     if !(3..=24).contains(&username.len()) || !username.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         bail!("Usernames are 3–24 letters, digits or underscores.");
+    }
+    if consent.age == "13-15" && !consent.parental_consent {
+        bail!("A parent or guardian has to agree to your account.");
     }
     let code = invite_code(invite)?;
     let check: Value = client
@@ -215,14 +235,38 @@ pub async fn sign_up(client: &reqwest::Client, email: &str, invite: &str, userna
         return Err(auth_error(res).await);
     }
     store_session(&cookies_from(&res))?;
-    redeem(client, &code, username).await.map_err(|e| anyhow!("Your account is made, but joining failed: {e}"))?;
+    redeem(client, &code, username, Some(consent)).await.map_err(|e| anyhow!("Your account is made, but joining failed: {e}"))?;
     me(client).await
 }
 
 /// Joins Tessera with an invite: picks the username friends add you by.
-pub async fn redeem(client: &reqwest::Client, invite: &str, username: &str) -> Result<()> {
+pub async fn redeem(client: &reqwest::Client, invite: &str, username: &str, consent: Option<&Consent>) -> Result<()> {
     let code = invite_code(invite)?;
-    api(client, reqwest::Method::POST, &format!("/invites/{code}/redeem"), Some(serde_json::json!({ "username": username.trim() })), None).await?;
+    let mut body = serde_json::json!({ "username": username.trim() });
+    if let Some(c) = consent {
+        body["terms_version"] = c.terms_version.clone().into();
+        body["age"] = c.age.clone().into();
+        body["parental_consent"] = c.parental_consent.into();
+    }
+    api(client, reqwest::Method::POST, &format!("/invites/{code}/redeem"), Some(body), None).await?;
+    Ok(())
+}
+
+/// Accepts the current Terms for an account made before them (or before they changed).
+pub async fn consent(client: &reqwest::Client, consent: &Consent) -> Result<()> {
+    api(client, reqwest::Method::POST, "/me/consent", Some(serde_json::to_value(consent)?), None).await?;
+    Ok(())
+}
+
+/// Everything Tessera stores about this account, as the API sends it.
+pub async fn export(client: &reqwest::Client) -> Result<Value> {
+    api(client, reqwest::Method::GET, "/me/export", None, None).await
+}
+
+/// Deletes the account with its shares and their packs, then forgets the sign-in here.
+pub async fn delete(client: &reqwest::Client) -> Result<()> {
+    api(client, reqwest::Method::DELETE, "/me", None, None).await?;
+    forget_session();
     Ok(())
 }
 
@@ -335,7 +379,7 @@ mod tests {
         use crate::core::{instances, paths::Paths, share};
         let client = crate::core::http_client();
         let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() % 100_000;
-        let me = sign_up(&client, &format!("e2e-launcher-{n}@example.com"), &std::env::var("TESSERA_TEST_INVITE").expect("TESSERA_TEST_INVITE"), &format!("launcher_{n}"), "correct horse battery").await.unwrap();
+        let me = sign_up(&client, &format!("e2e-launcher-{n}@example.com"), &std::env::var("TESSERA_TEST_INVITE").expect("TESSERA_TEST_INVITE"), &format!("launcher_{n}"), "correct horse battery", &Consent { terms_version: "2026-10-31".into(), age: "16+".into(), parental_consent: false }).await.unwrap();
         assert_eq!(me.username.as_deref(), Some(format!("launcher_{n}").as_str()));
 
         let root = std::env::temp_dir().join(format!("tessera-share-e2e-{n}"));

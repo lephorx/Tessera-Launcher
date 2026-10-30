@@ -211,7 +211,7 @@ async function runImport() {
       <span class="label" style="font-size: 15px; font-weight: 700">Already know what you want to play?</span>
       <form class="input-icon" @submit.prevent="search">
         <Search />
-        <input v-model="query" class="input" placeholder="Search modpacks, mods and more…" autofocus />
+        <input v-model="query" class="input" placeholder="Search modpacks, mods and more…" aria-label="Search modpacks, mods and more" autofocus />
       </form>
       <div class="divider-or">or</div>
       <span class="label" style="font-size: 15px; font-weight: 700">Choose how to start</span>
@@ -299,8 +299,8 @@ async function runImport() {
         </label>
       </div>
       <div v-if="addingPath" class="row">
-        <button type="button" class="btn btn-icon" title="Browse" @click="browseLauncher"><FolderSearch /></button>
-        <input v-model="customPath" class="input mono" placeholder="Path to launcher…" @keydown.enter.prevent="addLauncher" />
+        <button type="button" class="btn btn-icon" title="Browse" aria-label="Browse" @click="browseLauncher"><FolderSearch /></button>
+        <input v-model="customPath" class="input mono" placeholder="Path to launcher…" aria-label="Path to launcher" @keydown.enter.prevent="addLauncher" />
         <button type="button" class="btn" :disabled="!customPath.trim()" @click="addLauncher">Add</button>
       </div>
       <button v-else type="button" class="btn btn-lg" @click="addingPath = true">Add launcher path</button>
@@ -308,7 +308,7 @@ async function runImport() {
       <form class="stack" style="gap: 8px" @submit.prevent="joinLink">
         <span class="label" style="font-size: 15px; font-weight: 700">Join with an invite link</span>
         <div class="row">
-          <input v-model="inviteLink" class="input mono" placeholder="https://tesseralauncher.com/share/…" />
+          <input v-model="inviteLink" class="input mono" placeholder="https://tesseralauncher.com/share/…" aria-label="Invite link" />
           <button class="btn" :disabled="!inviteLink.trim() || busy">Join</button>
         </div>
       </form>

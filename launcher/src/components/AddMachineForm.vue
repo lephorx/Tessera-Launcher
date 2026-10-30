@@ -43,9 +43,9 @@ async function add() {
     </div>
     <div class="field">
       <span class="label">Your Tessera login</span>
-      <div class="input-icon"><User /><input v-model="username" class="input" placeholder="Username" autocomplete="username" required /></div>
-      <div class="input-icon"><KeyRound /><input v-model="password" class="input" type="password" placeholder="Password" autocomplete="current-password" required /></div>
-      <div class="input-icon"><ShieldCheck /><input v-model="otp" class="input num" inputmode="numeric" maxlength="6" placeholder="One-time code" required /></div>
+      <div class="input-icon"><User /><input v-model="username" class="input" placeholder="Username" aria-label="Username" autocomplete="username" required /></div>
+      <div class="input-icon"><KeyRound /><input v-model="password" class="input" type="password" placeholder="Password" aria-label="Password" autocomplete="current-password" required /></div>
+      <div class="input-icon"><ShieldCheck /><input v-model="otp" class="input num" inputmode="numeric" maxlength="6" placeholder="One-time code" aria-label="One-time code" required /></div>
     </div>
     <p v-if="error" class="error-text">{{ error }}</p>
     <div class="row">

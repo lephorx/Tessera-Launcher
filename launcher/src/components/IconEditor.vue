@@ -61,7 +61,7 @@ const current = (): Icon => ({ kind: "generated", background: background.value, 
             v-for="bg in BACKGROUNDS"
             :key="bg.id"
             class="swatch"
-            :title="bg.id"
+            :title="bg.id" :aria-label="`Background ${bg.id}`" :aria-pressed="!file && background === bg.id"
             :style="{ background: `linear-gradient(160deg, ${bg.from}, ${bg.to})` }"
             :class="{ on: !file && background === bg.id }"
             @click="(background = bg.id), (file = preview = null)"
@@ -76,7 +76,7 @@ const current = (): Icon => ({ kind: "generated", background: background.value, 
             :key="s.id"
             class="symbol"
             :class="{ on: !file && symbol === s.id }"
-            :title="s.name"
+            :title="s.name" :aria-label="`Symbol ${s.name}`" :aria-pressed="!file && symbol === s.id"
             @click="(symbol = s.id), (file = preview = null)"
           >
             <InstanceIcon :icon="{ kind: 'generated', background: 'night', symbol: s.id }" :size="56" class="symbol-icon" />

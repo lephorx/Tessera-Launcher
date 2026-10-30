@@ -167,10 +167,10 @@ onMounted(async () => {
       </template>
       <template v-else>
         <form v-if="addingFriend" class="row" style="gap: 6px" @submit.prevent="sendRequest">
-          <input v-model="friendName" class="input" placeholder="Their username" maxlength="24" required autofocus />
+          <input v-model="friendName" class="input" placeholder="Their username" aria-label="Friend's Tessera username" maxlength="24" required autofocus />
           <button class="btn btn-primary" :disabled="busy"><Loader2 v-if="busy" class="spin" />Add</button>
         </form>
-        <div class="input-icon"><Search /><input v-model="query" class="input" placeholder="Search friends…" /></div>
+        <div class="input-icon"><Search /><input v-model="query" class="input" placeholder="Search friends…" aria-label="Search friends" /></div>
         <p v-if="friendsError" class="error-text">{{ friendsError }}</p>
 
         <template v-if="friends && pending.length">

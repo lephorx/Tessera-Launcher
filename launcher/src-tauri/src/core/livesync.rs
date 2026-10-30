@@ -259,7 +259,7 @@ mod live_test {
         let invite = std::env::var("TESSERA_TEST_INVITE").expect("TESSERA_TEST_INVITE");
         let client = crate::core::http_client();
         let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-        account::sign_up(&client, &format!("e2esync{stamp}@example.com"), &invite, &format!("sync_{}", stamp % 100000), "correct horse battery").await.unwrap();
+        account::sign_up(&client, &format!("e2esync{stamp}@example.com"), &invite, &format!("sync_{}", stamp % 100000), "correct horse battery", &account::Consent { terms_version: "2026-10-31".into(), age: "16+".into(), parental_consent: false }).await.unwrap();
 
         let base = std::env::temp_dir().join(format!("tessera-live-{stamp}"));
         let (p1, p2) = (Paths::new(base.join("one")), Paths::new(base.join("two")));

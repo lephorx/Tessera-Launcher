@@ -63,7 +63,7 @@ async function doSignOut() {
 onMounted(async () => {
   window.addEventListener("mousedown", closeMenu);
   void loadAccount();
-  startUpdateChecks();
+  void startUpdateChecks();
   await startEvents();
   // live sync of shared instances (see start_live_sync in lib.rs for why it starts here)
   void invoke("start_live_sync").catch(() => {});
@@ -121,7 +121,7 @@ const nav = [
           @click="installUpdate"
         >
           <Loader2 v-if="updater.installing" class="spin" :size="16" /><RefreshCw v-else :size="16" />
-          {{ updater.installing ? (updater.progress ? `Updating ${Math.round(updater.progress * 100)}%` : "Updating…") : "Reload to update" }}
+          {{ updater.installing ? (updater.progress && !updater.ready ? `Updating ${Math.round(updater.progress * 100)}%` : "Updating…") : "Reload to update" }}
         </button>
         <button
           v-else

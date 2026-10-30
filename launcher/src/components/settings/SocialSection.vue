@@ -102,7 +102,7 @@ async function unblock(b: Blocked) {
       <h3 class="set-title">Blocked users</h3>
       <p class="set-hint">People you block can't send you friend requests or add you to shared packs. Blocking also unfriends them and takes them off each other's shared packs.</p>
       <form class="row" style="gap: 8px" @submit.prevent="block">
-        <input v-model="blockName" class="input" placeholder="Tessera username" maxlength="24" required style="max-width: 260px" />
+        <input v-model="blockName" class="input" placeholder="Tessera username" aria-label="Tessera username to block" maxlength="24" required style="max-width: 260px" />
         <button class="btn" :disabled="busy"><Loader2 v-if="busy" class="spin" />Block</button>
       </form>
       <div class="set-table">

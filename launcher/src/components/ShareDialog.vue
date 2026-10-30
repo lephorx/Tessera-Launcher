@@ -93,7 +93,7 @@ function expiryText(): string {
   <AppDialog :title="`Share ${title}`" :width="540" @close="emit('close')">
     <div class="stack" style="gap: 18px">
       <form class="row" @submit.prevent="add">
-        <div class="input-icon" style="flex: 1"><Search /><input v-model="username" class="input" placeholder="Enter Tessera username" autofocus /></div>
+        <div class="input-icon" style="flex: 1"><Search /><input v-model="username" class="input" placeholder="Enter Tessera username" aria-label="Tessera username" autofocus /></div>
         <button class="btn btn-primary btn-lg" :disabled="busy || !username.trim()"><Loader2 v-if="busy" class="spin" /><Plus v-else /> Add</button>
       </form>
       <p v-if="error" class="error-text" style="margin-top: -10px">{{ error }}</p>
@@ -114,8 +114,8 @@ function expiryText(): string {
               <option value="viewer">Can play</option>
               <option value="editor">Can add content</option>
             </select>
-            <button class="btn btn-ghost btn-icon btn-sm" :title="`Make ${m.username} the owner`" @click="transferTo = m"><Crown /></button>
-            <button class="btn btn-ghost btn-icon btn-sm" :title="`Remove ${m.username}`" @click="remove(m.user_id, m.username)"><X /></button>
+            <button class="btn btn-ghost btn-icon btn-sm" :title="`Make ${m.username} the owner`" :aria-label="`Make ${m.username} the owner`" @click="transferTo = m"><Crown /></button>
+            <button class="btn btn-ghost btn-icon btn-sm" :title="`Remove ${m.username}`" :aria-label="`Remove ${m.username}`" @click="remove(m.user_id, m.username)"><X /></button>
           </div>
         </div>
       </div>
@@ -124,7 +124,7 @@ function expiryText(): string {
         <span class="label" style="font-weight: 700">Or use an invite link</span>
         <div class="row">
           <input class="input mono" :value="share.link" readonly @focus="($event.target as HTMLInputElement).select()" />
-          <button class="btn btn-icon" title="Copy link" @click="copy"><Copy /></button>
+          <button class="btn btn-icon" title="Copy link" aria-label="Copy link" @click="copy"><Copy /></button>
         </div>
         <p class="hint">
           {{ expiryText() }}

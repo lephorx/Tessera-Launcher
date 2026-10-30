@@ -186,7 +186,7 @@ async function copy() {
         </div>
         <div class="inset row">
           <span class="mono selectable" style="flex: 1; font-size: 13px">{{ share.link }}</span>
-          <button class="btn btn-ghost btn-icon btn-sm" title="Copy invite link" @click="copy"><Copy /></button>
+          <button class="btn btn-ghost btn-icon btn-sm" title="Copy invite link" aria-label="Copy invite link" @click="copy"><Copy /></button>
         </div>
         <div class="row live-row">
           <span class="live-dot" :class="live()?.state === 'error' ? 'bad' : ''" />

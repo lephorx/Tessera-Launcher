@@ -224,7 +224,7 @@ function pageList(): (number | "…")[] {
     <div v-else class="page-header">
       <div>
         <h1 class="page-title">Discover</h1>
-        <p class="page-sub">Modpacks, mods, resource packs, data packs and shaders from Modrinth.</p>
+        <p class="page-sub">Modpacks, mods, resource packs, data packs and shaders from Modrinth. Mod listings come from Modrinth; Tessera is not affiliated with Modrinth.</p>
       </div>
     </div>
 
@@ -237,7 +237,7 @@ function pageList(): (number | "…")[] {
     <div :key="type">
     <div class="input-icon" style="margin-bottom: 12px">
       <Search />
-      <input v-model="query" class="input" :placeholder="`Search ${tabs.find((t) => t.type === type)?.label.toLowerCase()}…`" />
+      <input v-model="query" class="input" :placeholder="`Search ${tabs.find((t) => t.type === type)?.label.toLowerCase()}…`" :aria-label="`Search ${tabs.find((t) => t.type === type)?.label.toLowerCase()}`" />
     </div>
     <div class="row" style="margin-bottom: 16px; flex-wrap: wrap">
       <label class="row hint">Sort by

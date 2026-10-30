@@ -160,7 +160,7 @@ async function openFolder() {
     </RouterLink>
     <div class="page-header" style="align-items: center">
       <div class="row" style="gap: 16px">
-        <button class="icon-edit" title="Change icon" @click="editingIcon = true">
+        <button class="icon-edit" title="Change icon" aria-label="Change icon" @click="editingIcon = true">
           <InstanceIcon :icon="inst.icon" :id="inst.id" :size="72" />
           <span class="icon-edit-badge"><Pencil :size="14" /></span>
         </button>
@@ -224,9 +224,9 @@ async function openFolder() {
         </div>
         <span class="chip">{{ KINDS.find((k) => k.id === f.kind)?.label.replace(/s$/, "") }}</span>
         <label class="switch" :title="f.enabled ? 'Turn off' : 'Turn on'">
-          <input type="checkbox" :checked="f.enabled" @change="toggle(f)" /><span />
+          <input type="checkbox" :checked="f.enabled" :aria-label="`${f.title} turned on`" @change="toggle(f)" /><span />
         </label>
-        <button class="btn btn-ghost btn-icon" :title="`Remove ${f.title}`" @click="removeFile(f)"><Trash2 /></button>
+        <button class="btn btn-ghost btn-icon" :title="`Remove ${f.title}`" :aria-label="`Remove ${f.title}`" @click="removeFile(f)"><Trash2 /></button>
       </div>
     </section>
 
