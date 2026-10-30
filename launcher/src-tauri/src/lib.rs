@@ -1160,7 +1160,7 @@ async fn ms_sign_in(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Opt
     let window = tauri::WebviewWindowBuilder::new(&app, "ms-sign-in", tauri::WebviewUrl::External(pkce.url.parse().map_err(err)?))
         // the end page carries the code; it never loads
         .on_navigation(move |u| {
-            if u.as_str().starts_with(msauth::REDIRECT) {
+            if msauth::is_redirect(u) {
                 on_redirect(Some(u.to_string()));
                 return false;
             }

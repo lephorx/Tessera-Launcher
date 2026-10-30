@@ -90,8 +90,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # the Azure app for Microsoft sign-in (public, so a repository variable)
-          TESSERA_MS_CLIENT_ID: ${{ vars.TESSERA_MS_CLIENT_ID }}
         with:
           projectPath: launcher
           tauriScript: pnpm tauri

@@ -1,8 +1,9 @@
 //! Microsoft sign-in for Minecraft: Microsoft account → Xbox Live → XSTS → Minecraft
 //! services token, then the Minecraft profile (name, skins, capes).
 //!
-//! Sign-in uses the authorization code flow with PKCE in a launcher window that ends on
-//! Microsoft's `nativeclient` page, so nothing listens on a local port. Accounts (with the
+//! Sign-in uses the authorization code flow with PKCE in a launcher window. Microsoft then
+//! sends the window to `http://localhost?code=…`; the window catches that before it loads,
+//! so nothing has to listen on a local port. Accounts (with the
 //! refresh token) are kept in `microsoft-accounts.json`, readable only by the user.
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -14,14 +15,21 @@ use super::account::write_private;
 use super::launch::Player;
 use super::paths::Paths;
 
-/// The launcher's Azure app (public client, approved by Mojang for the Minecraft API).
+/// The launcher's Azure app (a public client, approved by Mojang for the Minecraft API).
+/// `TESSERA_MS_CLIENT_ID` at build time swaps in another app, e.g. for testing.
 pub const CLIENT_ID: &str = match option_env!("TESSERA_MS_CLIENT_ID") {
-    Some(id) => id,
-    None => "",
+    Some(id) if !id.is_empty() => id,
+    _ => "51ef855b-eef1-42c0-9a3f-5d721fe7af56",
 };
 const AUTHORIZE: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize";
 const TOKEN: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token";
-pub const REDIRECT: &str = "https://login.microsoftonline.com/common/oauth2/nativeclient";
+/// Registered in Azure under "Mobile and desktop applications".
+const REDIRECT: &str = "http://localhost";
+
+/// Whether the sign-in window got to the end, where the code is.
+pub fn is_redirect(url: &reqwest::Url) -> bool {
+    url.scheme() == "http" && url.host_str() == Some("localhost")
+}
 const SCOPE: &str = "XboxLive.signin offline_access";
 const MC: &str = "https://api.minecraftservices.com";
 
@@ -108,9 +116,6 @@ fn random_text() -> Result<String> {
 /// The Microsoft sign-in page to open, with a fresh PKCE verifier and state.
 pub fn start() -> Result<Pkce> {
     use base64::Engine;
-    if CLIENT_ID.is_empty() {
-        bail!("Microsoft sign-in isn't set up in this build of the launcher");
-    }
     let verifier = random_text()?;
     let state = random_text()?;
     let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
@@ -133,6 +138,9 @@ pub fn start() -> Result<Pkce> {
 /// What the sign-in window ended on: the code, or Microsoft's error.
 pub fn parse_redirect(url: &str, state: &str) -> Result<String> {
     let url = reqwest::Url::parse(url)?;
+    if !is_redirect(&url) {
+        bail!("Sign-in ended on an unexpected page");
+    }
     let get = |k: &str| url.query_pairs().find(|(n, _)| n == k).map(|(_, v)| v.into_owned());
     if let Some(e) = get("error") {
         bail!("{}", get("error_description").unwrap_or(e));
@@ -355,9 +363,10 @@ mod tests {
 
     #[test]
     fn reads_the_redirect() {
-        let ok = format!("{REDIRECT}?code=M.abc&state=xyz");
-        assert_eq!(parse_redirect(&ok, "xyz").unwrap(), "M.abc");
-        assert!(parse_redirect(&ok, "other").is_err());
+        let ok = "http://localhost/?code=M.abc&state=xyz";
+        assert_eq!(parse_redirect(ok, "xyz").unwrap(), "M.abc");
+        assert!(parse_redirect(ok, "other").is_err());
+        assert!(parse_redirect("http://localhost.example.com/?code=M.abc&state=xyz", "xyz").is_err());
         let denied = format!("{REDIRECT}?error=access_denied&error_description=The+user+said+no&state=xyz");
         assert_eq!(parse_redirect(&denied, "xyz").unwrap_err().to_string(), "The user said no");
     }

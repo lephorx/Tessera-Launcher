@@ -36,7 +36,7 @@ git tag -a v0.3.0 -m "What's new in this version"
 git push origin v0.3.0
 ```
 
-Needs the repository secrets `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (the updater key; the launcher only installs updates signed with it). Microsoft sign-in needs the repository variable `TESSERA_MS_CLIENT_ID`, the Azure app's client ID; for a local build, set it in the environment.
+Needs the repository secrets `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (the updater key; the launcher only installs updates signed with it).
 
 ## Background
 
