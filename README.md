@@ -22,13 +22,13 @@ Tessera is **invite-only** for now: you need an invite link from someone who's i
 
 ## Download
 
-Get the newest version from [Releases](https://github.com/lephorx/Tessera-Launcher/releases/latest) (macOS, Windows, Linux). The launcher updates itself: when a new version is out, the top bar shows **Reload to update**.
+Get the newest version from [Releases](https://github.com/lephorx/Tessera-Launcher/releases/latest) (macOS for Apple silicon and Intel, Windows, Linux). The launcher updates itself: when a new version is out, the top bar shows **Reload to update**.
 
 The builds aren't signed with an Apple or Microsoft certificate yet. On macOS, right-click the app → **Open** the first time; on Windows, choose **More info → Run anyway**.
 
 ## Releasing
 
-Push a version tag; GitHub Actions builds and signs every platform and publishes the release. The tag's message becomes the release notes and a post in the launcher's News.
+Push a version tag; GitHub Actions builds and signs every platform in parallel and publishes the release. Every push to `main` also runs the same release build to keep the build cache warm, so tag builds only recompile the launcher itself. The tag's message becomes the release notes and a post in the launcher's News.
 
 ```sh
 # bump "version" in launcher/package.json, launcher/src-tauri/Cargo.toml and tauri.conf.json, then

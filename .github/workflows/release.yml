@@ -1,4 +1,4 @@
-# Builds Tessera Launcher for macOS, Windows and Linux when a version tag (v1.2.3) is
+# Builds Tessera Launcher for macOS (Apple silicon and Intel), Windows and Linux when a version tag (v1.2.3) is
 # pushed, signs the update files and publishes a GitHub release with latest.json, which
 # the launcher's updater reads. The release notes are the annotated tag's message.
 name: Release
@@ -16,13 +16,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # macOS as two parallel jobs instead of one universal build that compiles twice
         include:
           - platform: macos-latest
-            args: --target universal-apple-darwin
+            target: aarch64-apple-darwin
+          - platform: macos-latest
+            target: x86_64-apple-darwin
           - platform: windows-latest
-            args: ""
+            target: x86_64-pc-windows-msvc
           - platform: ubuntu-22.04
-            args: ""
+            target: x86_64-unknown-linux-gnu
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
@@ -40,10 +43,14 @@ jobs:
           cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          targets: ${{ matrix.target }}
+      # Tag builds can only restore caches made on main; check.yml keeps these warm with the
+      # same build, so only the launcher's own code compiles here.
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: launcher/src-tauri -> target
+          shared-key: release-${{ matrix.target }}
+          save-if: false
 
       - run: pnpm install --frozen-lockfile
 
@@ -71,4 +78,4 @@ jobs:
           releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: false
           prerelease: false
-          args: ${{ matrix.args }}
+          args: --target ${{ matrix.target }}
