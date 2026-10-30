@@ -2,7 +2,7 @@
 
 | # | Question | Options | Leaning |
 |---|---|---|---|
-| 1 | Product / launcher name | keep "CSCM", new brand | New brand for the launcher; "Minecraft" must not be in the name |
+| 1 | Product / launcher name | keep "CSCM", new brand | **Decided 2026-10-30: Tessera** (Latin for one mosaic tile: every mod is a tile, the pack is the mosaic). Indigo accent (`#5b5bf0`, light `#7b7bff`), three-tile cube mark; assets in CSCM `brand/`. Line-up: Tessera (server app), Tessera Launcher, Tessera Cloud, Tessera Hosting. Some Minecraft mods are also called Tessera, so use "Tessera Launcher" / a qualifier in store and search listings. |
 | 2 | Licence of CSCM | AGPL-3.0 (free to self-host, hosts must share changes), source-available (e.g. BSL/FSL), proprietary | AGPL-3.0 |
 | 3 | Licence of the launcher | GPL-3.0 is forced if we fork the Modrinth App | Accept GPL-3.0 |
 | 4 | Cloud backend language | TypeScript (Fastify/Hono) vs. Python (FastAPI, shares code with CSCM) | TypeScript |
