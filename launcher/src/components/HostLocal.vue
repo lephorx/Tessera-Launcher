@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { Check, CircleCheck, Download, Loader2, Play, Rocket, Settings2, X } from "lucide-vue-next";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { Check, CircleCheck, Download, ExternalLink, Loader2, Play, Rocket, Settings2, X } from "lucide-vue-next";
 import AddMachineForm from "./AddMachineForm.vue";
 import { api, type Machine } from "@/lib/api";
 import { errorText, toast } from "@/lib/toast";
@@ -173,7 +174,10 @@ const stepState = (id: string) => {
         Now set it up in Tessera: create your admin account (with an authenticator app for the one-time codes), then choose how
         friends reach your servers (Playit, optionally your own domain). This page moves on by itself when you're done.
       </p>
-      <button class="btn btn-cta" style="align-self: flex-start" @click="api.hostLocal.openSetup()"><Settings2 /> Open Tessera setup</button>
+      <div class="row">
+        <button class="btn btn-cta" @click="api.hostLocal.openSetup()"><Settings2 /> Open Tessera setup</button>
+        <button class="btn btn-ghost" @click="openUrl(url)"><ExternalLink /> Open in browser instead</button>
+      </div>
       <p class="hint row"><Loader2 class="spin" :size="13" /> Waiting for the setup…</p>
     </template>
 

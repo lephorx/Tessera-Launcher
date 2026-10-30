@@ -1155,8 +1155,10 @@ async fn host_local_start_docker() -> CmdResult<()> {
 }
 
 /// Tessera's own first-run setup (account, authenticator app, Playit) in a launcher window.
+/// Async on purpose: creating a window from a synchronous command deadlocks WebView2 on
+/// Windows (the window stays white and stops responding).
 #[tauri::command]
-fn host_local_open_setup(app: AppHandle, state: State<AppState>) -> CmdResult<()> {
+async fn host_local_open_setup(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     let local = hostlocal::installed(&state.paths).ok_or("Tessera isn't installed on this computer")?;
     if let Some(w) = app.get_webview_window("tessera-setup") {
         let _ = w.set_focus();
