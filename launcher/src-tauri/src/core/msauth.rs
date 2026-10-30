@@ -210,12 +210,15 @@ async fn minecraft_token(client: &reqwest::Client, ms_access: &str) -> Result<(S
     let uhs = claims["uhs"].as_str().ok_or_else(|| anyhow!("Xbox sent no user hash"))?;
     let xuid = claims["xid"].as_str().unwrap_or_default().to_string();
 
-    let (status, mc) = post_json(client, &format!("{MC}/authentications/login_with_xbox"), json!({ "identityToken": format!("XBL3.0 x={uhs};{xsts_token}") })).await?;
+    // the official launcher's endpoint (the older authentications/login_with_xbox answers 404 now)
+    let xtoken = format!("XBL3.0 x={uhs};{xsts_token}");
+    let (status, mc) = post_json(client, &format!("{MC}/launcher/login"), json!({ "xtoken": xtoken, "platform": "PC_LAUNCHER" })).await?;
     if !status.is_success() {
         if status == reqwest::StatusCode::FORBIDDEN {
             bail!("Minecraft refused the sign-in (the launcher's app may not be approved yet)");
         }
-        bail!("Minecraft sign-in failed ({status})");
+        let why = mc["errorMessage"].as_str().or(mc["error"].as_str()).map(|s| format!(": {s}")).unwrap_or_default();
+        bail!("Minecraft sign-in failed ({status}){why}");
     }
     let token = mc["access_token"].as_str().ok_or_else(|| anyhow!("Minecraft sent no token"))?;
     Ok((token.to_string(), mc["expires_in"].as_i64().unwrap_or(86400), xuid))
