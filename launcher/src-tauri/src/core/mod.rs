@@ -5,6 +5,7 @@ pub mod account;
 pub mod assets;
 pub mod download;
 pub mod forge;
+pub mod hostlocal;
 pub mod instances;
 pub mod import;
 pub mod java;

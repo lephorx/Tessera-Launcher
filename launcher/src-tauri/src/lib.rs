@@ -15,7 +15,7 @@ use crate::core::instances::{self, ContentFile, Icon, Instance, Loader, Resoluti
 use crate::core::launch::{prepare, Player, QuickPlay};
 use crate::core::paths::Paths;
 use crate::core::settings::{self, Settings};
-use crate::core::{account, http_client, livesync, loaders, modrinth, mrpack, serverlist, serverpack, servers, share, skins, tapack, versions};
+use crate::core::{account, hostlocal, http_client, livesync, loaders, modrinth, mrpack, serverlist, serverpack, servers, share, skins, tapack, versions};
 
 const MAX_LOG_LINES: usize = 5000;
 
@@ -1103,6 +1103,67 @@ fn skins_select(state: State<AppState>, id: Option<String>) -> CmdResult<()> {
     skins::select(&state.paths, &player, id.as_deref()).map_err(err)
 }
 
+// ── host on this computer ──
+
+#[derive(Serialize, Clone)]
+struct HostInstallEvent {
+    step: Option<String>,
+    line: Option<String>,
+}
+
+#[tauri::command]
+async fn host_local_status(state: State<'_, AppState>) -> CmdResult<hostlocal::Status> {
+    Ok(hostlocal::status(&state.client, &state.paths).await)
+}
+
+/// One-click install of Tessera here; progress comes as "host-install" events.
+#[tauri::command]
+async fn host_local_install(app: AppHandle, state: State<'_, AppState>) -> CmdResult<hostlocal::LocalServer> {
+    let step = |s: &str| {
+        let _ = app.emit("host-install", HostInstallEvent { step: Some(s.into()), line: None });
+    };
+    let log = |l: &str| {
+        let _ = app.emit("host-install", HostInstallEvent { step: None, line: Some(l.into()) });
+    };
+    hostlocal::install(&state.client, &state.paths, &step, &log).await.map_err(|e| format!("{e:#}"))
+}
+
+/// Starts an installed Tessera again (after a failed start, or when it was stopped).
+#[tauri::command]
+async fn host_local_start(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
+    let local = hostlocal::installed(&state.paths).ok_or("Tessera isn't installed on this computer")?;
+    let log = |l: &str| {
+        let _ = app.emit("host-install", HostInstallEvent { step: None, line: Some(l.into()) });
+    };
+    if !hostlocal::status(&state.client, &state.paths).await.docker_running {
+        hostlocal::start_docker().await.map_err(err)?;
+    }
+    hostlocal::start(&local, &log).await.map_err(|e| format!("{e:#}"))?;
+    hostlocal::wait_ready(&state.client, local.port).await.map_err(err)
+}
+
+#[tauri::command]
+async fn host_local_start_docker() -> CmdResult<()> {
+    hostlocal::start_docker().await.map_err(err)
+}
+
+/// Tessera's own first-run setup (account, authenticator app, Playit) in a launcher window.
+#[tauri::command]
+fn host_local_open_setup(app: AppHandle, state: State<AppState>) -> CmdResult<()> {
+    let local = hostlocal::installed(&state.paths).ok_or("Tessera isn't installed on this computer")?;
+    if let Some(w) = app.get_webview_window("tessera-setup") {
+        let _ = w.set_focus();
+        return Ok(());
+    }
+    let url: tauri::Url = format!("http://localhost:{}/", local.port).parse().map_err(err)?;
+    tauri::WebviewWindowBuilder::new(&app, "tessera-setup", tauri::WebviewUrl::External(url))
+        .title("Tessera setup")
+        .inner_size(1100.0, 820.0)
+        .build()
+        .map_err(err)?;
+    Ok(())
+}
+
 /// Whether Docker is installed, for "Host on this computer".
 #[tauri::command]
 async fn docker_status() -> serde_json::Value {
@@ -1217,6 +1278,11 @@ pub fn run() {
             remove_machine,
             machine_request,
             docker_status,
+            host_local_status,
+            host_local_install,
+            host_local_start,
+            host_local_start_docker,
+            host_local_open_setup,
             create_server_from_instance,
         ])
         .run(tauri::generate_context!())

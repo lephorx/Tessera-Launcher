@@ -385,5 +385,22 @@ export const api = {
     memoryMb: () => call<number>("total_memory_mb"),
     checkJava: (path: string) => call<string>("check_java", { path }),
   },
+  hostLocal: {
+    status: () =>
+      call<{
+        supported: boolean;
+        docker_installed: boolean;
+        docker_running: boolean;
+        docker_version: string | null;
+        git: boolean;
+        installed: { dir: string; data_dir: string; port: number } | null;
+        reachable: boolean;
+        setup_required: boolean;
+      }>("host_local_status"),
+    install: () => call<{ dir: string; data_dir: string; port: number }>("host_local_install"),
+    start: () => call<void>("host_local_start"),
+    startDocker: () => call<void>("host_local_start_docker"),
+    openSetup: () => call<void>("host_local_open_setup"),
+  },
   docker: () => call<{ installed: boolean; running: boolean; version?: string }>("docker_status"),
 };
