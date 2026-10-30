@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { RouterLink, RouterView, useRouter } from "vue-router";
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { Blocks, ChevronDown, Compass, Home, Loader2, LogIn, LogOut, RefreshCw, Server, Settings as SettingsIcon, Shirt, UserRound } from "lucide-vue-next";
 import { checkForUpdate, installUpdate, startUpdateChecks, updater } from "./lib/updater";
@@ -62,6 +63,8 @@ onMounted(async () => {
   void loadAccount();
   startUpdateChecks();
   await startEvents();
+  // live sync of shared instances (see start_live_sync in lib.rs for why it starts here)
+  void invoke("start_live_sync").catch(() => {});
   await loadPlayers();
   unlistenDrop = await getCurrentWebview().onDragDropEvent((e) => {
     if (e.payload.type === "enter" || e.payload.type === "over") dropping.value = true;

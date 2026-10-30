@@ -762,8 +762,15 @@ async fn share_sync_now(app: AppHandle, state: State<'_, AppState>, id: String) 
     Ok(())
 }
 
-/// Background live sync of every shared instance, every few seconds.
+/// Background live sync of every shared instance, every few seconds. Started by the window
+/// once it has loaded: spawning it during setup kept the release build's window from ever
+/// loading its page (blank window).
+#[tauri::command]
 fn start_live_sync(app: AppHandle) {
+    static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
     tauri::async_runtime::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(4)).await;
@@ -1192,7 +1199,6 @@ pub fn run() {
                 running: Mutex::new(HashMap::new()),
                 logs: Mutex::new(HashMap::new()),
             });
-            start_live_sync(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1254,6 +1260,7 @@ pub fn run() {
             share_join,
             share_member_status,
             share_sync_now,
+            start_live_sync,
             share_pull,
             share_publish,
             share_leave,
