@@ -5,7 +5,13 @@ import { api, type Me } from "./api";
  * The signed-in Tessera account (null = signed out), shared by the top bar, Home, Settings
  * and Share. `dialog` opens the sign-in dialog from anywhere.
  */
-export const account = reactive<{ me: Me | null; loaded: boolean; dialog: boolean }>({ me: null, loaded: false, dialog: false });
+// consentUnsupported: the API is older than the Terms (no /me/consent yet), so don't hold members up
+export const account = reactive<{ me: Me | null; loaded: boolean; dialog: boolean; consentUnsupported: boolean }>({
+  me: null,
+  loaded: false,
+  dialog: false,
+  consentUnsupported: false,
+});
 
 export async function loadAccount() {
   try {

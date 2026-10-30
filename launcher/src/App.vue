@@ -172,7 +172,7 @@ const nav = [
       <AccountCard bare @signed-in="account.dialog = false" />
     </AppDialog>
     <!-- members from before the current Terms agree once (or sign out) -->
-    <ConsentDialog v-if="account.me?.member && account.me.terms_version !== TERMS_VERSION" />
+    <ConsentDialog v-if="account.me?.member && account.me.terms_version !== TERMS_VERSION && !account.consentUnsupported" />
     <div v-if="packProgress.stage" class="pack-progress stack" style="gap: 8px" role="status">
       <div class="row"><span style="font-weight: 600">{{ packProgress.stage }}</span><span class="spacer" /><span class="hint num">{{ packProgress.total ? `${packProgress.done} / ${packProgress.total}` : "" }}</span></div>
       <div class="progress"><div :style="{ width: packProgress.total ? `${(packProgress.done / packProgress.total) * 100}%` : '8%' }" /></div>

@@ -26,6 +26,7 @@ async function accept() {
     account.me = await api.account.consent(consent.value);
   } catch (e) {
     error.value = errorText(e);
+    if (error.value === "not_found") account.consentUnsupported = true;
   } finally {
     busy.value = false;
   }
