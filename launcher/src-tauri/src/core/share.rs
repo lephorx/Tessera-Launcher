@@ -13,14 +13,14 @@ use super::tapack::{self, ExportOptions};
 
 pub const LINK_BASE: &str = "https://tesseralauncher.com/share/";
 
-fn query(inst: &Instance) -> String {
+pub(crate) fn query(inst: &Instance) -> String {
     let loader = serde_json::to_value(inst.loader).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
     let enc = |s: &str| s.bytes().map(|b| if b.is_ascii_alphanumeric() { (b as char).to_string() } else { format!("%{b:02X}") }).collect::<String>();
     format!("name={}&game_version={}&loader={}", enc(&inst.name), enc(&inst.game_version), loader)
 }
 
 /// The instance as a .tapack in memory: configs and content, never worlds, logs or screenshots.
-async fn pack_bytes(
+pub(crate) async fn pack_bytes(
     client: &reqwest::Client,
     paths: &Paths,
     inst: &Instance,
@@ -63,6 +63,7 @@ pub async fn create(client: &reqwest::Client, paths: &Paths, id: &str, progress:
     let res = api(client, Method::POST, &format!("/shares?{}", query(&inst)), None, Some(bytes)).await?;
     inst.share_code = res["share"]["code"].as_str().map(String::from);
     instances::save(paths, &inst)?;
+    super::livesync::mark_synced(paths, id, res["share"]["revision"].as_i64().unwrap_or(1))?;
     status(client, paths, id).await
 }
 
@@ -72,7 +73,10 @@ pub async fn update(client: &reqwest::Client, paths: &Paths, id: &str, progress:
     let code = inst.share_code.clone().ok_or_else(|| anyhow!("This instance isn't shared"))?;
     let bytes = pack_bytes(client, paths, &inst, progress).await?;
     progress("Uploading", 0, 0);
-    api(client, Method::PUT, &format!("/shares/{code}?{}", query(&inst)), None, Some(bytes)).await?;
+    let res = api(client, Method::PUT, &format!("/shares/{code}?{}", query(&inst)), None, Some(bytes)).await?;
+    if let Some(rev) = res["revision"].as_i64() {
+        super::livesync::mark_synced(paths, id, rev)?;
+    }
     status(client, paths, id).await
 }
 
@@ -109,6 +113,7 @@ pub async fn join(client: &reqwest::Client, paths: &Paths, link: &str, progress:
                 updated_at: share["updated_at"].as_str().map(String::from),
             });
             instances::save(paths, &inst)?;
+            super::livesync::mark_synced(paths, &inst.id, share["revision"].as_i64().unwrap_or(0))?;
         }
     }
     Ok(inst)
@@ -176,7 +181,8 @@ pub async fn pull(client: &reqwest::Client, paths: &Paths, id: &str, progress: &
     let mut inst = result?;
     inst.joined = Some(JoinedShare { updated_at: info["share"]["updated_at"].as_str().map(String::from), ..joined });
     instances::save(paths, &inst)?;
-    Ok(inst)
+    super::livesync::mark_synced(paths, id, info["share"]["revision"].as_i64().unwrap_or(0))?;
+    instances::get(paths, id)
 }
 
 /// Editors: upload this copy as the share's new version (same Minecraft and loader).
@@ -188,7 +194,10 @@ pub async fn publish(client: &reqwest::Client, paths: &Paths, id: &str, progress
     }
     let bytes = pack_bytes(client, paths, &inst, progress).await?;
     progress("Uploading", 0, 0);
-    api(client, Method::PUT, &format!("/shares/{}?{}", joined.code, query(&inst)), None, Some(bytes)).await?;
+    let res = api(client, Method::PUT, &format!("/shares/{}?{}", joined.code, query(&inst)), None, Some(bytes)).await?;
+    if let Some(rev) = res["revision"].as_i64() {
+        super::livesync::mark_synced(paths, id, rev)?;
+    }
     // what we uploaded is the newest version now
     let info = api(client, Method::GET, &format!("/shares/{}", joined.code), None, None).await?;
     let mut inst = instances::get(paths, id)?;

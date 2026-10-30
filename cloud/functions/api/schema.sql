@@ -79,3 +79,8 @@ create table if not exists invites (
   revoked_at  timestamptz
 );
 create index if not exists invites_created_by_idx on invites (created_by);
+
+-- Live sync: every upload bumps the revision; launchers poll /shares/sync and pull newer
+-- revisions, and send base_revision so an upload made from an old copy is refused (409).
+alter table shares add column if not exists revision integer not null default 1;
+alter table shares add column if not exists updated_by uuid references neon_auth."user"(id) on delete set null;

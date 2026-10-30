@@ -69,6 +69,20 @@ pub struct Instance {
     /// Installed from someone else's share: where updates come from, and what we may do.
     #[serde(default)]
     pub joined: Option<JoinedShare>,
+    /// Live sync state of the share this instance is on (as owner or member).
+    #[serde(default)]
+    pub share_sync: Option<ShareSync>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct ShareSync {
+    /// The share revision this copy matches.
+    pub revision: i64,
+    /// Fingerprint of the synced folders right after the last sync, to notice local changes.
+    pub signature: String,
+    /// Content files (mods, resource packs, shaders) at the last sync, to merge local changes.
+    #[serde(default)]
+    pub files: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -211,6 +225,7 @@ pub fn create(
         groups: Vec::new(),
         servers: Vec::new(),
         joined: None,
+        share_sync: None,
     };
     save(paths, &inst)?;
     Ok(inst)

@@ -20,6 +20,10 @@ export const packProgress = reactive({ stage: "", done: 0, total: 0 });
 /** Pushing an instance's server-side mods to its CSCM servers, by `${instance}:${serverId}`. */
 export const serverSync = reactive<Record<string, { state: "syncing" | "synced" | "failed"; message: string | null }>>({});
 
+/** Live share sync per instance: last result, for the Share tab. */
+export const shareSync = reactive<Record<string, { state: "pulled" | "published" | "waiting" | "error"; at: number; by: string | null; message: string | null }>>({});
+const lastNotice = new Map<string, string>();
+
 export const logListeners = new Set<(instance: string, line: string) => void>();
 
 export function runOf(id: string): Run {
@@ -54,6 +58,21 @@ export async function startEvents() {
     if (payload.state === "synced") toast.success(payload.message ?? "Server updated with the new mods");
     if (payload.state === "failed") toast.error(`Couldn't update the server: ${payload.message ?? "unknown error"}`);
   });
+  await listen<{ instance: string; name: string; state: "pulled" | "published" | "waiting" | "error"; by: string | null; message: string | null }>(
+    "share-sync",
+    ({ payload: p }) => {
+      shareSync[p.instance] = { state: p.state, at: Date.now(), by: p.by, message: p.message };
+      // tell the instance page to reload what it shows
+      if (p.state === "pulled") window.dispatchEvent(new CustomEvent("tessera-instance-changed", { detail: p.instance }));
+      // say each kind of thing once, not every few seconds
+      const key = `${p.state}:${p.message ?? ""}`;
+      if (p.state !== "pulled" && lastNotice.get(p.instance) === key) return;
+      lastNotice.set(p.instance, key);
+      if (p.state === "pulled") toast.success(`${p.name} updated${p.by ? ` with ${p.by}'s changes` : ""}`);
+      else if (p.state === "waiting") toast.info(`${p.name} has new changes. They're applied when you close the game.`);
+      else if (p.state === "error") toast.error(`Couldn't sync ${p.name}: ${p.message ?? "unknown error"}`);
+    },
+  );
   await listen<{ instance: string; line: string }>("instance-log", ({ payload }) => {
     for (const fn of logListeners) fn(payload.instance, payload.line);
   });

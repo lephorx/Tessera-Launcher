@@ -335,7 +335,7 @@ mod tests {
         use crate::core::{instances, paths::Paths, share};
         let client = crate::core::http_client();
         let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() % 100_000;
-        let me = sign_up(&client, &format!("e2e-launcher-{n}@example.com"), &format!("launcher_{n}"), "correct horse battery").await.unwrap();
+        let me = sign_up(&client, &format!("e2e-launcher-{n}@example.com"), &std::env::var("TESSERA_TEST_INVITE").expect("TESSERA_TEST_INVITE"), &format!("launcher_{n}"), "correct horse battery").await.unwrap();
         assert_eq!(me.username.as_deref(), Some(format!("launcher_{n}").as_str()));
 
         let root = std::env::temp_dir().join(format!("tessera-share-e2e-{n}"));

@@ -69,6 +69,14 @@ check("editor uploads new content", requests.put(f"{API}/shares/{code2}", params
 check("editor can't change Minecraft", requests.put(f"{API}/shares/{code2}", params=q, data=pack(mc="1.21.4"), headers=B).status_code == 403)
 check("editor can't change loader version", requests.put(f"{API}/shares/{code2}", params=q, data=pack(lv="0.17.0"), headers=B).status_code == 403)
 check("pack with lying query is read from the manifest", requests.put(f"{API}/shares/{code2}", params={**q, "game_version": "1.21.1"}, data=pack(mc="1.20.1"), headers=B).status_code == 403)
+rev = requests.get(f"{API}/shares/sync", params={"codes": code2}, headers=A).json()["shares"][0]["revision"]
+check("sync lists revision for members too", requests.get(f"{API}/shares/sync", params={"codes": code2}, headers=B).json()["shares"][0]["revision"] == rev)
+check("sync needs sign-in", requests.get(f"{API}/shares/sync", params={"codes": code2}).status_code in (401, 404))
+r1 = requests.put(f"{API}/shares/{code2}", params={**q, "base_revision": rev}, data=pack(extra="live 1"), headers=B)
+check("upload on the current revision bumps it", r1.ok and r1.json()["revision"] == rev + 1)
+check("upload from an old copy -> 409", requests.put(f"{API}/shares/{code2}", params={**q, "base_revision": rev}, data=pack(extra="stale"), headers=A).status_code == 409)
+s_ = requests.get(f"{API}/shares/sync", params={"codes": code2}, headers=A).json()["shares"][0]
+check("sync says who changed it", s_["updated_by"] == ub and s_["mine"] is False)
 check("owner can change versions", requests.put(f"{API}/shares/{code2}", params=q, data=pack(mc="1.21.4", lv="0.17.0"), headers=A).ok)
 check("shares/mine shows role", requests.get(f"{API}/shares/mine", headers=A).json()["shares"][0]["members"][0]["role"] == "editor")
 check("transfer needs a member", requests.post(f"{API}/shares/{code2}/transfer", json={"user_id": "00000000-0000-0000-0000-000000000000"}, headers=A).status_code == 404)

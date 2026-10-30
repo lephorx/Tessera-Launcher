@@ -15,7 +15,7 @@ use crate::core::instances::{self, ContentFile, Icon, Instance, Loader, Resoluti
 use crate::core::launch::{prepare, Player, QuickPlay};
 use crate::core::paths::Paths;
 use crate::core::settings::{self, Settings};
-use crate::core::{account, http_client, loaders, modrinth, mrpack, serverlist, serverpack, servers, share, skins, tapack, versions};
+use crate::core::{account, http_client, livesync, loaders, modrinth, mrpack, serverlist, serverpack, servers, share, skins, tapack, versions};
 
 const MAX_LOG_LINES: usize = 5000;
 
@@ -752,6 +752,30 @@ async fn news(state: State<'_, AppState>) -> CmdResult<Value> {
     Ok(body["news"].clone())
 }
 
+/// One live-sync round for an instance right now (the Share tab's "Sync now").
+#[tauri::command]
+async fn share_sync_now(app: AppHandle, state: State<'_, AppState>, id: String) -> CmdResult<()> {
+    let running: std::collections::HashSet<String> = state.running.lock().unwrap().keys().cloned().collect();
+    for e in livesync::tick(&state.client, &state.paths, &running, Some(&id)).await {
+        let _ = app.emit("share-sync", e);
+    }
+    Ok(())
+}
+
+/// Background live sync of every shared instance, every few seconds.
+fn start_live_sync(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+            let state = app.state::<AppState>();
+            let running: std::collections::HashSet<String> = state.running.lock().unwrap().keys().cloned().collect();
+            for e in livesync::tick(&state.client, &state.paths, &running, None).await {
+                let _ = app.emit("share-sync", e);
+            }
+        }
+    });
+}
+
 #[tauri::command]
 async fn share_member_status(state: State<'_, AppState>, id: String) -> CmdResult<Value> {
     share::member_status(&state.client, &state.paths, &id).await.map_err(err)
@@ -1107,6 +1131,7 @@ pub fn run() {
                 running: Mutex::new(HashMap::new()),
                 logs: Mutex::new(HashMap::new()),
             });
+            start_live_sync(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1167,6 +1192,7 @@ pub fn run() {
             shares_received,
             share_join,
             share_member_status,
+            share_sync_now,
             share_pull,
             share_publish,
             share_leave,

@@ -349,6 +349,7 @@ export const api = {
     pull: (id: string) => call<Instance>("share_pull", { id }),
     publish: (id: string) => call<void>("share_publish", { id }),
     leave: (id: string) => call<void>("share_leave", { id }),
+    syncNow: (id: string) => call<void>("share_sync_now", { id }),
     setExpiry: (code: string, days: number | null) => call<unknown>("share_set_expiry", { code, days }),
     received: () => call<{ shares: Share[] }>("shares_received").then((r) => r.shares),
     join: (link: string) => call<Instance>("share_join", { link }),

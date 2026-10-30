@@ -429,8 +429,9 @@ pub async fn apply_update(
     progress: &(dyn Fn(&str, usize, usize) + Send + Sync),
 ) -> Result<Instance> {
     let mut target = instances::get(paths, target_id)?;
-    // install next to it first, so a failed download leaves the instance as it was
-    let fresh = import(client, paths, file, progress).await?;
+    // install next to it first, so a failed download leaves the instance as it was; files
+    // it already has aren't downloaded again
+    let fresh = import_reusing(client, paths, file, progress, Some(&paths.game_dir(target_id))).await?;
     let result = (|| -> Result<Instance> {
         progress("Updating the instance", 0, 0);
         let from = paths.game_dir(&fresh.id);
@@ -485,6 +486,18 @@ pub async fn import(
     file: &Path,
     progress: &(dyn Fn(&str, usize, usize) + Send + Sync),
 ) -> Result<Instance> {
+    import_reusing(client, paths, file, progress, None).await
+}
+
+/// Like `import`; files that `reuse` (another game folder) already has at the same path
+/// and size are copied from there instead of downloaded, so updates only fetch what changed.
+async fn import_reusing(
+    client: &reqwest::Client,
+    paths: &Paths,
+    file: &Path,
+    progress: &(dyn Fn(&str, usize, usize) + Send + Sync),
+    reuse: Option<&Path>,
+) -> Result<Instance> {
     progress("Reading pack", 0, 0);
     let mut zip = zip::ZipArchive::new(std::fs::File::open(file).context("opening the pack")?).context("not a pack file")?;
     let m = read_manifest(&mut zip)?;
@@ -523,6 +536,18 @@ pub async fn import(
         for c in &m.content {
             let rel = safe_relative(&c.path)?;
             let path = if c.enabled { game.join(&rel) } else { game.join(format!("{}.disabled", c.path)) };
+            if let Some(from) = reuse {
+                // the same file under either name (it may have been turned off or on)
+                for candidate in [from.join(&rel), from.join(format!("{}.disabled", c.path))] {
+                    if std::fs::metadata(&candidate).is_ok_and(|m| m.len() == c.size) {
+                        ensure_parent(&path)?;
+                        if std::fs::hard_link(&candidate, &path).is_err() {
+                            let _ = std::fs::copy(&candidate, &path);
+                        }
+                        break;
+                    }
+                }
+            }
             downloads.push(Download { url: c.url.clone(), path, sha1: Some(c.sha1.clone()), size: Some(c.size), executable: false });
             if let Some(Source::Modrinth { project_id, version_id }) = &c.source {
                 inst.mods.push(InstalledMod {

@@ -20,6 +20,7 @@
  *   POST   /v1/shares/:code/transfer  {user_id}  hand the share to a friend; you stay as editor
  *   GET    /v1/shares/:code                     public: pack info for an invite link
  *   GET    /v1/shares/:code/download            invite link or friend: short-lived download URL
+ *   GET    /v1/shares/sync?codes=a,b            live sync: revision of each share I'm on
  *   GET    /v1/friends                          friends + incoming and outgoing requests
  *   POST   /v1/friends           {username}    send a request (accepts theirs if they asked first)
  *   POST   /v1/friends/:userId/accept
@@ -72,7 +73,8 @@ class RateLimiter {
   }
 }
 const perUser = new RateLimiter(120, 60_000);
-const uploads = new RateLimiter(10, 60 * 60_000);
+// live sync uploads after every change, so this is generous; packs link mods instead of carrying them
+const uploads = new RateLimiter(240, 60 * 60_000);
 const publicLookups = new RateLimiter(60, 60_000);
 
 // ── helpers ──────────────────────────────────────────────────────────────
@@ -126,7 +128,7 @@ function packVersions(body: Uint8Array): { game_version: string; loader: string;
   }
 }
 
-const SHARE_COLUMNS = `s.code, s.name, s.game_version, s.loader, s.size_bytes, s.created_at, s.updated_at, s.expires_at, p.username as owner`;
+const SHARE_COLUMNS = `s.code, s.name, s.game_version, s.loader, s.size_bytes, s.created_at, s.updated_at, s.expires_at, s.revision, p.username as owner`;
 
 // ── app ──────────────────────────────────────────────────────────────────
 
@@ -274,7 +276,7 @@ app.post("/shares", async (c) => {
   await files.upload(key, body, { contentType: "application/zip" });
   const { rows } = await pool.query(
     `insert into shares (code, owner_id, name, game_version, loader, loader_version, size_bytes, object_key, expires_at)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, now() + interval '7 days') returning code, expires_at`,
+     values ($1, $2, $3, $4, $5, $6, $7, $8, now() + interval '7 days') returning code, expires_at, revision`,
     [code, c.var.userId, meta.data.name, versions.game_version, versions.loader, versions.loader_version, body.length, key],
   );
   return c.json({ share: rows[0] }, 201);
@@ -313,14 +315,37 @@ app.put("/shares/:code", async (c) => {
   ) {
     return err(c, 403, "versions_locked", "Editors can add and remove content, but only the owner can change the Minecraft or loader version.");
   }
+  // made from an older copy: the caller has to take the newer one first (and merge)
+  const base = c.req.query("base_revision");
+  if (base !== undefined && Number(base) !== share.revision) {
+    return c.json({ error: "outdated", message: "Someone changed the pack meanwhile.", revision: share.revision }, 409);
+  }
   await files.upload(share.object_key, body, { contentType: "application/zip" });
   // only the owner renames the pack
   const name = share.role === "owner" ? meta.data.name : share.name;
-  await pool.query(
-    `update shares set name = $2, game_version = $3, loader = $4, loader_version = $5, size_bytes = $6, updated_at = now() where code = $1`,
-    [share.code, name, versions.game_version, versions.loader, versions.loader_version, body.length],
+  const { rows } = await pool.query(
+    `update shares set name = $2, game_version = $3, loader = $4, loader_version = $5, size_bytes = $6, updated_at = now(),
+       revision = revision + 1, updated_by = $8
+     where code = $1 and ($7::int is null or revision = $7::int) returning revision`,
+    [share.code, name, versions.game_version, versions.loader, versions.loader_version, body.length, base === undefined ? null : Number(base), c.var.userId],
   );
-  return c.json({ ok: true });
+  if (!rows[0]) return c.json({ error: "outdated", message: "Someone changed the pack meanwhile." }, 409);
+  return c.json({ ok: true, revision: rows[0].revision });
+});
+
+app.get("/shares/sync", async (c) => {
+  const codes = (c.req.query("codes") ?? "").split(",").map((x) => x.trim()).filter((x) => /^[A-Za-z0-9]{8}$/.test(x)).slice(0, 50);
+  if (!codes.length) return c.json({ shares: [] });
+  const { rows } = await pool.query(
+    `select s.code, s.revision, s.updated_at, (s.updated_by = $2) as mine, up.username as updated_by,
+       case when s.owner_id = $2 then 'owner' else m.role end as role
+     from shares s
+     left join share_members m on m.code = s.code and m.user_id = $2
+     left join profiles up on up.user_id = s.updated_by
+     where s.code = any($1) and (s.owner_id = $2 or m.user_id is not null)`,
+    [codes, c.var.userId],
+  );
+  return c.json({ shares: rows });
 });
 
 app.get("/shares/mine", async (c) => {

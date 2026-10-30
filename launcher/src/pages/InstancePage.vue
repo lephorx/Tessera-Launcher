@@ -110,8 +110,17 @@ onMounted(async () => {
     router.replace("/library");
   }
   logListeners.add(onLog);
+  window.addEventListener("tessera-instance-changed", onSynced);
 });
-onUnmounted(() => logListeners.delete(onLog));
+
+// live share sync brought new content: show it
+const onSynced = (e: Event) => {
+  if ((e as CustomEvent<string>).detail === props.id) void reloadInstance();
+};
+onUnmounted(() => {
+  logListeners.delete(onLog);
+  window.removeEventListener("tessera-instance-changed", onSynced);
+});
 
 // "last played" is set when the game starts
 watch(

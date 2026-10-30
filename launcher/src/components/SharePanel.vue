@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from "vue";
-import { Copy, Download, Loader2, LogIn, LogOut, RefreshCw, Trash2, Upload, UserPlus, Users } from "lucide-vue-next";
+import { Copy, Loader2, LogIn, LogOut, RefreshCw, Trash2, UserPlus, Users } from "lucide-vue-next";
 import { api, type Instance, type MemberStatus, type Share } from "@/lib/api";
+import { relative } from "@/lib/format";
+import { shareSync } from "@/lib/store";
 import { account, loadAccount } from "@/lib/account";
 import { errorText, toast } from "@/lib/toast";
 import AppDialog from "./AppDialog.vue";
@@ -59,17 +61,6 @@ async function invite() {
   }
 }
 
-async function update() {
-  busy.value = "update";
-  try {
-    share.value = await api.share.update(props.instance.id);
-    toast.success("Friends now get this version of the instance");
-  } catch (e) {
-    toast.error(errorText(e));
-  } finally {
-    busy.value = "";
-  }
-}
 
 async function stop() {
   busy.value = "stop";
@@ -85,24 +76,13 @@ async function stop() {
   }
 }
 
-async function pull() {
+const live = () => shareSync[props.instance.id];
+
+async function syncNow() {
   busy.value = "pull";
   try {
-    await api.share.pull(props.instance.id);
-    toast.success("Updated to the newest version");
-    emit("changed");
-  } catch (e) {
-    toast.error(errorText(e));
-  } finally {
-    busy.value = "";
-  }
-}
-
-async function publish() {
-  busy.value = "publish";
-  try {
-    await api.share.publish(props.instance.id);
-    toast.success("Everyone on the pack gets your changes now");
+    await api.share.syncNow(props.instance.id);
+    if (live()?.state !== "error") toast.success("In sync");
     await load();
   } catch (e) {
     toast.error(errorText(e));
@@ -110,6 +90,8 @@ async function publish() {
     busy.value = "";
   }
 }
+
+
 
 async function leave() {
   busy.value = "leave";
@@ -163,15 +145,22 @@ async function copy() {
           </span>
         </div>
         <template v-if="!member?.removed">
-          <div v-if="member?.update_available" class="inset row">
-            <span style="flex: 1"><b>A newer version is available</b><span class="hint" style="display: block">Updated {{ member.updated_at ? new Date(member.updated_at).toLocaleString() : "" }}. Your worlds stay.</span></span>
-            <button class="btn btn-primary" :disabled="busy !== ''" @click="pull"><Loader2 v-if="busy === 'pull'" class="spin" /><Download v-else /> Update</button>
+          <div class="row live-row">
+            <span class="live-dot" :class="live()?.state === 'error' ? 'bad' : live()?.state === 'waiting' ? 'wait' : ''" />
+            <span class="hint" style="flex: 1">
+              <b>Live.</b>
+              {{
+                (member?.role ?? instance.joined.role) === "editor"
+                  ? "Changes from everyone arrive within seconds, and what you add or remove goes to everyone. Your worlds stay yours."
+                  : "Changes arrive within seconds. Your worlds stay yours."
+              }}
+              <template v-if="live()?.state === 'waiting'"> New changes are applied when you close the game.</template>
+              <template v-else-if="live()?.state === 'error'"> Last try failed: {{ live()?.message }}</template>
+              <template v-else-if="live()?.state === 'pulled'"> Last update {{ relative(new Date(live()!.at).toISOString()).toLowerCase() }}{{ live()?.by ? ` from ${live()?.by}` : "" }}.</template>
+            </span>
           </div>
-          <p v-else class="hint">You have the newest version.</p>
           <div class="row">
-            <button v-if="(member?.role ?? instance.joined.role) === 'editor'" class="btn" :disabled="busy !== '' || !!member?.update_available" :title="member?.update_available ? 'Get the newest version first' : ''" @click="publish">
-              <Loader2 v-if="busy === 'publish'" class="spin" /><Upload v-else /> Publish my changes
-            </button>
+            <button class="btn" :disabled="busy !== ''" @click="syncNow"><Loader2 v-if="busy === 'pull'" class="spin" /><RefreshCw v-else /> Sync now</button>
             <span class="spacer" />
             <button class="btn btn-danger" :disabled="busy !== ''" @click="confirmLeave = true"><LogOut /> Leave</button>
           </div>
@@ -199,12 +188,16 @@ async function copy() {
           <span class="mono selectable" style="flex: 1; font-size: 13px">{{ share.link }}</span>
           <button class="btn btn-ghost btn-icon btn-sm" title="Copy invite link" @click="copy"><Copy /></button>
         </div>
-        <p class="hint">
-          Friends get the instance as it was on {{ new Date(share.updated_at).toLocaleString() }}. Changed mods or
-          settings? Update it so they get the new version.
-        </p>
+        <div class="row live-row">
+          <span class="live-dot" :class="live()?.state === 'error' ? 'bad' : ''" />
+          <span class="hint" style="flex: 1">
+            <b>Live.</b> Changes you or your editors make reach everyone within seconds.
+            <template v-if="live()?.state === 'error'"> Last try failed: {{ live()?.message }}</template>
+            <template v-else-if="live()"> Last sync {{ relative(new Date(live()!.at).toISOString()).toLowerCase() }}.</template>
+          </span>
+        </div>
         <div class="row">
-          <button class="btn" :disabled="busy !== ''" @click="update"><Loader2 v-if="busy === 'update'" class="spin" /><RefreshCw v-else /> Update shared version</button>
+          <button class="btn" :disabled="busy !== ''" @click="syncNow"><Loader2 v-if="busy === 'pull'" class="spin" /><RefreshCw v-else /> Sync now</button>
           <span class="spacer" />
           <button class="btn btn-danger" :disabled="busy !== ''" @click="confirmStop = true"><Trash2 /> Stop sharing</button>
         </div>
@@ -238,3 +231,34 @@ async function copy() {
     </AppDialog>
   </div>
 </template>
+
+<style scoped>
+.live-row {
+  gap: 10px;
+  align-items: flex-start;
+}
+.live-dot {
+  flex-shrink: 0;
+  width: 9px;
+  height: 9px;
+  margin-top: 5px;
+  border-radius: 999px;
+  background: var(--fill-green);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--fill-green) 25%, transparent);
+  animation: live-pulse 2s ease-in-out infinite;
+}
+.live-dot.wait {
+  background: var(--fill-orange);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--fill-orange) 25%, transparent);
+}
+.live-dot.bad {
+  background: var(--fill-red);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--fill-red) 25%, transparent);
+  animation: none;
+}
+@keyframes live-pulse {
+  50% {
+    opacity: 0.45;
+  }
+}
+</style>

@@ -10,6 +10,7 @@ pub mod import;
 pub mod java;
 pub mod launch;
 pub mod limits;
+pub mod livesync;
 pub mod loaders;
 pub mod mrpack;
 pub mod modrinth;
