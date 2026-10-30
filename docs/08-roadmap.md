@@ -30,6 +30,7 @@ Each phase is useful on its own. Self-hosted CSCM never requires a later phase.
 
 ## Phase 4 — Launcher
 - [ ] Fork + rebrand the Modrinth App, remove ads/telemetry
+- [ ] Tessera UI: tokens, Modern/Classic switch, shared components, screenshot check against the dashboard ([10](10-ui-design.md))
 - [ ] Microsoft sign-in with our approved app ID
 - [ ] CSCM module: account, machines, servers, server pages
 - [ ] Pack ↔ server sync, "Join server" invites

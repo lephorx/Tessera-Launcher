@@ -59,5 +59,6 @@ Account      Microsoft account(s), CSCM account, plan & billing
 
 ## Branding & distribution
 
-- Name TBD (see 09). Auto-updates via Tauri updater with signed releases.
+- Name: **Tessera Launcher** (see 09). The UI matches the Tessera dashboard exactly, Modern and Classic looks included: see [10 UI design](10-ui-design.md).
+- Auto-updates via Tauri updater with signed releases.
 - Code signing: Apple Developer ID (notarisation) and a Windows code-signing certificate, otherwise users see security warnings.

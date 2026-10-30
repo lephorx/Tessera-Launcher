@@ -20,6 +20,7 @@ Concept for the next stage of [CSCM](https://github.com/lephorx/CSCM): one accou
 | [07 Hosted tier](docs/07-hosted-tier.md) | Plans, sleeping servers, routing, abuse, billing, legal |
 | [08 Roadmap](docs/08-roadmap.md) | Phases and milestones |
 | [09 Open questions](docs/09-open-questions.md) | Decisions to make before building |
+| [10 UI design](docs/10-ui-design.md) | Look exactly like the dashboard: Modern and Classic, tokens, components, screenshots |
 
 ## Repositories
 
