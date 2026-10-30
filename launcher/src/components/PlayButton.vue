@@ -3,12 +3,14 @@ import { computed } from "vue";
 import { Loader2, Play, Square } from "lucide-vue-next";
 import { api } from "@/lib/api";
 import { runOf, runs } from "@/lib/store";
+import { ensureAccount } from "@/lib/player";
 import { errorText, toast } from "@/lib/toast";
 
 const props = defineProps<{ id: string; large?: boolean }>();
 const run = computed(() => runOf(props.id));
 
 async function play() {
+  if (!(await ensureAccount())) return;
   runs[props.id] = { state: "preparing", stage: "Preparing", done: 0, total: 0 };
   try {
     await api.instances.launch(props.id);

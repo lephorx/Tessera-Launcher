@@ -477,6 +477,15 @@ html[data-design="modern"] .side-account-pick {
 .side-account-pick:hover {
   background: var(--fill);
 }
+.side-signin {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+}
+.side-signin .hint {
+  margin: 0;
+}
 .side-badge {
   margin-left: auto;
   flex-shrink: 0;

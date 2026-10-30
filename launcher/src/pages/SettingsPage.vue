@@ -48,23 +48,11 @@ function leave() {
   void router.push(to);
 }
 
-const signingIn = ref(false);
-async function microsoft() {
-  signingIn.value = true;
-  try {
-    if (await signInMicrosoft()) toast.success(`Signed in as ${player.name}`);
-  } catch (e) {
-    toast.error(errorText(e));
-  } finally {
-    signingIn.value = false;
-  }
-}
-
 async function save() {
   if (!settings.value) return;
   try {
-    // accounts are managed on Home; keep whatever is current
-    settings.value = await api.settings.save({ ...settings.value, design: design.value, player_name: player.name, players: player.players, microsoft: player.microsoft });
+    // accounts are managed on Home; keep the current one
+    settings.value = await api.settings.save({ ...settings.value, design: design.value, microsoft: player.microsoft });
     saved.value = { ...settings.value };
     toast.success("Saved");
   } catch (e) {
@@ -75,7 +63,7 @@ async function save() {
 function pick(d: Design) {
   design.value = d;
   setDesign(d);
-  if (settings.value) void api.settings.save({ ...settings.value, design: d, player_name: player.name, players: player.players, microsoft: player.microsoft });
+  if (settings.value) void api.settings.save({ ...settings.value, design: d, microsoft: player.microsoft });
 }
 </script>
 
@@ -90,22 +78,18 @@ function pick(d: Design) {
     <form v-if="settings" class="stack" @submit.prevent="save">
       <h2 class="section-title">Minecraft</h2>
       <div class="card stack">
-        <div class="row" style="gap: 12px">
+        <div v-if="player.microsoft" class="row" style="gap: 12px">
           <PlayerHead :name="player.name" :size="40" />
           <div style="flex: 1">
             <div style="font-weight: 700">Playing as {{ player.name }}</div>
-            <span v-if="player.microsoft" class="hint">
-              Microsoft account: plays on any server, with your skin and capes. Switch accounts under
-              <RouterLink to="/" class="link">Playing as</RouterLink> on Home.
-            </span>
-            <span v-else class="hint">
-              Offline account: works in singleplayer and on servers with online mode off. Add and switch accounts under
-              <RouterLink to="/" class="link">Playing as</RouterLink> on Home.
+            <span class="hint">
+              Switch accounts under <RouterLink to="/" class="link">Playing as</RouterLink> on Home.
             </span>
           </div>
         </div>
-        <button type="button" class="btn" :disabled="signingIn" style="align-self: flex-start" @click="microsoft">
-          <Loader2 v-if="signingIn" class="spin" /><MicrosoftLogo v-else /> {{ player.accounts.length ? "Add another Microsoft account" : "Sign in with Microsoft" }}
+        <span v-else class="hint">Add your Minecraft account to play. You sign in with the Microsoft account you bought Minecraft with.</span>
+        <button type="button" class="btn" :disabled="player.signingIn" style="align-self: flex-start" @click="signInMicrosoft">
+          <Loader2 v-if="player.signingIn" class="spin" /><MicrosoftLogo v-else /> {{ player.accounts.length ? "Add another account" : "Add account" }}
         </button>
       </div>
 

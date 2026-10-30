@@ -5,6 +5,7 @@ import { Check, Loader2, Play, Square } from "lucide-vue-next";
 import { api, type Instance } from "@/lib/api";
 import { LOADERS } from "@/lib/format";
 import { runOf, runs } from "@/lib/store";
+import { ensureAccount } from "@/lib/player";
 import { errorText, toast } from "@/lib/toast";
 import InstanceIcon from "./InstanceIcon.vue";
 
@@ -14,6 +15,7 @@ const emit = defineEmits<{ toggle: [shift: boolean] }>();
 const run = computed(() => runOf(props.instance.id));
 
 async function play() {
+  if (!(await ensureAccount())) return;
   runs[props.instance.id] = { state: "preparing", stage: "Preparing", done: 0, total: 0 };
   try {
     await api.instances.launch(props.instance.id);

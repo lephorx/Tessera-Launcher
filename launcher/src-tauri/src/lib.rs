@@ -12,7 +12,7 @@ use tokio::sync::oneshot;
 
 use crate::core::import::{self as importer, Found, LauncherDir};
 use crate::core::instances::{self, ContentFile, Icon, Instance, Loader, Resolution, World};
-use crate::core::launch::{prepare, Player, QuickPlay};
+use crate::core::launch::{prepare, QuickPlay};
 use crate::core::paths::Paths;
 use crate::core::settings::{self, Settings};
 use crate::core::{account, hostlocal, http_client, livesync, loaders, modrinth, mrpack, serverlist, serverpack, msauth, servers, share, skins, tapack, versions};
@@ -372,6 +372,9 @@ fn launch_instance(app: AppHandle, state: State<AppState>, id: String, world: Op
         _ => None,
     };
     let inst = instances::get(&state.paths, &id).map_err(err)?;
+    if settings::load(&state.paths).microsoft.is_none() {
+        return Err("Add your Minecraft account first: Playing as on Home → Add account".into());
+    }
     {
         let mut running = state.running.lock().unwrap();
         if running.contains_key(&id) {
@@ -406,22 +409,17 @@ async fn run_instance(app: &AppHandle, mut inst: Instance, quick_play: Option<Qu
     let state = app.state::<AppState>();
     let settings = settings::load(&state.paths);
     let id = inst.id.clone();
-    let player = match settings.microsoft.as_deref() {
-        Some(ms) => {
-            let (player, warning) = msauth::player(&state.client, &state.paths, ms).await?;
-            if let Some(w) = warning {
-                push_log(app, &id, &format!("[Tessera] {w}"));
-            }
-            player
-        }
-        None => Player::offline(&settings.player_name),
-    };
+    let ms = settings.microsoft.as_deref().ok_or_else(|| anyhow::anyhow!("Add your Minecraft account first"))?;
+    let (player, warning) = msauth::player(&state.client, &state.paths, ms).await?;
+    if let Some(w) = warning {
+        push_log(app, &id, &format!("[Tessera] {w}"));
+    }
     let progress = |stage: &str, done: usize, total: usize| {
         let _ = app.emit("launch-progress", ProgressEvent { instance: &id, stage, done, total });
     };
     let plan = prepare(&state.client, &state.paths, &inst, &player, inst.memory_mb.unwrap_or(settings.memory_mb), quick_play.as_ref(), &progress).await?;
 
-    // offline accounts: their chosen skin, through the instance's "Tessera Skin" resource pack
+    // the skin comes from Mojang; this takes out the "Tessera Skin" pack older versions added
     skins::prepare_instance(&state.paths, &state.paths.game_dir(&id), &player.name, player.online);
     push_log(app, &id, &format!("[Tessera] Starting Minecraft {} as {}", inst.game_version, player.name));
     let mut child = tokio::process::Command::new(&plan.java)
@@ -1137,6 +1135,7 @@ fn ms_accounts(state: State<AppState>) -> Vec<msauth::AccountView> {
 }
 
 /// Opens Microsoft's sign-in in a launcher window and adds the account, which then plays.
+/// It's the only kind of account: there are no offline names.
 /// None when the window was closed. Async: building a window from a sync command hangs
 /// WebView2 on Windows.
 #[tauri::command]
@@ -1170,8 +1169,7 @@ async fn ms_sign_in(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Opt
             let _ = tauri_plugin_opener::open_url(u.as_str(), None::<&str>);
             tauri::webview::NewWindowResponse::Deny
         })
-        // no cookies left behind, so the next sign-in can pick another account
-        .incognito(true)
+        // not private: Microsoft remembers the accounts, so adding one again is one click
         .title("Sign in with Microsoft")
         .inner_size(500.0, 680.0)
         .resizable(false)
@@ -1194,16 +1192,16 @@ async fn ms_sign_in(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Opt
     Ok(Some(account))
 }
 
-/// Removes the account; if it was playing, the first offline name plays.
+/// Signs the account out of the launcher; if it was playing, the next account plays.
 #[tauri::command]
 fn ms_remove(state: State<AppState>, id: String) -> CmdResult<Settings> {
     msauth::remove(&state.paths, &id).map_err(err)?;
     let mut s = settings::load(&state.paths);
     if s.microsoft.as_deref() == Some(id.as_str()) {
-        s.microsoft = None;
-        s.player_name = s.players.first().cloned().unwrap_or_else(|| "Player".into());
-        if s.players.is_empty() {
-            s.players.push(s.player_name.clone());
+        let next = msauth::list(&state.paths).into_iter().next();
+        s.microsoft = next.as_ref().map(|a| a.id.clone());
+        if let Some(a) = next {
+            s.player_name = a.name;
         }
         settings::save(&state.paths, &s).map_err(err)?;
     }

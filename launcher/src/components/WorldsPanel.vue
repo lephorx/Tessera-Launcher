@@ -5,6 +5,7 @@ import { Copy, FolderOpen, Globe, Loader2, Play, RefreshCw, Search, Server, Tras
 import { api, type Instance, type LinkedServer, type ServerEntry, type World } from "@/lib/api";
 import { relative } from "@/lib/format";
 import { runOf, runs, serverSync } from "@/lib/store";
+import { ensureAccount } from "@/lib/player";
 import { errorText, toast } from "@/lib/toast";
 import AppDialog from "./AppDialog.vue";
 
@@ -64,6 +65,7 @@ async function syncNow() {
 }
 
 async function join(address: string) {
+  if (!(await ensureAccount())) return;
   runs[props.instance.id] = { state: "preparing", stage: "Preparing", done: 0, total: 0 };
   try {
     await api.instances.launch(props.instance.id, null, address);
@@ -79,6 +81,7 @@ async function copy(text: string) {
 }
 
 async function play(w: World) {
+  if (!(await ensureAccount())) return;
   runs[props.instance.id] = { state: "preparing", stage: "Preparing", done: 0, total: 0 };
   try {
     await api.instances.launch(props.instance.id, w.folder);

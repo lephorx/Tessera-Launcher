@@ -5,7 +5,6 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
-use md5::{Digest, Md5};
 
 use super::assets::asset_downloads;
 use super::download::{download_all, Download};
@@ -35,10 +34,11 @@ pub struct Player {
     pub online: bool,
 }
 
+#[cfg(test)]
 impl Player {
-    /// Offline accounts use the same UUID the vanilla server derives for offline-mode players.
+    /// For tests: offline accounts use the same UUID the vanilla server derives for offline-mode players.
     pub fn offline(name: &str) -> Self {
-        let mut bytes: [u8; 16] = Md5::digest(format!("OfflinePlayer:{name}").as_bytes()).into();
+        let mut bytes: [u8; 16] = <md5::Md5 as md5::Digest>::digest(format!("OfflinePlayer:{name}").as_bytes()).into();
         bytes[6] = (bytes[6] & 0x0f) | 0x30;
         bytes[8] = (bytes[8] & 0x3f) | 0x80;
         Self { name: name.into(), uuid: hex::encode(bytes), access_token: "0".into(), xuid: String::new(), online: false }

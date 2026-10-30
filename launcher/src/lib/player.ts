@@ -1,21 +1,21 @@
 import { reactive } from "vue";
 import { api, type MicrosoftAccount, type Settings } from "./api";
+import { errorText, toast } from "./toast";
 
 /**
- * Minecraft accounts, shared by the top bar, Home, Skins and Settings: offline names and
- * Microsoft accounts. `microsoft` is the id of the Microsoft account playing, if one is.
+ * Minecraft accounts (Microsoft accounts only), shared by the top bar, Home, Skins and
+ * Settings. `microsoft` is the id of the account playing; `name` is empty without one.
  */
-export const player = reactive<{ name: string; players: string[]; accounts: MicrosoftAccount[]; microsoft: string | null }>({
-  name: "Player",
-  players: [],
+export const player = reactive<{ name: string; accounts: MicrosoftAccount[]; microsoft: string | null; signingIn: boolean }>({
+  name: "",
   accounts: [],
   microsoft: null,
+  signingIn: false,
 });
 
 function show(s: Settings) {
-  player.name = s.player_name;
-  player.players = s.players;
   player.microsoft = s.microsoft;
+  player.name = s.microsoft ? s.player_name : "";
 }
 
 export async function loadPlayers() {
@@ -24,31 +24,26 @@ export async function loadPlayers() {
   show(s);
 }
 
-/** Saves who plays and the offline names, starting from the latest settings on disk. */
-async function save(name: string, players: string[], microsoft: string | null) {
-  show(await api.settings.save({ ...(await api.settings.get()), player_name: name, players, microsoft }));
+export async function useMicrosoft(a: MicrosoftAccount) {
+  show(await api.settings.save({ ...(await api.settings.get()), player_name: a.name, microsoft: a.id }));
 }
 
-export const usePlayer = (name: string) => save(name, player.players, null);
-
-export const useMicrosoft = (a: MicrosoftAccount) => save(a.name, player.players, a.id);
-
-export const addPlayer = (name: string) => save(name, [...player.players, name], null);
-
-export async function removePlayer(name: string) {
-  const rest = player.players.filter((p) => p !== name);
-  if (!rest.length && !player.accounts.length) return;
-  if (player.microsoft || player.name !== name) return save(player.name, rest, player.microsoft);
-  if (rest.length) return save(rest[0]!, rest, null);
-  await save(player.accounts[0]!.name, rest, player.accounts[0]!.id);
-}
-
-/** Microsoft sign-in in its own window; the account plays afterwards. False when closed. */
+/** Microsoft's sign-in in its own window; the account plays afterwards. False when closed. */
 export async function signInMicrosoft(): Promise<boolean> {
-  const a = await api.microsoft.signIn();
-  if (!a) return false;
-  await loadPlayers();
-  return true;
+  if (player.signingIn) return false;
+  player.signingIn = true;
+  try {
+    const a = await api.microsoft.signIn();
+    if (!a) return false;
+    await loadPlayers();
+    toast.success(`Signed in as ${a.name}`);
+    return true;
+  } catch (e) {
+    toast.error(errorText(e));
+    return false;
+  } finally {
+    player.signingIn = false;
+  }
 }
 
 export async function removeMicrosoft(a: MicrosoftAccount) {
@@ -56,5 +51,11 @@ export async function removeMicrosoft(a: MicrosoftAccount) {
   player.accounts = await api.microsoft.list();
 }
 
-/** The player's face from their public skin; offline names that aren't real accounts get Steve. */
+/** Before playing: an account is needed, so without one the sign-in opens. */
+export async function ensureAccount(): Promise<boolean> {
+  if (player.microsoft) return true;
+  return signInMicrosoft();
+}
+
+/** The player's face from their public skin. */
 export const headUrl = (name: string) => `https://mc-heads.net/avatar/${encodeURIComponent(name)}/64`;

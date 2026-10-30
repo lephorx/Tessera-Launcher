@@ -76,7 +76,7 @@ async function remove() {
             </button>
           </div>
           <span v-if="!capes.length" class="hint">
-            Capes come from your Minecraft account. Sign in with Microsoft and the capes you own show up here.
+            Capes come from your Minecraft account. Add it under Playing as on Home and the capes you own show up here.
           </span>
         </div>
       </div>

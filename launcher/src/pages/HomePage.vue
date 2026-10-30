@@ -19,7 +19,7 @@ onMounted(async () => {
   <div class="page enter">
     <div class="page-header">
       <div>
-        <h1 class="page-title">Welcome back, {{ player.name }}</h1>
+        <h1 class="page-title">Welcome back{{ player.name ? `, ${player.name}` : "" }}</h1>
         <p class="page-sub">Jump back in, find mods, or start a server for your friends.</p>
       </div>
     </div>

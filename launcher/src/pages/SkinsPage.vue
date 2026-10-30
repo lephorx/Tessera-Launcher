@@ -6,7 +6,7 @@ import SkinEditDialog from "@/components/SkinEditDialog.vue";
 import SkinTile from "@/components/SkinTile.vue";
 import SkinViewer from "@/components/SkinViewer.vue";
 import { api, type Cape, type Skin, type Skins } from "@/lib/api";
-import { player } from "@/lib/player";
+import { ensureAccount, player } from "@/lib/player";
 import { errorText, toast } from "@/lib/toast";
 
 /** Pick the skin the active player uses: your saved skins and Minecraft's default ones. */
@@ -46,7 +46,7 @@ watch(() => player.microsoft, loadCapes);
 watch(() => player.name, load);
 
 async function pick(s: Skin) {
-  if (applying.value) return;
+  if (applying.value || !(await ensureAccount())) return;
   // a Microsoft account's skin changes on Mojang's servers, which takes a moment
   applying.value = s.id;
   try {
@@ -116,10 +116,7 @@ async function saved(id: string) {
       <span v-else class="hint row" style="gap: 6px"><Move3d :size="14" /> Drag to rotate</span>
       <button v-if="current" class="btn" @click="editing = current"><Pencil /> Edit skin</button>
       <p v-if="player.microsoft" class="hint skins-note">Picking a skin makes it your Minecraft skin and cape, so everyone sees it.</p>
-      <p v-else class="hint skins-note">
-        Offline accounts show the skin in your own game (singleplayer and LAN), through a small resource pack the launcher adds.
-        Sign in with Microsoft to show it to everyone.
-      </p>
+      <p v-else class="hint skins-note">Add your Minecraft account under Playing as on Home to change your skin.</p>
     </aside>
 
     <div class="skins-lists">
