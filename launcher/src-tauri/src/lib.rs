@@ -1165,7 +1165,22 @@ async fn host_local_open_setup(app: AppHandle, state: State<'_, AppState>) -> Cm
         return Ok(());
     }
     let url: tauri::Url = format!("http://localhost:{}/", local.port).parse().map_err(err)?;
+    let port = local.port;
+    // Tessera itself stays in the window; links out (playit.gg, Cloudflare, help pages) and
+    // "open in new tab" links go to the browser instead of being silently dropped.
+    let is_tessera = move |u: &tauri::Url| matches!(u.host_str(), Some("localhost" | "127.0.0.1")) && u.port() == Some(port);
     tauri::WebviewWindowBuilder::new(&app, "tessera-setup", tauri::WebviewUrl::External(url))
+        .on_navigation(move |u| {
+            if is_tessera(u) || u.scheme() == "about" {
+                return true;
+            }
+            let _ = tauri_plugin_opener::open_url(u.as_str(), None::<&str>);
+            false
+        })
+        .on_new_window(|u, _| {
+            let _ = tauri_plugin_opener::open_url(u.as_str(), None::<&str>);
+            tauri::webview::NewWindowResponse::Deny
+        })
         .title("Tessera setup")
         .inner_size(1100.0, 820.0)
         .build()
