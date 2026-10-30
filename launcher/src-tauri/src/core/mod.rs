@@ -25,7 +25,7 @@ mod smoke;
 pub mod versions;
 
 /// Identifies us to Mojang, Fabric and Modrinth (Modrinth requires a descriptive User-Agent).
-pub const USER_AGENT: &str = concat!("tessera-launcher/", env!("CARGO_PKG_VERSION"), " (github.com/lephorx/CSCM-Launcher)");
+pub const USER_AGENT: &str = concat!("tessera-launcher/", env!("CARGO_PKG_VERSION"), " (github.com/lephorx/Tessera-Launcher)");
 
 pub fn http_client() -> reqwest::Client {
     reqwest::Client::builder()
