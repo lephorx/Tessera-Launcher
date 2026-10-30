@@ -23,6 +23,18 @@ export interface Consent {
   parental_consent: boolean;
 }
 
+/** The age band for a birthdate ("YYYY-MM-DD" from a date input), or null if it isn't a real past date. */
+export function ageBandOf(birthdate: string): AgeBand | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(birthdate);
+  if (!m) return null;
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const now = new Date();
+  if (y < 1900 || new Date(y, mo - 1, d) > now) return null;
+  const birthdayPassed = now.getMonth() + 1 > mo || (now.getMonth() + 1 === mo && now.getDate() >= d);
+  const age = now.getFullYear() - y - (birthdayPassed ? 0 : 1);
+  return age >= 16 ? "16+" : age >= 13 ? "13-15" : "under13";
+}
+
 /** Opens a legal page in the system browser. */
 export function openLegal(page: keyof typeof LEGAL) {
   void openUrl(LEGAL[page]);
