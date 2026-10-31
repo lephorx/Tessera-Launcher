@@ -12,6 +12,7 @@ let newsLoadedAt = 0;
 import { computed, onMounted, onUnmounted, watch } from "vue";
 import { Check, ChevronDown, ExternalLink, Loader2, Plus, Search, Trash2, UserPlus, X } from "lucide-vue-next";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import AppDialog from "./AppDialog.vue";
 import MicrosoftLogo from "./MicrosoftLogo.vue";
 import PlayerHead from "./PlayerHead.vue";
 import { api } from "@/lib/api";
@@ -40,6 +41,8 @@ const addingFriend = ref(false);
 const friendName = ref("");
 const busy = ref(false);
 const pendingOpen = ref(true);
+// the friend whose X was clicked: removing waits for a yes
+const removing = ref<Friend | null>(null);
 
 async function loadFriends() {
   if (!account.me) {
@@ -89,6 +92,15 @@ async function remove(f: Friend) {
   await run(() => api.friends.remove(f.user_id));
   await loadFriends();
   void refreshNotices();
+}
+
+async function confirmRemove() {
+  const f = removing.value;
+  if (!f) return;
+  busy.value = true;
+  await remove(f);
+  busy.value = false;
+  removing.value = null;
 }
 
 // ── News ──
@@ -184,7 +196,7 @@ onMounted(async () => {
         <div v-for="f in accepted" :key="f.user_id" class="side-friend">
           <PlayerHead :name="f.username" :size="28" />
           <span class="side-friend-text"><span class="ellipsis" style="font-weight: 600">{{ f.username }}</span></span>
-          <button class="btn btn-ghost btn-icon btn-sm side-friend-remove" :title="`Remove ${f.username}`" :aria-label="`Remove ${f.username}`" @click="remove(f)"><X /></button>
+          <button class="btn btn-ghost btn-icon btn-sm side-friend-remove" :title="`Remove ${f.username}`" :aria-label="`Remove ${f.username}`" @click="removing = f"><X /></button>
         </div>
         <template v-if="friends && pending.length">
           <button class="side-fold" :aria-expanded="pendingOpen" @click="pendingOpen = !pendingOpen">
@@ -245,5 +257,15 @@ onMounted(async () => {
         <span class="hint">{{ day(n.published_at) }}</span>
       </component>
     </section>
+
+    <AppDialog v-if="removing" :title="`Remove ${removing.username}?`" :width="420" @close="removing = null">
+      <p class="muted">
+        You won't be friends anymore, and you're both taken off the packs you shared with each other. You can send a new friend request later.
+      </p>
+      <div class="dialog-footer">
+        <button class="btn" @click="removing = null">Cancel</button>
+        <button class="btn btn-danger" :disabled="busy" @click="confirmRemove"><Loader2 v-if="busy" class="spin" />Remove friend</button>
+      </div>
+    </AppDialog>
   </aside>
 </template>
