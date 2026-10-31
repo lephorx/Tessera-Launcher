@@ -156,7 +156,7 @@ const nav = [
         <button class="btn btn-ghost btn-icon" title="Settings" aria-label="Settings" @click="openSettings()">
           <SettingsIcon />
         </button>
-        <button v-if="account.loaded && !account.me" class="btn btn-primary" @click="account.dialog = true"><LogIn /> Sign in</button>
+        <button v-if="account.loaded && !account.me" class="btn btn-primary" @click="account.dialog = true"><LogIn /> {{ account.pending ? "Finish signing in" : "Sign in" }}</button>
         <div v-else-if="account.me" class="account-menu-wrap">
           <button class="account-button" :aria-expanded="menuOpen" @click="menuOpen = !menuOpen">
             <span class="avatar">{{ (account.me.username ?? account.me.email).slice(0, 1) }}</span>

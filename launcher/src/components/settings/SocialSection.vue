@@ -3,11 +3,13 @@ import { onMounted, ref, watch } from "vue";
 import { Check, Loader2 } from "lucide-vue-next";
 import PlayerHead from "../PlayerHead.vue";
 import { account } from "@/lib/account";
-import { api, type Blocked, type Privacy } from "@/lib/api";
+import { api, type Blocked, type EmailNotices, type Privacy } from "@/lib/api";
+import { openSettings } from "@/lib/settingsDialog";
 import { errorText, toast } from "@/lib/toast";
 
-/** Who may send you friend requests or add you to shared packs, and who you blocked. */
+/** Who may send you friend requests or add you to shared packs, which emails you get, and who you blocked. */
 const privacy = ref<Privacy | null>(null);
+const emails = ref<EmailNotices | null>(null);
 const blocks = ref<Blocked[] | null>(null);
 const error = ref("");
 const blockName = ref("");
@@ -32,9 +34,19 @@ async function load() {
   } catch (e) {
     error.value = errorText(e);
   }
+  // an older API has no email settings: the block just stays hidden
+  emails.value = await api.email.get().catch(() => null);
 }
 onMounted(load);
-watch(() => account.me?.id, load);
+watch(() => [account.me?.id, account.me?.email_verified], load);
+
+async function setEmail(e: Partial<EmailNotices>) {
+  try {
+    emails.value = { ...emails.value!, ...(await api.email.set(e)) };
+  } catch (err) {
+    toast.error(errorText(err));
+  }
+}
 
 async function set(p: Partial<Privacy>) {
   try {
@@ -96,6 +108,23 @@ async function unblock(b: Blocked) {
         </button>
       </div>
       <p class="set-hint">Who can add you to the packs they share. Invite links still work for anyone you give them to.</p>
+    </div>
+
+    <div v-if="emails" class="set-block">
+      <h3 class="set-title">Emails</h3>
+      <label class="row" style="justify-content: space-between">
+        <span><span class="label">Friend requests</span><span class="hint" style="display: block">When someone sends you a friend request or accepts yours.</span></span>
+        <span class="switch"><input type="checkbox" :checked="emails.friends" @change="setEmail({ friends: ($event.target as HTMLInputElement).checked })" /><span /></span>
+      </label>
+      <label class="row" style="justify-content: space-between">
+        <span><span class="label">Shared packs</span><span class="hint" style="display: block">When a friend adds you to a pack they share.</span></span>
+        <span class="switch"><input type="checkbox" :checked="emails.shares" @change="setEmail({ shares: ($event.target as HTMLInputElement).checked })" /><span /></span>
+      </label>
+      <p v-if="!emails.available" class="set-hint">Email isn't set up on Tessera's side yet.</p>
+      <p v-else-if="!emails.verified" class="set-hint row" style="gap: 8px">
+        Emails only go to a verified address.
+        <button class="btn btn-sm" @click="openSettings('profile')">Verify your email</button>
+      </p>
     </div>
 
     <div class="set-block">

@@ -888,8 +888,78 @@ async fn account_status(state: State<'_, AppState>) -> CmdResult<Option<account:
 }
 
 #[tauri::command]
-async fn account_sign_in(state: State<'_, AppState>, email: String, password: String) -> CmdResult<account::Me> {
+async fn account_sign_in(state: State<'_, AppState>, email: String, password: String) -> CmdResult<account::SignIn> {
     account::sign_in(&state.client, &email, &password).await.map_err(err)
+}
+
+/// Emails a new code that verifies the address.
+#[tauri::command]
+async fn account_send_verification(state: State<'_, AppState>, email: String) -> CmdResult<()> {
+    account::send_verification(&state.client, &email).await.map_err(err)
+}
+
+/// Verifies the address with the emailed code, which also signs in.
+#[tauri::command]
+async fn account_verify_email(state: State<'_, AppState>, email: String, code: String) -> CmdResult<account::Me> {
+    account::verify_email(&state.client, &email, &code).await.map_err(err)
+}
+
+// ── two-step sign-in by email ──
+
+/// Emails a code for "sign_in", "enable" or "disable".
+#[tauri::command]
+async fn account_2fa_send(state: State<'_, AppState>, purpose: String) -> CmdResult<()> {
+    account::two_factor_send(&state.client, &purpose).await.map_err(err)
+}
+
+#[tauri::command]
+async fn account_2fa_verify(state: State<'_, AppState>, code: String) -> CmdResult<account::Me> {
+    account::two_factor_verify(&state.client, &code).await.map_err(err)
+}
+
+#[tauri::command]
+async fn account_2fa_enable(state: State<'_, AppState>, code: String) -> CmdResult<account::Me> {
+    account::two_factor_enable(&state.client, &code).await.map_err(err)
+}
+
+#[tauri::command]
+async fn account_2fa_disable(state: State<'_, AppState>, code: String) -> CmdResult<account::Me> {
+    account::two_factor_disable(&state.client, &code).await.map_err(err)
+}
+
+/// The computers that skip the code (this one is marked `current`).
+#[tauri::command]
+async fn account_2fa_devices(state: State<'_, AppState>) -> CmdResult<Value> {
+    let v = account::api(&state.client, reqwest::Method::GET, "/me/2fa/devices", None, None).await.map_err(err)?;
+    Ok(v["devices"].clone())
+}
+
+/// Forgets every trusted computer but this one; how many were forgotten.
+#[tauri::command]
+async fn account_2fa_forget_others(state: State<'_, AppState>) -> CmdResult<u64> {
+    let v = account::api(&state.client, reqwest::Method::DELETE, "/me/2fa/devices", None, None).await.map_err(err)?;
+    Ok(v["removed"].as_u64().unwrap_or(0))
+}
+
+/// Which emails Tessera sends: friend requests and shared packs.
+#[tauri::command]
+async fn account_email_get(state: State<'_, AppState>) -> CmdResult<Value> {
+    let v = account::api(&state.client, reqwest::Method::GET, "/me/email", None, None).await.map_err(err)?;
+    Ok(v["email"].clone())
+}
+
+#[tauri::command]
+async fn account_email_set(state: State<'_, AppState>, friends: Option<bool>, shares: Option<bool>) -> CmdResult<Value> {
+    // only what changes: a missing setting stays as it is
+    let mut body = serde_json::Map::new();
+    if let Some(f) = friends {
+        body.insert("friends".into(), f.into());
+    }
+    if let Some(s) = shares {
+        body.insert("shares".into(), s.into());
+    }
+    let v = account::api(&state.client, reqwest::Method::PUT, "/me/email", Some(Value::Object(body)), None).await.map_err(err)?;
+    Ok(v["email"].clone())
 }
 
 #[tauri::command]
@@ -1826,6 +1896,16 @@ pub fn run() {
             import_instances,
             account_status,
             account_sign_in,
+            account_send_verification,
+            account_verify_email,
+            account_2fa_send,
+            account_2fa_verify,
+            account_2fa_enable,
+            account_2fa_disable,
+            account_2fa_devices,
+            account_2fa_forget_others,
+            account_email_get,
+            account_email_set,
             account_redeem,
             account_consent,
             account_export,

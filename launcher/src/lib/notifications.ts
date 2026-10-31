@@ -1,6 +1,6 @@
 import { reactive } from "vue";
 import { api, type Notice } from "./api";
-import { account } from "./account";
+import { account, recheckTwoStep } from "./account";
 import { toast } from "./toast";
 
 /**
@@ -39,6 +39,7 @@ export async function refreshNotices() {
     if (changed) window.dispatchEvent(new Event(FRIENDS_CHANGED));
   } catch {
     // signed out or offline: the next round tries again
+    void recheckTwoStep();
   } finally {
     busy = false;
   }

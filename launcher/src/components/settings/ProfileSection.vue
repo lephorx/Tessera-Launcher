@@ -3,12 +3,13 @@ import { computed, ref } from "vue";
 import { save } from "@tauri-apps/plugin-dialog";
 import { Check, Download, Loader2, Plus, Trash2 } from "lucide-vue-next";
 import AccountCard from "../AccountCard.vue";
+import AccountSecurity from "../AccountSecurity.vue";
 import AppDialog from "../AppDialog.vue";
 import InvitesCard from "../InvitesCard.vue";
 import MicrosoftLogo from "../MicrosoftLogo.vue";
 import PlayerHead from "../PlayerHead.vue";
 import { api } from "@/lib/api";
-import { account } from "@/lib/account";
+import { account, setMe } from "@/lib/account";
 import { player, removeMicrosoft, signInMicrosoft, useMicrosoft } from "@/lib/player";
 import { errorText, toast } from "@/lib/toast";
 
@@ -51,7 +52,7 @@ async function deleteAccount() {
   deleting.value = true;
   try {
     await api.account.remove();
-    account.me = null;
+    setMe(null);
     confirmDelete.value = false;
     toast.success("Your Tessera account is deleted");
   } catch (e) {
@@ -68,6 +69,11 @@ async function deleteAccount() {
     <p class="set-hint">For friends, sharing packs and your servers.</p>
     <AccountCard />
     <InvitesCard v-if="account.me?.member" style="margin-top: 12px" />
+  </div>
+
+  <div v-if="account.me" class="set-block">
+    <h3 class="set-title">Sign-in and security</h3>
+    <AccountSecurity />
   </div>
 
   <div v-if="account.me" class="set-block">

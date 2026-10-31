@@ -75,6 +75,31 @@ export interface Me {
   /** The Terms version accepted; asked again when it isn't TERMS_VERSION. */
   terms_version: string | null;
   age_declaration: "16+" | "13-15" | null;
+  email_verified: boolean;
+  /** Two-step sign-in by email is on. */
+  two_factor: boolean;
+  /** It's on and this computer still owes a code: until then the API answers almost nothing. */
+  two_factor_required: boolean;
+}
+
+/** A password sign-in: signed in, or the email needs verifying first (a code is on its way). */
+export type SignIn = { step: "signed_in"; me: Me } | { step: "verify_email"; email: string };
+
+/** A computer that skips the two-step code for 30 days. */
+export interface TrustedDevice {
+  id: string;
+  label: string | null;
+  created_at: string;
+  expires_at: string;
+  current: boolean;
+}
+
+/** Which emails Tessera sends. They only go to a verified address; `available` is false until email is set up. */
+export interface EmailNotices {
+  friends: boolean;
+  shares: boolean;
+  verified: boolean;
+  available: boolean;
 }
 
 export interface Invite {
@@ -506,7 +531,11 @@ export const api = {
   },
   account: {
     status: () => call<Me | null>("account_status"),
-    signIn: (email: string, password: string) => call<Me>("account_sign_in", { email, password }),
+    signIn: (email: string, password: string) => call<SignIn>("account_sign_in", { email, password }),
+    /** Emails a new 6-digit code that verifies the address. */
+    sendVerification: (email: string) => call<void>("account_send_verification", { email }),
+    /** Verifies the address with the code; it also signs in. */
+    verifyEmail: (email: string, code: string) => call<Me>("account_verify_email", { email, code }),
     redeem: (invite: string, username: string, consent: Consent) => call<Me>("account_redeem", { invite, username, consent }),
     /** Accepts the current Terms (accounts from before them, or when they change). */
     consent: (consent: Consent) => call<Me>("account_consent", { consent }),
@@ -516,6 +545,21 @@ export const api = {
     remove: () => call<void>("account_delete"),
     signOut: () => call<void>("account_sign_out"),
     setUsername: (username: string) => call<void>("account_set_username", { username }),
+  },
+  /** Two-step sign-in by email. */
+  twoFactor: {
+    send: (purpose: "sign_in" | "enable" | "disable") => call<void>("account_2fa_send", { purpose }),
+    /** Finishes signing in; this computer then skips the code for 30 days. */
+    verify: (code: string) => call<Me>("account_2fa_verify", { code }),
+    enable: (code: string) => call<Me>("account_2fa_enable", { code }),
+    disable: (code: string) => call<Me>("account_2fa_disable", { code }),
+    devices: () => call<TrustedDevice[]>("account_2fa_devices"),
+    /** Forgets every computer but this one; how many were forgotten. */
+    forgetOthers: () => call<number>("account_2fa_forget_others"),
+  },
+  email: {
+    get: () => call<EmailNotices>("account_email_get"),
+    set: (e: Partial<Pick<EmailNotices, "friends" | "shares">>) => call<EmailNotices>("account_email_set", { friends: e.friends ?? null, shares: e.shares ?? null }),
   },
   share: {
     status: (id: string) => call<Share | null>("share_status", { id }),

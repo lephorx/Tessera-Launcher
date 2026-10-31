@@ -56,37 +56,60 @@ fn session_file_is_private() {
 }
 
 #[cfg(test)]
-static TEST_SESSION: Mutex<Option<String>> = Mutex::new(None);
+static TEST_SESSION: Mutex<Option<StoredSession>> = Mutex::new(None);
 
-#[derive(Serialize, Deserialize)]
-#[cfg_attr(test, allow(dead_code))]
+#[derive(Serialize, Deserialize, Clone, Default)]
 struct StoredSession {
     cookie: String,
+    /// Proves this computer passed two-step sign-in (the API trusts it for 30 days).
+    /// Files from before two-step sign-in have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    device: Option<String>,
 }
 
-fn session() -> Option<String> {
+fn stored() -> Option<StoredSession> {
     #[cfg(test)]
     return TEST_SESSION.lock().unwrap().clone();
     #[cfg(not(test))]
     {
         let bytes = std::fs::read(SESSION_FILE.get()?).ok()?;
-        serde_json::from_slice::<StoredSession>(&bytes).ok().map(|s| s.cookie).filter(|c| !c.is_empty())
+        serde_json::from_slice::<StoredSession>(&bytes).ok()
     }
 }
 
-fn store_session(cookie: &str) -> Result<()> {
+fn session() -> Option<String> {
+    stored().map(|s| s.cookie).filter(|c| !c.is_empty())
+}
+
+fn device() -> Option<String> {
+    stored()?.device.filter(|d| !d.is_empty())
+}
+
+fn save(s: &StoredSession) -> Result<()> {
     #[cfg(test)]
     {
-        *TEST_SESSION.lock().unwrap() = Some(cookie.to_string());
+        *TEST_SESSION.lock().unwrap() = Some(s.clone());
     }
     #[cfg(not(test))]
     {
         let file = SESSION_FILE.get().ok_or_else(|| anyhow!("The launcher isn't ready yet"))?;
-        let bytes = serde_json::to_vec(&StoredSession { cookie: cookie.to_string() })?;
+        let bytes = serde_json::to_vec(s)?;
         anyhow::Context::context(write_private(file, &bytes), "saving the sign-in")?;
     }
     *TOKEN.lock().unwrap() = None;
     Ok(())
+}
+
+/// A new sign-in cookie; the device token stays, so this computer stays trusted.
+fn store_session(cookie: &str) -> Result<()> {
+    let device = stored().and_then(|s| s.device);
+    save(&StoredSession { cookie: cookie.to_string(), device })
+}
+
+/// Remembers (or forgets, with None) that this computer passed two-step sign-in.
+fn store_device(device: Option<String>) -> Result<()> {
+    let s = stored().ok_or_else(|| anyhow!("Sign in to your Tessera account first."))?;
+    save(&StoredSession { device, ..s })
 }
 
 /// Writes a file only the current user can read (0600 on macOS and Linux; Windows keeps
@@ -131,16 +154,23 @@ fn cookies_from(res: &reqwest::Response) -> String {
 async fn auth_error(res: reqwest::Response) -> anyhow::Error {
     let status = res.status();
     let body: Value = res.json().await.unwrap_or(Value::Null);
+    anyhow!(auth_message(status, &body))
+}
+
+fn auth_message(status: reqwest::StatusCode, body: &Value) -> String {
     let code = body["code"].as_str().unwrap_or_default();
-    let message = match code {
+    match code {
         "INVALID_EMAIL_OR_PASSWORD" => "Wrong email or password.".to_string(),
         "USER_ALREADY_EXISTS" | "USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL" => "There is already an account with that email.".to_string(),
         "PASSWORD_TOO_SHORT" => "Use at least 8 characters for your password.".to_string(),
         "INVALID_EMAIL" => "That email address doesn't look right.".to_string(),
+        "EMAIL_NOT_VERIFIED" => "Verify your email first.".to_string(),
+        "INVALID_OTP" => "That code isn't right.".to_string(),
+        "OTP_EXPIRED" => "That code expired. Send a new one.".to_string(),
+        "TOO_MANY_ATTEMPTS" => "Too many wrong codes. Send a new one.".to_string(),
         _ if status == reqwest::StatusCode::TOO_MANY_REQUESTS => "Too many attempts. Wait a minute and try again.".to_string(),
         _ => body["message"].as_str().map(String::from).unwrap_or_else(|| format!("Sign-in failed ({status})")),
-    };
-    anyhow!(message)
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -160,6 +190,24 @@ pub struct Me {
     /// "16+" or "13-15"
     #[serde(default)]
     pub age_declaration: Option<String>,
+    #[serde(default)]
+    pub email_verified: bool,
+    /// Two-step sign-in by email is on for this account.
+    #[serde(default)]
+    pub two_factor: bool,
+    /// It's on and this computer hasn't entered a code yet: until it does, the API only
+    /// answers /me and the two-step endpoints.
+    #[serde(default)]
+    pub two_factor_required: bool,
+}
+
+/// How a password sign-in ended: signed in (maybe still owing a two-step code, see
+/// `Me::two_factor_required`), or the email isn't verified yet and Neon Auth emailed a code.
+#[derive(Serialize, Debug)]
+#[serde(tag = "step", rename_all = "snake_case")]
+pub enum SignIn {
+    SignedIn { me: Me },
+    VerifyEmail { email: String },
 }
 
 /// Agreeing to the Terms and Privacy Policy at sign-up (or when they change): which version,
@@ -173,7 +221,7 @@ pub struct Consent {
     pub parental_consent: bool,
 }
 
-pub async fn sign_in(client: &reqwest::Client, email: &str, password: &str) -> Result<Me> {
+pub async fn sign_in(client: &reqwest::Client, email: &str, password: &str) -> Result<SignIn> {
     if !super::limits::login_allowed("tessera-account") {
         bail!("Too many sign-in attempts. Wait a minute and try again.");
     }
@@ -184,10 +232,99 @@ pub async fn sign_in(client: &reqwest::Client, email: &str, password: &str) -> R
         .send()
         .await
         .map_err(|e| anyhow!("Can't reach Tessera: {}", e.without_url()))?;
+    let status = res.status();
+    if !status.is_success() {
+        let body: Value = res.json().await.unwrap_or(Value::Null);
+        // Neon Auth has already emailed a code
+        if status == reqwest::StatusCode::FORBIDDEN && body["code"] == "EMAIL_NOT_VERIFIED" {
+            return Ok(SignIn::VerifyEmail { email: email.trim().to_string() });
+        }
+        bail!(auth_message(status, &body));
+    }
+    store_session(&cookies_from(&res))?;
+    Ok(SignIn::SignedIn { me: me(client).await? })
+}
+
+/// Emails a 6-digit code that verifies the address.
+pub async fn send_verification(client: &reqwest::Client, email: &str) -> Result<()> {
+    let res = client
+        .post(format!("{AUTH_URL}/email-otp/send-verification-otp"))
+        .header("origin", ORIGIN)
+        .json(&serde_json::json!({ "email": email.trim(), "type": "email-verification" }))
+        .send()
+        .await
+        .map_err(|e| anyhow!("Can't reach Tessera: {}", e.without_url()))?;
     if !res.status().is_success() {
         return Err(auth_error(res).await);
     }
-    store_session(&cookies_from(&res))?;
+    Ok(())
+}
+
+/// Verifies the address with the emailed code. Neon Auth signs in with it, so a new
+/// session cookie replaces the old one when it sends one.
+pub async fn verify_email(client: &reqwest::Client, email: &str, code: &str) -> Result<Me> {
+    let mut req = client
+        .post(format!("{AUTH_URL}/email-otp/verify-email"))
+        .header("origin", ORIGIN)
+        .json(&serde_json::json!({ "email": email.trim(), "otp": code.trim() }));
+    if let Some(cookie) = session() {
+        req = req.header("cookie", cookie);
+    }
+    let res = req.send().await.map_err(|e| anyhow!("Can't reach Tessera: {}", e.without_url()))?;
+    if !res.status().is_success() {
+        return Err(auth_error(res).await);
+    }
+    let cookies = cookies_from(&res);
+    if !cookies.is_empty() {
+        store_session(&cookies)?;
+    } else {
+        // the cached token may still say "not verified"
+        *TOKEN.lock().unwrap() = None;
+    }
+    if session().is_none() {
+        bail!("Your email is verified. Sign in with your password.");
+    }
+    me(client).await
+}
+
+/// What this computer calls itself in the list of trusted devices.
+fn device_label() -> String {
+    let os = match std::env::consts::OS {
+        "macos" => "macOS",
+        "windows" => "Windows",
+        "linux" => "Linux",
+        other => other,
+    };
+    format!("Tessera Launcher on {os}")
+}
+
+/// Emails a two-step code: "sign_in", "enable" or "disable".
+pub async fn two_factor_send(client: &reqwest::Client, purpose: &str) -> Result<()> {
+    if !matches!(purpose, "sign_in" | "enable" | "disable") {
+        bail!("Unknown code purpose");
+    }
+    api(client, reqwest::Method::POST, "/me/2fa/code", Some(serde_json::json!({ "purpose": purpose })), None).await?;
+    Ok(())
+}
+
+/// Finishes two-step sign-in; this computer is then trusted for 30 days.
+pub async fn two_factor_verify(client: &reqwest::Client, code: &str) -> Result<Me> {
+    let body = api(client, reqwest::Method::POST, "/me/2fa/verify", Some(serde_json::json!({ "code": code.trim(), "label": device_label() })), None).await?;
+    store_device(body["device_token"].as_str().map(String::from))?;
+    me(client).await
+}
+
+/// Turns two-step sign-in on; this computer stays trusted.
+pub async fn two_factor_enable(client: &reqwest::Client, code: &str) -> Result<Me> {
+    let body = api(client, reqwest::Method::POST, "/me/2fa/enable", Some(serde_json::json!({ "code": code.trim(), "label": device_label() })), None).await?;
+    store_device(body["device_token"].as_str().map(String::from))?;
+    me(client).await
+}
+
+/// Turns two-step sign-in off; every trusted device is forgotten.
+pub async fn two_factor_disable(client: &reqwest::Client, code: &str) -> Result<Me> {
+    api(client, reqwest::Method::POST, "/me/2fa/disable", Some(serde_json::json!({ "code": code.trim() })), None).await?;
+    store_device(None)?;
     me(client).await
 }
 
@@ -319,6 +456,9 @@ async fn token(client: &reqwest::Client) -> Result<String> {
 pub async fn api(client: &reqwest::Client, method: reqwest::Method, path: &str, json: Option<Value>, bytes: Option<Vec<u8>>) -> Result<Value> {
     let jwt = token(client).await?;
     let mut req = client.request(method, format!("{API_URL}{path}")).bearer_auth(jwt).timeout(Duration::from_secs(120));
+    if let Some(d) = device() {
+        req = req.header("x-tessera-device", d);
+    }
     if let Some(j) = json {
         req = req.json(&j);
     } else if let Some(b) = bytes {
@@ -365,6 +505,31 @@ pub fn share_code(input: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn old_session_files_still_load() {
+        let s: StoredSession = serde_json::from_str(r#"{"cookie":"a=b"}"#).unwrap();
+        assert_eq!(s.cookie, "a=b");
+        assert!(s.device.is_none());
+        assert_eq!(serde_json::to_string(&s).unwrap(), r#"{"cookie":"a=b"}"#);
+    }
+
+    #[test]
+    fn new_cookie_keeps_the_device_and_sign_out_drops_it() {
+        store_session("a=1").unwrap();
+        store_device(Some("dev".into())).unwrap();
+        store_session("a=2").unwrap();
+        assert_eq!(session().as_deref(), Some("a=2"));
+        assert_eq!(device().as_deref(), Some("dev"));
+        forget_session();
+        assert!(session().is_none() && device().is_none());
+    }
+
+    #[test]
+    fn me_without_the_new_fields() {
+        let me: Me = serde_json::from_str(r#"{"id":"1","email":"a@b.c","name":null,"username":"x"}"#).unwrap();
+        assert!(!me.email_verified && !me.two_factor && !me.two_factor_required);
+    }
 
     #[test]
     fn invite_links() {

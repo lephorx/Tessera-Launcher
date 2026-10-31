@@ -16,7 +16,7 @@ import AppDialog from "./AppDialog.vue";
 import MicrosoftLogo from "./MicrosoftLogo.vue";
 import PlayerHead from "./PlayerHead.vue";
 import { api } from "@/lib/api";
-import { account } from "@/lib/account";
+import { account, recheckTwoStep } from "@/lib/account";
 import { FRIENDS_CHANGED, refreshNotices } from "@/lib/notifications";
 import { player, removeMicrosoft, signInMicrosoft, useMicrosoft } from "@/lib/player";
 import { errorText, toast } from "@/lib/toast";
@@ -54,6 +54,7 @@ async function loadFriends() {
     friendsError.value = "";
   } catch (e) {
     friendsError.value = errorText(e);
+    void recheckTwoStep();
   }
 }
 watch(() => account.me?.id, (id, before) => {
@@ -179,8 +180,9 @@ onMounted(async () => {
         <p class="hint row"><Loader2 class="spin" :size="14" /> Loading…</p>
       </template>
       <template v-else-if="!account.me">
-        <p class="hint">Sign in to your Tessera account to add friends and share packs with them.</p>
-        <button class="btn btn-primary side-wide" @click="account.dialog = true">Sign in</button>
+        <p v-if="account.pending" class="hint">Enter the code we emailed to {{ account.pending.email }} to finish signing in.</p>
+        <p v-else class="hint">Sign in to your Tessera account to add friends and share packs with them.</p>
+        <button class="btn btn-primary side-wide" @click="account.dialog = true">{{ account.pending ? "Enter code" : "Sign in" }}</button>
       </template>
       <template v-else-if="!account.me.username">
         <p class="hint">Pick a username in Settings so friends can find you.</p>
