@@ -881,6 +881,25 @@ html[data-design="modern"] .btn-tint {
   border-color: var(--ring);
 }
 
+/* The open list of a <select> is drawn by the system. On Windows it takes the select's own
+   background, which is see-through when focused, so the list turned white with the theme's
+   light text on it. Its colours are set here instead. */
+select {
+  color-scheme: inherit;
+}
+select option,
+select optgroup {
+  background-color: var(--popover);
+  color: var(--popover-foreground);
+}
+select option:checked {
+  background-color: var(--tint);
+  color: #fff;
+}
+select option:disabled {
+  color: var(--muted-foreground);
+}
+
 html[data-design="modern"] .input,
 html[data-design="modern"] .select {
   height: 36px;
