@@ -41,6 +41,20 @@ const KINDS = [
   { id: "shader", label: "Shaders" },
   { id: "datapack", label: "Data packs" },
 ] as const;
+const countOf = (kind: (typeof KINDS)[number]["id"]) => content.value.filter((c) => kind === "all" || c.kind === kind).length;
+// "42 mods · 3 resource packs · 2 turned off" under the filters
+const summary = computed(() => {
+  const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+  const parts = [
+    plural(countOf("mod"), "mod", "mods"),
+    countOf("resourcepack") && plural(countOf("resourcepack"), "resource pack", "resource packs"),
+    countOf("shader") && plural(countOf("shader"), "shader", "shaders"),
+    countOf("datapack") && plural(countOf("datapack"), "data pack", "data packs"),
+  ].filter(Boolean);
+  const off = content.value.filter((c) => !c.enabled).length;
+  if (off) parts.push(`${off} turned off`);
+  return parts.join(" · ");
+});
 const shownContent = computed(() => content.value.filter((c) => kindFilter.value === "all" || c.kind === kindFilter.value));
 
 /** After a share update, leaving a share, or an ownership change. */
@@ -201,7 +215,9 @@ async function openFolder() {
     <section v-if="tab === 'content'" class="card stack">
       <div class="row" style="flex-wrap: wrap">
         <div class="choices">
-          <button v-for="k in KINDS" :key="k.id" class="choice" style="height: 30px; padding: 0 10px" :class="{ on: kindFilter === k.id }" @click="kindFilter = k.id">{{ k.label }}</button>
+          <button v-for="k in KINDS" :key="k.id" class="choice" style="height: 30px; padding: 0 10px" :class="{ on: kindFilter === k.id }" @click="kindFilter = k.id">
+            {{ k.label }}<span v-if="countOf(k.id)" class="choice-count num">{{ countOf(k.id) }}</span>
+          </button>
         </div>
         <span class="spacer" />
         <RouterLink
@@ -209,6 +225,7 @@ async function openFolder() {
           class="btn btn-primary btn-sm"
         ><Plus /> Add content</RouterLink>
       </div>
+      <p v-if="content.length" class="hint" style="margin: 0">{{ summary }}</p>
       <p v-if="!content.length" class="hint">
         Nothing here yet. {{ inst.loader === "vanilla" ? "Vanilla can use resource packs, data packs and shaders." : "Add mods, resource packs and more from Discover." }}
       </p>
@@ -266,3 +283,11 @@ async function openFolder() {
     </AppDialog>
   </div>
 </template>
+
+<style scoped>
+.choice-count {
+  margin-left: 6px;
+  opacity: 0.6;
+  font-size: 12px;
+}
+</style>
