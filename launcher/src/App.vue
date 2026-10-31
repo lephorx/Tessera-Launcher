@@ -160,12 +160,12 @@ const nav = [
       </div>
     </header>
     <div class="body">
-      <HomeSidebar />
       <main class="content" @scroll="scrolled = ($event.target as HTMLElement).scrollTop > 4">
         <RouterView v-slot="{ Component, route }">
           <component :is="Component" :key="route.fullPath" />
         </RouterView>
       </main>
+      <HomeSidebar />
     </div>
     <SettingsDialog v-if="settingsDialog.open" />
     <AppDialog v-if="account.dialog" title="Tessera account" :width="440" @close="account.dialog = false">

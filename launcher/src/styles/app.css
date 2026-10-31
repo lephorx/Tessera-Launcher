@@ -403,17 +403,17 @@ html[data-design="modern"] .account-menu-item {
   image-rendering: pixelated;
 }
 
-/* ── Sidebar (left, every page) ─────────────────────────────────────────────── */
+/* ── Sidebar (right, every page) ─────────────────────────────────────────────── */
 
 .side {
   width: 320px;
   flex-shrink: 0;
   overflow-y: auto;
-  border-right: 1px solid var(--border);
+  border-left: 1px solid var(--border);
   user-select: none;
 }
 html[data-design="modern"] .side {
-  border-right-color: var(--separator, var(--border));
+  border-left-color: var(--separator, var(--border));
 }
 @media (max-width: 1100px) {
   .side {
