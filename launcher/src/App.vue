@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { RouterLink, RouterView, useRouter } from "vue-router";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -12,11 +12,13 @@ import AppDialog from "./components/AppDialog.vue";
 import AccountCard from "./components/AccountCard.vue";
 import ConsentDialog from "./components/ConsentDialog.vue";
 import HomeSidebar from "./components/HomeSidebar.vue";
+import NotificationBell from "./components/NotificationBell.vue";
 import SettingsDialog from "./components/SettingsDialog.vue";
 import { openSettings, settingsDialog } from "./lib/settingsDialog";
 import { api } from "./lib/api";
 import { account, loadAccount, signOut } from "./lib/account";
 import { TERMS_VERSION } from "./lib/legal";
+import { refreshNotices, resetNotices, startNotices } from "./lib/notifications";
 import { packProgress, runs, startEvents } from "./lib/store";
 import { loadPlayers } from "./lib/player";
 import { errorText, toast } from "./lib/toast";
@@ -52,6 +54,18 @@ async function importDropped(paths: string[]) {
 
 const running = computed(() => Object.values(runs).filter((r) => r.state !== "idle").length);
 const menuOpen = ref(false);
+
+// the bell: friend requests and shared packs, for members
+watch(
+  () => (account.me?.member ? account.me.id : null),
+  (id) => {
+    resetNotices();
+    if (!id) return;
+    startNotices();
+    void refreshNotices();
+  },
+  { immediate: true },
+);
 
 function closeMenu(e: MouseEvent) {
   if (!(e.target as HTMLElement).closest(".account-menu-wrap")) menuOpen.value = false;
@@ -138,6 +152,7 @@ const nav = [
         <RouterLink to="/library" class="run-status" :class="{ on: running }">
           <span class="run-dot" /><span class="run-text">{{ running ? `${running} running` : "Nothing running" }}</span>
         </RouterLink>
+        <NotificationBell v-if="account.me?.member" />
         <button class="btn btn-ghost btn-icon" title="Settings" aria-label="Settings" @click="openSettings()">
           <SettingsIcon />
         </button>

@@ -964,8 +964,9 @@ async fn share_stop(state: State<'_, AppState>, id: String) -> CmdResult<()> {
 }
 
 #[tauri::command]
-async fn share_add_friend(state: State<'_, AppState>, code: String, username: String) -> CmdResult<Value> {
-    account::api(&state.client, reqwest::Method::POST, &format!("/shares/{code}/members"), Some(serde_json::json!({ "username": username.trim() })), None)
+async fn share_add_friend(state: State<'_, AppState>, code: String, username: String, role: Option<String>) -> CmdResult<Value> {
+    let role = role.filter(|r| r == "viewer" || r == "editor").unwrap_or_else(|| "viewer".into());
+    account::api(&state.client, reqwest::Method::POST, &format!("/shares/{code}/members"), Some(serde_json::json!({ "username": username.trim(), "role": role })), None)
         .await
         .map_err(err)
 }
@@ -989,6 +990,18 @@ async fn shares_received(state: State<'_, AppState>) -> CmdResult<Value> {
 }
 
 // ── friends and news ──
+
+/// The bell: friend requests, accepted requests and packs friends shared with me.
+#[tauri::command]
+async fn notifications_list(state: State<'_, AppState>) -> CmdResult<Value> {
+    account::api(&state.client, reqwest::Method::GET, "/notifications", None, None).await.map_err(err)
+}
+
+#[tauri::command]
+async fn notifications_seen(state: State<'_, AppState>) -> CmdResult<()> {
+    account::api(&state.client, reqwest::Method::POST, "/notifications/seen", None, None).await.map_err(err)?;
+    Ok(())
+}
 
 #[tauri::command]
 async fn friends_list(state: State<'_, AppState>) -> CmdResult<Value> {
@@ -1175,7 +1188,9 @@ fn start_live_sync(app: AppHandle) {
     }
     tauri::async_runtime::spawn(async move {
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+            // every open launcher with a shared pack asks: often enough to feel live, without
+            // keeping the database busy
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
             let state = app.state::<AppState>();
             let running: std::collections::HashSet<String> = state.running.lock().unwrap().keys().cloned().collect();
             for e in livesync::tick(&state.client, &state.paths, &running, None).await {
@@ -1821,6 +1836,8 @@ pub fn run() {
             share_transfer,
             share_set_role,
             friends_list,
+            notifications_list,
+            notifications_seen,
             friend_add,
             friend_accept,
             friend_remove,

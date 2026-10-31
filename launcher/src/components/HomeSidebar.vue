@@ -9,13 +9,14 @@ let newsLoadedAt = 0;
 </script>
 
 <script setup lang="ts">
-import { computed, onMounted, watch } from "vue";
+import { computed, onMounted, onUnmounted, watch } from "vue";
 import { Check, ChevronDown, ExternalLink, Loader2, Plus, Search, Trash2, UserPlus, X } from "lucide-vue-next";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import MicrosoftLogo from "./MicrosoftLogo.vue";
 import PlayerHead from "./PlayerHead.vue";
 import { api } from "@/lib/api";
 import { account } from "@/lib/account";
+import { FRIENDS_CHANGED, refreshNotices } from "@/lib/notifications";
 import { player, removeMicrosoft, signInMicrosoft, useMicrosoft } from "@/lib/player";
 import { errorText, toast } from "@/lib/toast";
 
@@ -81,17 +82,24 @@ async function sendRequest() {
 async function accept(f: Friend) {
   await run(() => api.friends.accept(f.user_id));
   await loadFriends();
+  void refreshNotices();
 }
 
 async function remove(f: Friend) {
   await run(() => api.friends.remove(f.user_id));
   await loadFriends();
+  void refreshNotices();
 }
 
 // ── News ──
 const newsError = ref(false);
 const imageFailed = ref(new Set<number>());
 const day = (iso: string) => new Date(iso).toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" });
+
+// requests and accepted ones arrive with the bell's check (every 30 s): reload then
+const reload = () => void loadFriends();
+onMounted(() => window.addEventListener(FRIENDS_CHANGED, reload));
+onUnmounted(() => window.removeEventListener(FRIENDS_CHANGED, reload));
 
 onMounted(async () => {
   void loadFriends();
@@ -173,6 +181,11 @@ onMounted(async () => {
         <div class="input-icon"><Search /><input v-model="query" class="input" placeholder="Search friends…" aria-label="Search friends" /></div>
         <p v-if="friendsError" class="error-text">{{ friendsError }}</p>
 
+        <div v-for="f in accepted" :key="f.user_id" class="side-friend">
+          <PlayerHead :name="f.username" :size="28" />
+          <span class="side-friend-text"><span class="ellipsis" style="font-weight: 600">{{ f.username }}</span></span>
+          <button class="btn btn-ghost btn-icon btn-sm side-friend-remove" :title="`Remove ${f.username}`" :aria-label="`Remove ${f.username}`" @click="remove(f)"><X /></button>
+        </div>
         <template v-if="friends && pending.length">
           <button class="side-fold" :aria-expanded="pendingOpen" @click="pendingOpen = !pendingOpen">
             Pending · {{ pending.length }}
@@ -193,11 +206,6 @@ onMounted(async () => {
           </template>
         </template>
 
-        <div v-for="f in accepted" :key="f.user_id" class="side-friend">
-          <PlayerHead :name="f.username" :size="28" />
-          <span class="side-friend-text"><span class="ellipsis" style="font-weight: 600">{{ f.username }}</span></span>
-          <button class="btn btn-ghost btn-icon btn-sm side-friend-remove" :title="`Remove ${f.username}`" :aria-label="`Remove ${f.username}`" @click="remove(f)"><X /></button>
-        </div>
         <p v-if="friends && !friends.length" class="hint">No friends yet. Add someone by their Tessera username.</p>
         <p v-else-if="friends && query && !accepted.length && !pending.length" class="hint">No friend called “{{ query }}”.</p>
       </template>

@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from "vue";
-import { Copy, Loader2, LogIn, LogOut, RefreshCw, Trash2, UserPlus, Users } from "lucide-vue-next";
-import { api, type Instance, type MemberStatus, type Share } from "@/lib/api";
+import { Crown, Loader2, LogIn, LogOut, RefreshCw, Trash2, UserPlus, Users, X } from "lucide-vue-next";
+import { api, type Instance, type MemberStatus, type Share, type ShareRole } from "@/lib/api";
 import { relative } from "@/lib/format";
 import { shareSync } from "@/lib/store";
 import { account, loadAccount } from "@/lib/account";
 import { errorText, toast } from "@/lib/toast";
 import AppDialog from "./AppDialog.vue";
+import PlayerHead from "./PlayerHead.vue";
 import ShareDialog from "./ShareDialog.vue";
 
 const props = defineProps<{ instance: Instance }>();
@@ -107,9 +108,49 @@ async function leave() {
   }
 }
 
-async function copy() {
-  await navigator.clipboard.writeText(share.value?.link ?? "");
-  toast.success("Invite link copied");
+// ── the friends it's shared with (owner) ──
+
+const transferTo = ref<{ user_id: string; username: string } | null>(null);
+const removing = ref<{ user_id: string; username: string } | null>(null);
+
+async function setRole(userId: string, name: string, role: ShareRole) {
+  if (!share.value) return;
+  try {
+    await api.share.setRole(share.value.code, userId, role);
+    toast.success(role === "editor" ? `${name} can add and remove content now` : `${name} can play it but not change it`);
+    await load();
+  } catch (e) {
+    toast.error(errorText(e));
+  }
+}
+
+async function removeMember() {
+  const m = removing.value;
+  if (!share.value || !m) return;
+  try {
+    await api.share.removeFriend(share.value.code, m.user_id);
+    removing.value = null;
+    toast.success(`${m.username} is no longer on it`);
+    await load();
+  } catch (e) {
+    toast.error(errorText(e));
+  }
+}
+
+async function transfer() {
+  const m = transferTo.value;
+  if (!m) return;
+  busy.value = "update";
+  try {
+    await api.share.transfer(props.instance.id, m.user_id);
+    toast.success(`${m.username} owns ${props.instance.name} now. You stay on it as an editor.`);
+    transferTo.value = null;
+    emit("changed");
+  } catch (e) {
+    toast.error(errorText(e));
+  } finally {
+    busy.value = "";
+  }
 }
 </script>
 
@@ -170,10 +211,10 @@ async function copy() {
 
     <div v-else-if="!share" class="card empty" style="padding: 64px 24px">
       <UserPlus />
-      <h3>No friends invited</h3>
-      <p>You can share this instance with your friends! They get the same mods and settings.</p>
+      <h3>Not shared yet</h3>
+      <p>Share this instance with your friends: they get the same mods and settings, and your changes as you make them.</p>
       <button class="btn btn-cta" :disabled="busy !== ''" @click="invite">
-        <Loader2 v-if="busy === 'create'" class="spin" /><UserPlus v-else /> Invite friends
+        <Loader2 v-if="busy === 'create'" class="spin" /><UserPlus v-else /> Share with friends
       </button>
     </div>
 
@@ -181,12 +222,29 @@ async function copy() {
       <div class="card stack">
         <div class="row">
           <span style="font-weight: 700; font-size: 16px">Shared with {{ share.members?.length ?? 0 }} friend{{ share.members?.length === 1 ? "" : "s" }}</span>
+          <span class="hint num">of 10</span>
           <span class="spacer" />
-          <button class="btn btn-primary" @click="invite"><UserPlus /> Invite friends</button>
+          <button class="btn btn-primary" :disabled="(share.members?.length ?? 0) >= 10" :title="(share.members?.length ?? 0) >= 10 ? 'A pack can be shared with 10 friends' : ''" @click="invite">
+            <UserPlus /> Add friends
+          </button>
         </div>
-        <div class="inset row">
-          <span class="mono selectable" style="flex: 1; font-size: 13px">{{ share.link }}</span>
-          <button class="btn btn-ghost btn-icon btn-sm" title="Copy invite link" aria-label="Copy invite link" @click="copy"><Copy /></button>
+        <div class="inset stack members">
+          <p v-if="!share.members?.length" class="hint" style="text-align: center; margin: 10px 0">Nobody yet. Add friends to share it with them.</p>
+          <div v-for="m in share.members ?? []" :key="m.user_id" class="row member">
+            <PlayerHead :name="m.username" :size="28" />
+            <span style="flex: 1; font-weight: 600" class="ellipsis">{{ m.username }}</span>
+            <select
+              class="select role"
+              :value="m.role ?? 'viewer'"
+              :aria-label="`What ${m.username} may do`"
+              @change="setRole(m.user_id, m.username, ($event.target as HTMLSelectElement).value as ShareRole)"
+            >
+              <option value="viewer">Can play</option>
+              <option value="editor">Can add content</option>
+            </select>
+            <button class="btn btn-ghost btn-icon btn-sm" :title="`Make ${m.username} the owner`" :aria-label="`Make ${m.username} the owner`" @click="transferTo = m"><Crown /></button>
+            <button class="btn btn-ghost btn-icon btn-sm" :title="`Remove ${m.username}`" :aria-label="`Remove ${m.username}`" @click="removing = m"><X /></button>
+          </div>
         </div>
         <div class="row live-row">
           <span class="live-dot" :class="live()?.state === 'error' ? 'bad' : ''" />
@@ -204,15 +262,26 @@ async function copy() {
       </div>
     </template>
 
-    <ShareDialog
-      v-if="inviting && share"
-      :share="share"
-      :title="instance.name"
-      :instance-id="instance.id"
-      @close="inviting = false"
-      @changed="load"
-      @transferred="(inviting = false), emit('changed')"
-    />
+    <ShareDialog v-if="inviting && share" :share="share" :title="instance.name" @close="inviting = false" @changed="load" />
+
+    <AppDialog v-if="removing" :title="`Remove ${removing.username}?`" :width="420" @close="removing = null">
+      <p class="muted">{{ removing.username }} stops getting your changes. Their copy stays on their computer.</p>
+      <div class="dialog-footer">
+        <button class="btn" @click="removing = null">Cancel</button>
+        <button class="btn btn-danger" @click="removeMember">Remove</button>
+      </div>
+    </AppDialog>
+
+    <AppDialog v-if="transferTo" :title="`Make ${transferTo.username} the owner?`" :width="440" @close="transferTo = null">
+      <p class="muted">
+        {{ transferTo.username }} gets {{ instance.name }}: they decide who's on it, change versions and can stop sharing it. You stay on it as someone who
+        can add content. Only they can give it back.
+      </p>
+      <div class="dialog-footer">
+        <button class="btn" @click="transferTo = null">Cancel</button>
+        <button class="btn btn-primary" :disabled="busy === 'update'" @click="transfer"><Loader2 v-if="busy === 'update'" class="spin" /><Crown v-else /> Make owner</button>
+      </div>
+    </AppDialog>
 
     <AppDialog v-if="confirmLeave" title="Leave this shared pack?" @close="confirmLeave = false">
       <p class="muted">You stop getting updates{{ instance.joined?.role === "editor" ? " and can't publish changes" : "" }}. Your copy stays and keeps working.</p>
@@ -223,7 +292,7 @@ async function copy() {
     </AppDialog>
 
     <AppDialog v-if="confirmStop" title="Stop sharing?" @close="confirmStop = false">
-      <p class="muted">The invite link stops working and friends can't install it anymore. Copies they already installed stay on their computers.</p>
+      <p class="muted">Friends stop getting your changes and can't install it anymore. Copies they already installed stay on their computers.</p>
       <div class="dialog-footer">
         <button class="btn" @click="confirmStop = false">Cancel</button>
         <button class="btn btn-danger" :disabled="busy === 'stop'" @click="stop">Stop sharing</button>
@@ -233,6 +302,19 @@ async function copy() {
 </template>
 
 <style scoped>
+.members {
+  gap: 2px;
+}
+.member {
+  gap: 10px;
+  padding: 4px 2px;
+}
+.role {
+  width: auto;
+  height: 32px;
+  padding: 0 28px 0 10px;
+  font-size: 13px;
+}
 .live-row {
   gap: 10px;
   align-items: flex-start;

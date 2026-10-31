@@ -9,6 +9,7 @@ import { api, type Instance, type Loader, type Share } from "@/lib/api";
 import { account, loadAccount } from "@/lib/account";
 import { LOADERS, LOADER_ORDER } from "@/lib/format";
 import { errorText, toast } from "@/lib/toast";
+import { FRIENDS_CHANGED } from "@/lib/notifications";
 
 const router = useRouter();
 const instances = ref<Instance[] | null>(null);
@@ -207,8 +208,14 @@ onMounted(async () => {
   document.addEventListener("mousedown", closeMenus);
   if (!account.loaded) await loadAccount();
   if (account.me) received.value = await api.share.received().catch(() => []);
+  // a friend shared a pack: it shows up without reopening the Library
+  window.addEventListener(FRIENDS_CHANGED, loadReceived);
 });
+async function loadReceived() {
+  if (account.me) received.value = await api.share.received().catch(() => received.value);
+}
 onUnmounted(() => {
+  window.removeEventListener(FRIENDS_CHANGED, loadReceived);
   window.removeEventListener("keydown", onKey);
   document.removeEventListener("mousedown", closeMenus);
 });

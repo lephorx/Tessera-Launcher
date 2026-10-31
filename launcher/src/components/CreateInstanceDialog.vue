@@ -306,7 +306,8 @@ async function runImport() {
       <button v-else type="button" class="btn btn-lg" @click="addingPath = true">Add launcher path</button>
       <div class="divider-or">or</div>
       <form class="stack" style="gap: 8px" @submit.prevent="joinLink">
-        <span class="label" style="font-size: 15px; font-weight: 700">Join with an invite link</span>
+        <span class="label" style="font-size: 15px; font-weight: 700">Join a pack a friend shared with you</span>
+        <span class="hint" style="margin-top: -4px">Packs friends add you to are also under Library → Shared with me.</span>
         <div class="row">
           <input v-model="inviteLink" class="input mono" placeholder="https://tesseralauncher.com/share/…" aria-label="Invite link" />
           <button class="btn" :disabled="!inviteLink.trim() || busy">Join</button>

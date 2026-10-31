@@ -126,6 +126,17 @@ export interface Skins {
   account: Skin | null;
 }
 
+/** One entry in the bell. */
+export interface Notice {
+  kind: "friend_request" | "friend_accepted" | "share_added";
+  user_id: string;
+  username: string;
+  /** share_added: the pack */
+  code: string | null;
+  name: string | null;
+  at: string;
+}
+
 export interface Friend {
   user_id: string;
   username: string;
@@ -509,7 +520,7 @@ export const api = {
     create: (id: string) => call<Share>("share_create", { id }),
     update: (id: string) => call<Share>("share_update", { id }),
     stop: (id: string) => call<void>("share_stop", { id }),
-    addFriend: (code: string, username: string) => call<unknown>("share_add_friend", { code, username }),
+    addFriend: (code: string, username: string, role: ShareRole = "viewer") => call<unknown>("share_add_friend", { code, username, role }),
     removeFriend: (code: string, userId: string) => call<void>("share_remove_friend", { code, userId }),
     setRole: (code: string, userId: string, role: ShareRole) => call<void>("share_set_role", { code, userId, role }),
     transfer: (id: string, userId: string) => call<void>("share_transfer", { id, userId }),
@@ -521,6 +532,10 @@ export const api = {
     setExpiry: (code: string, days: number | null) => call<unknown>("share_set_expiry", { code, days }),
     received: () => call<{ shares: Share[] }>("shares_received").then((r) => r.shares),
     join: (link: string) => call<Instance>("share_join", { link }),
+  },
+  notifications: {
+    list: () => call<{ notifications: Notice[]; seen_at: string | null; unread: number }>("notifications_list"),
+    seen: () => call<void>("notifications_seen"),
   },
   friends: {
     list: () => call<{ friends: Friend[] }>("friends_list").then((r) => r.friends),
