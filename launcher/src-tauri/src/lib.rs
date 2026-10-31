@@ -877,11 +877,6 @@ async fn account_sign_in(state: State<'_, AppState>, email: String, password: St
 }
 
 #[tauri::command]
-async fn account_sign_up(state: State<'_, AppState>, email: String, invite: String, username: String, password: String, consent: account::Consent) -> CmdResult<account::Me> {
-    account::sign_up(&state.client, &email, &invite, &username, &password, &consent).await.map_err(err)
-}
-
-#[tauri::command]
 async fn account_redeem(state: State<'_, AppState>, invite: String, username: String, consent: account::Consent) -> CmdResult<account::Me> {
     account::redeem(&state.client, &invite, &username, Some(&consent)).await.map_err(err)?;
     account::current(&state.client).await.ok_or_else(|| "Sign in again".into())
@@ -1788,7 +1783,6 @@ pub fn run() {
             import_instances,
             account_status,
             account_sign_in,
-            account_sign_up,
             account_redeem,
             account_consent,
             account_export,

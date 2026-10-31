@@ -494,8 +494,6 @@ export const api = {
   account: {
     status: () => call<Me | null>("account_status"),
     signIn: (email: string, password: string) => call<Me>("account_sign_in", { email, password }),
-    signUp: (email: string, invite: string, username: string, password: string, consent: Consent) =>
-      call<Me>("account_sign_up", { email, invite, username, password, consent }),
     redeem: (invite: string, username: string, consent: Consent) => call<Me>("account_redeem", { invite, username, consent }),
     /** Accepts the current Terms (accounts from before them, or when they change). */
     consent: (consent: Consent) => call<Me>("account_consent", { consent }),

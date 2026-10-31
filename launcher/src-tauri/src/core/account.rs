@@ -202,6 +202,8 @@ pub fn invite_code(input: &str) -> Result<String> {
 }
 
 /// Tessera is invite-only: checks the invite first, so nobody makes an account they can't use.
+/// Sign-up happens on an invite's page on tesseralauncher.com; this is for the tests.
+#[cfg(test)]
 pub async fn sign_up(client: &reqwest::Client, email: &str, invite: &str, username: &str, password: &str, consent: &Consent) -> Result<Me> {
     if !super::limits::login_allowed("tessera-account") {
         bail!("Too many attempts. Wait a minute and try again.");
