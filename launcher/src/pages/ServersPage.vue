@@ -2,18 +2,33 @@
 import { onMounted, onUnmounted, ref } from "vue";
 import { RouterLink } from "vue-router";
 import { listen } from "@tauri-apps/api/event";
-import { Laptop, Plus, Server } from "lucide-vue-next";
+import { Laptop, Loader2, Plus, Server, Trash2 } from "lucide-vue-next";
+import AppDialog from "@/components/AppDialog.vue";
 import { api, type EasyServer, type Machine } from "@/lib/api";
+import { KIND, STATE } from "@/lib/easy";
+import { errorText, toast } from "@/lib/toast";
 
 const machines = ref<Machine[] | null>(null);
 const local = ref<EasyServer[] | null>(null);
-const KIND: Record<string, string> = { vanilla: "Vanilla", paper: "Paper", fabric: "Fabric", forge: "Forge", neoforge: "NeoForge" };
-const STATE: Record<string, { key: string; label: string }> = {
-  stopped: { key: "idle", label: "Stopped" },
-  starting: { key: "preparing", label: "Starting…" },
-  running: { key: "running", label: "Online" },
-  stopping: { key: "preparing", label: "Stopping…" },
-};
+const deleting = ref<EasyServer | null>(null);
+const busy = ref(false);
+
+/** Deletes a server on this computer; a running one is closed first. */
+async function remove() {
+  const s = deleting.value;
+  if (!s) return;
+  busy.value = true;
+  try {
+    await api.easy.remove(s.id);
+    toast.success(`${s.name} deleted`);
+    deleting.value = null;
+    local.value = await api.easy.list();
+  } catch (e) {
+    toast.error(errorText(e));
+  } finally {
+    busy.value = false;
+  }
+}
 
 let unlisten: (() => void) | undefined;
 onMounted(async () => {
@@ -50,6 +65,7 @@ onUnmounted(() => unlisten?.());
             <span class="badge" :data-state="STATE[s.state]!.key"><span class="dot" />{{ STATE[s.state]!.label }}</span>
             <span class="spacer" />
             <span v-if="s.state === 'running'" class="hint num">{{ s.players.length }} online</span>
+            <button class="btn btn-ghost btn-icon btn-sm" :title="`Delete ${s.name}`" @click.prevent.stop="deleting = s"><Trash2 /></button>
           </div>
         </RouterLink>
       </div>
@@ -78,5 +94,17 @@ onUnmounted(() => unlisten?.());
       <p>Start one on this computer in a few clicks, or connect a machine running Tessera.</p>
       <RouterLink to="/servers/host" class="btn btn-primary"><Plus /> Host a server</RouterLink>
     </div>
+
+    <AppDialog v-if="deleting" :title="`Delete ${deleting.name}?`" :width="420" @close="!busy && (deleting = null)">
+      <p class="muted">
+        The server, its world and its backups are deleted from this computer.
+        <template v-if="deleting.state !== 'stopped'"> It's running: it's closed first, without saving.</template>
+        This can't be undone.
+      </p>
+      <div class="dialog-footer">
+        <button class="btn" :disabled="busy" @click="deleting = null">Cancel</button>
+        <button class="btn btn-danger" :disabled="busy" @click="remove"><Loader2 v-if="busy" class="spin" /> {{ busy ? "Deleting…" : "Delete" }}</button>
+      </div>
+    </AppDialog>
   </div>
 </template>

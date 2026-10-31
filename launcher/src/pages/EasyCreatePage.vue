@@ -142,7 +142,7 @@ async function create() {
         <button class="btn btn-primary btn-lg" :disabled="creating || !eula || (source === 'instance' && !instance)">
           <Loader2 v-if="creating" class="spin" /><Server v-else /> Create and start
         </button>
-        <span class="hint">The server runs while the launcher is open.</span>
+        <span class="hint">It keeps running when you close the launcher; stop it on its page.</span>
       </div>
     </form>
   </div>

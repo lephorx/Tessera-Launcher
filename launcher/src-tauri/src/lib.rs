@@ -586,12 +586,29 @@ async fn easy_start(app: AppHandle, state: State<'_, AppState>, id: String) -> C
 
 #[tauri::command]
 async fn easy_stop(id: String) -> CmdResult<()> {
-    core::easyhost::stop(&id, std::time::Duration::from_secs(30)).await.map_err(err)
+    core::easyhost::stop(&id, std::time::Duration::from_secs(60)).await.map_err(err)
 }
 
 #[tauri::command]
-async fn easy_send(id: String, line: String) -> CmdResult<()> {
-    core::easyhost::send(&id, &line).await.map_err(err)
+async fn easy_restart(app: AppHandle, state: State<'_, AppState>, id: String) -> CmdResult<()> {
+    core::easyhost::stop(&id, std::time::Duration::from_secs(60)).await.map_err(err)?;
+    for _ in 0..120 {
+        if core::easyhost::get_view(&state.paths, &id).map_err(err)?.state == "stopped" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    core::easyhost::start(&state.client, &state.paths, &id, easy_emit(&app)).await.map_err(err)
+}
+
+#[tauri::command]
+fn easy_kill(id: String) {
+    core::easyhost::kill(&id);
+}
+
+#[tauri::command]
+async fn easy_send(app: AppHandle, id: String, line: String) -> CmdResult<()> {
+    core::easyhost::send(&id, &line, &easy_emit(&app)).await.map_err(err)
 }
 
 #[tauri::command]
@@ -601,8 +618,12 @@ fn easy_log(id: String) -> Vec<String> {
 
 #[tauri::command]
 fn easy_properties(state: State<AppState>, id: String) -> CmdResult<HashMap<String, String>> {
-    core::easyhost::get(&state.paths, &id).map_err(err)?;
-    Ok(core::easyhost::read_properties(&core::easyhost::data_dir(&state.paths, &id)).into_iter().collect())
+    core::easyhost::properties(&state.paths, &id).map_err(err)
+}
+
+#[tauri::command]
+fn easy_set_properties(state: State<AppState>, id: String, values: HashMap<String, String>) -> CmdResult<()> {
+    core::easyhost::set_properties(&state.paths, &id, values).map_err(err)
 }
 
 #[tauri::command]
@@ -610,15 +631,140 @@ fn easy_update(state: State<AppState>, id: String, changes: core::easyhost::Chan
     core::easyhost::update(&state.paths, &id, changes).map_err(err)
 }
 
+/// Switches the server to another type or version (a backup is made first).
 #[tauri::command]
-fn easy_delete(state: State<AppState>, id: String) -> CmdResult<()> {
-    core::easyhost::delete(&state.paths, &id).map_err(err)
+async fn easy_change(app: AppHandle, state: State<'_, AppState>, id: String, change: core::easyhost::Change) -> CmdResult<core::easyhost::View> {
+    let progress = |stage: &str, done: usize, total: usize| {
+        let _ = app.emit("pack-progress", PackProgress { stage, done, total });
+    };
+    let result = core::easyhost::change(&state.client, &state.paths, &id, change, &progress).await;
+    let _ = app.emit("pack-progress", PackProgress { stage: "", done: 0, total: 0 });
+    result.map_err(err)
+}
+
+/// Deletes it; a running server is closed first.
+#[tauri::command]
+async fn easy_delete(state: State<'_, AppState>, id: String) -> CmdResult<()> {
+    core::easyhost::delete(&state.paths, &id).await.map_err(err)
 }
 
 #[tauri::command]
 fn easy_open_folder(state: State<AppState>, id: String) -> CmdResult<()> {
     core::easyhost::get(&state.paths, &id).map_err(err)?;
     tauri_plugin_opener::open_path(core::easyhost::data_dir(&state.paths, &id), None::<&str>).map_err(err)
+}
+
+#[tauri::command]
+fn easy_icon(state: State<AppState>, id: String) -> CmdResult<Option<String>> {
+    core::easyhost::icon(&state.paths, &id).map_err(err)
+}
+
+#[tauri::command]
+fn easy_set_icon(state: State<AppState>, id: String, png: Option<Vec<u8>>) -> CmdResult<()> {
+    core::easyhost::set_icon(&state.paths, &id, png).map_err(err)
+}
+
+// players
+
+#[tauri::command]
+fn easy_insights(state: State<AppState>, id: String) -> CmdResult<core::easyhost::players::Insights> {
+    core::easyhost::players::insights(&state.paths, &id).map_err(err)
+}
+
+#[tauri::command]
+fn easy_lists(state: State<AppState>, id: String) -> CmdResult<core::easyhost::players::Lists> {
+    core::easyhost::players::lists(&state.paths, &id).map_err(err)
+}
+
+#[tauri::command]
+async fn easy_list_change(state: State<'_, AppState>, id: String, list: core::easyhost::players::ListKind, name: String, add: bool, reason: Option<String>) -> CmdResult<()> {
+    core::easyhost::players::list_change(&state.client, &state.paths, &id, list, &name, add, reason).await.map_err(err)
+}
+
+#[tauri::command]
+async fn easy_player(state: State<'_, AppState>, id: String, name: String) -> CmdResult<core::easyhost::players::PlayerDetail> {
+    core::easyhost::players::player(&state.client, &state.paths, &id, &name).await.map_err(err)
+}
+
+#[tauri::command]
+async fn easy_player_act(state: State<'_, AppState>, id: String, name: String, action: core::easyhost::players::Action) -> CmdResult<String> {
+    core::easyhost::players::act(&state.paths, &id, &name, action).await.map_err(err)
+}
+
+// backups
+
+#[tauri::command]
+fn easy_backups(state: State<AppState>, id: String) -> CmdResult<Vec<core::easyhost::backups::Backup>> {
+    core::easyhost::backups::list(&state.paths, &id).map_err(err)
+}
+
+#[tauri::command]
+async fn easy_backup_create(state: State<'_, AppState>, id: String) -> CmdResult<core::easyhost::backups::Backup> {
+    core::easyhost::backups::create(&state.paths, &id, false).await.map_err(err)
+}
+
+#[tauri::command]
+async fn easy_backup_restore(app: AppHandle, state: State<'_, AppState>, id: String, name: String) -> CmdResult<()> {
+    let progress = |stage: &str, done: usize, total: usize| {
+        let _ = app.emit("pack-progress", PackProgress { stage, done, total });
+    };
+    let result = core::easyhost::backups::restore(&state.client, &state.paths, &id, &name, &progress).await;
+    let _ = app.emit("pack-progress", PackProgress { stage: "", done: 0, total: 0 });
+    result.map(|_| ()).map_err(err)
+}
+
+#[tauri::command]
+fn easy_backup_delete(state: State<AppState>, id: String, name: String) -> CmdResult<()> {
+    core::easyhost::backups::delete(&state.paths, &id, &name).map_err(err)
+}
+
+#[tauri::command]
+fn easy_backup_reveal(state: State<AppState>, id: String, name: String) -> CmdResult<()> {
+    let p = core::easyhost::backups::path_of(&state.paths, &id, &name).map_err(err)?;
+    tauri_plugin_opener::reveal_item_in_dir(p).map_err(err)
+}
+
+// files
+
+#[tauri::command]
+fn easy_files(state: State<AppState>, id: String, path: String) -> CmdResult<Vec<core::easyhost::files::Entry>> {
+    core::easyhost::files::list(&state.paths, &id, &path).map_err(err)
+}
+
+#[tauri::command]
+fn easy_file_read(state: State<AppState>, id: String, path: String) -> CmdResult<String> {
+    core::easyhost::files::read_text(&state.paths, &id, &path).map_err(err)
+}
+
+#[tauri::command]
+fn easy_file_write(state: State<AppState>, id: String, path: String, text: String) -> CmdResult<()> {
+    core::easyhost::files::write_text(&state.paths, &id, &path, &text).map_err(err)
+}
+
+#[tauri::command]
+fn easy_file_delete(state: State<AppState>, id: String, paths: Vec<String>) -> CmdResult<()> {
+    core::easyhost::files::delete(&state.paths, &id, &paths).map_err(err)
+}
+
+#[tauri::command]
+fn easy_file_rename(state: State<AppState>, id: String, path: String, name: String) -> CmdResult<()> {
+    core::easyhost::files::rename(&state.paths, &id, &path, &name).map_err(err)
+}
+
+#[tauri::command]
+fn easy_file_mkdir(state: State<AppState>, id: String, path: String, name: String) -> CmdResult<()> {
+    core::easyhost::files::mkdir(&state.paths, &id, &path, &name).map_err(err)
+}
+
+#[tauri::command]
+fn easy_file_add(state: State<AppState>, id: String, path: String, sources: Vec<String>) -> CmdResult<usize> {
+    core::easyhost::files::add(&state.paths, &id, &path, &sources).map_err(err)
+}
+
+#[tauri::command]
+fn easy_file_open(state: State<AppState>, id: String, path: String) -> CmdResult<()> {
+    let p = core::easyhost::files::resolve(&state.paths, &id, &path).map_err(err)?;
+    tauri_plugin_opener::open_path(p, None::<&str>).map_err(err)
 }
 
 /// "Get local pack": a new instance that can join a server on a machine.
@@ -1548,6 +1694,19 @@ pub fn run() {
             std::fs::create_dir_all(&root)?;
             account::init(&root);
             core::download::set_max_downloads(settings::load(&Paths::new(root.clone())).max_downloads);
+            // servers on this computer keep running when the launcher quits: find them again,
+            // and make their scheduled backups while the launcher is open
+            {
+                let paths = Paths::new(root.clone());
+                let emit = easy_emit(app.handle());
+                tauri::async_runtime::spawn(async move {
+                    core::easyhost::adopt_all(&paths, emit);
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+                        core::easyhost::backups::run_schedules(&paths).await;
+                    }
+                });
+            }
             app.manage(AppState {
                 paths: Paths::new(root),
                 client: http_client(),
@@ -1670,21 +1829,37 @@ pub fn run() {
             easy_create,
             easy_start,
             easy_stop,
+            easy_restart,
+            easy_kill,
             easy_send,
             easy_log,
             easy_properties,
+            easy_set_properties,
             easy_update,
+            easy_change,
             easy_delete,
             easy_open_folder,
+            easy_icon,
+            easy_set_icon,
+            easy_insights,
+            easy_lists,
+            easy_list_change,
+            easy_player,
+            easy_player_act,
+            easy_backups,
+            easy_backup_create,
+            easy_backup_restore,
+            easy_backup_delete,
+            easy_backup_reveal,
+            easy_files,
+            easy_file_read,
+            easy_file_write,
+            easy_file_delete,
+            easy_file_rename,
+            easy_file_mkdir,
+            easy_file_add,
+            easy_file_open,
         ])
-        .build(tauri::generate_context!())
-        .expect("error while running Tessera Launcher")
-        .run(|_, event| {
-            // servers save their worlds before the launcher goes
-            if let tauri::RunEvent::Exit = event {
-                if core::easyhost::any_running() {
-                    tauri::async_runtime::block_on(core::easyhost::stop_all());
-                }
-            }
-        });
+        .run(tauri::generate_context!())
+        .expect("error while running Tessera Launcher");
 }

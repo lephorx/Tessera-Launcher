@@ -4350,12 +4350,13 @@ dependencies = [
 
 [[package]]
 name = "tessera-launcher"
-version = "0.6.10"
+version = "0.6.11"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
  "chrono",
  "fastnbt",
+ "flate2",
  "futures",
  "getrandom 0.3.4",
  "hex",

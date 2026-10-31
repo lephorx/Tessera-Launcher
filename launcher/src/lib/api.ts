@@ -231,11 +231,102 @@ export interface EasyServer {
   created_at: string;
   state: "stopped" | "starting" | "running" | "stopping";
   players: string[];
+  max_players: number;
   lan_address: string | null;
+  /** While it runs */
+  started_at: string | null;
+  /** 100 = one core */
+  cpu: number;
+  /** bytes */
+  memory_used: number;
+  has_icon: boolean;
+  backup_every_hours: number | null;
+  backup_keep: number;
+}
+
+export interface EasySeen {
+  name: string;
+  uuid: string | null;
+  first_seen: string;
+  last_seen: string;
+  joins: number;
+  /** seconds */
+  playtime: number;
+  online_since: string | null;
+}
+
+export interface EasyInsights {
+  players: EasySeen[];
+  sessions: { name: string; joined: string; left: string }[];
+  peak: number;
+  peak_at: string | null;
+  starts: string[];
+}
+
+export interface EasyLists {
+  whitelist: string[];
+  ops: string[];
+  banned: { name: string; reason: string | null }[];
+  whitelist_on: boolean;
+}
+
+export type EasyListKind = "whitelist" | "ops" | "banned";
+
+export interface EasyItem {
+  slot: number;
+  id: string;
+  count: number;
+}
+
+export interface EasyPlayer {
+  name: string;
+  uuid: string | null;
+  online: boolean;
+  seen: EasySeen | null;
+  health: number | null;
+  food: number | null;
+  xp_level: number | null;
+  gamemode: string | null;
+  position: [number, number, number] | null;
+  dimension: string | null;
+  inventory: EasyItem[];
+  ender_chest: EasyItem[];
+  stats: { play_time: number; deaths: number; player_kills: number; mob_kills: number; distance: number; blocks_mined: number; jumps: number } | null;
+  whitelisted: boolean;
+  op: boolean;
+  banned: boolean;
+}
+
+export type EasyAction =
+  | { type: "kick"; reason: string | null }
+  | { type: "gamemode"; mode: string }
+  | { type: "heal" }
+  | { type: "feed" }
+  | { type: "kill" }
+  | { type: "give"; item: string; count: number }
+  | { type: "clear_inventory" }
+  | { type: "teleport_to"; target: string }
+  | { type: "message"; text: string };
+
+export interface EasyBackup {
+  name: string;
+  size: number;
+  created_at: string;
+  automatic: boolean;
+}
+
+export interface EasyFile {
+  name: string;
+  dir: boolean;
+  size: number;
+  modified: string | null;
 }
 
 export interface EasyChanges {
   name?: string;
+  motd?: string;
+  backup_every_hours?: number;
+  backup_keep?: number;
   memory_mb?: number;
   port?: number;
   max_players?: number;
@@ -445,12 +536,36 @@ export const api = {
       call<EasyServer>("easy_create", { server }),
     start: (id: string) => call<void>("easy_start", { id }),
     stop: (id: string) => call<void>("easy_stop", { id }),
+    restart: (id: string) => call<void>("easy_restart", { id }),
+    kill: (id: string) => call<void>("easy_kill", { id }),
     send: (id: string, line: string) => call<void>("easy_send", { id, line }),
     log: (id: string) => call<string[]>("easy_log", { id }),
     properties: (id: string) => call<Record<string, string>>("easy_properties", { id }),
+    setProperties: (id: string, values: Record<string, string>) => call<void>("easy_set_properties", { id, values }),
     update: (id: string, changes: EasyChanges) => call<EasyServer>("easy_update", { id, changes }),
+    change: (id: string, change: { kind: EasyKind; game_version: string; loader_version: string | null }) => call<EasyServer>("easy_change", { id, change }),
     remove: (id: string) => call<void>("easy_delete", { id }),
     openFolder: (id: string) => call<void>("easy_open_folder", { id }),
+    icon: (id: string) => call<string | null>("easy_icon", { id }),
+    setIcon: (id: string, png: number[] | null) => call<void>("easy_set_icon", { id, png }),
+    insights: (id: string) => call<EasyInsights>("easy_insights", { id }),
+    lists: (id: string) => call<EasyLists>("easy_lists", { id }),
+    listChange: (id: string, list: EasyListKind, name: string, add: boolean, reason: string | null = null) => call<void>("easy_list_change", { id, list, name, add, reason }),
+    player: (id: string, name: string) => call<EasyPlayer>("easy_player", { id, name }),
+    act: (id: string, name: string, action: EasyAction) => call<string>("easy_player_act", { id, name, action }),
+    backups: (id: string) => call<EasyBackup[]>("easy_backups", { id }),
+    backup: (id: string) => call<EasyBackup>("easy_backup_create", { id }),
+    restore: (id: string, name: string) => call<void>("easy_backup_restore", { id, name }),
+    deleteBackup: (id: string, name: string) => call<void>("easy_backup_delete", { id, name }),
+    revealBackup: (id: string, name: string) => call<void>("easy_backup_reveal", { id, name }),
+    files: (id: string, path: string) => call<EasyFile[]>("easy_files", { id, path }),
+    readFile: (id: string, path: string) => call<string>("easy_file_read", { id, path }),
+    writeFile: (id: string, path: string, text: string) => call<void>("easy_file_write", { id, path, text }),
+    deleteFiles: (id: string, paths: string[]) => call<void>("easy_file_delete", { id, paths }),
+    renameFile: (id: string, path: string, name: string) => call<void>("easy_file_rename", { id, path, name }),
+    mkdir: (id: string, path: string, name: string) => call<void>("easy_file_mkdir", { id, path, name }),
+    addFiles: (id: string, path: string, sources: string[]) => call<number>("easy_file_add", { id, path, sources }),
+    openFile: (id: string, path: string) => call<void>("easy_file_open", { id, path }),
   },
   privacy: {
     get: () => call<Privacy>("privacy_get"),
