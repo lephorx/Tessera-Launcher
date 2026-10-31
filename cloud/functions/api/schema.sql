@@ -123,3 +123,40 @@ alter table profiles alter column share_invites set default 'friends';
 -- has seen their notifications.
 alter table friendships add column if not exists accepted_at timestamptz;
 alter table profiles add column if not exists notifications_seen_at timestamptz;
+
+-- Email (2026-10-31): notices for friend requests, accepted requests and packs shared with
+-- you (on by default, off per kind; only to verified addresses), and the log that keeps them
+-- to one per person and thing a day.
+alter table profiles add column if not exists email_friends boolean not null default true;
+alter table profiles add column if not exists email_shares boolean not null default true;
+create table if not exists email_log (
+  user_id uuid not null references neon_auth."user"(id) on delete cascade,
+  kind    text not null,
+  ref     text not null,
+  sent_at timestamptz not null default now(),
+  primary key (user_id, kind, ref)
+);
+
+-- Two-step sign-in by email (2026-10-31): with it on, a device only gets past "who am I"
+-- after entering a code sent to the account's email; then it's trusted for 30 days.
+-- Codes and device tokens are stored as SHA-256 hashes only.
+alter table profiles add column if not exists two_factor_email boolean not null default false;
+create table if not exists email_codes (
+  user_id    uuid not null references neon_auth."user"(id) on delete cascade,
+  purpose    text not null check (purpose in ('sign_in', 'enable', 'disable')),
+  code_hash  text not null,
+  sent_at    timestamptz not null default now(),
+  expires_at timestamptz not null,
+  attempts   integer not null default 0,
+  primary key (user_id, purpose)
+);
+create table if not exists trusted_devices (
+  id           uuid primary key default gen_random_uuid(),
+  user_id      uuid not null references neon_auth."user"(id) on delete cascade,
+  token_hash   text not null unique,
+  label        text,
+  created_at   timestamptz not null default now(),
+  last_used_at timestamptz not null default now(),
+  expires_at   timestamptz not null
+);
+create index if not exists trusted_devices_user_idx on trusted_devices (user_id);

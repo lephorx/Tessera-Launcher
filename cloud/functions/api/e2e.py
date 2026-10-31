@@ -141,6 +141,40 @@ check("no mutual friend: refused", requests.post(f"{API}/friends", json={"userna
 check("B can still ask A", requests.post(f"{API}/friends", json={"username": ua}, headers=B).json()["friend"]["status"] == "outgoing")
 check("A accepting by asking back still works", requests.post(f"{API}/friends", json={"username": ub}, headers=A).json()["friend"]["status"] == "friend")
 requests.delete(f"{API}/shares/{code3}", headers=A)
+# email settings
+check("email notices on by default", requests.get(f"{API}/me/email", headers=A).json()["email"]["friends"] is True)
+check("turn friend emails off", requests.put(f"{API}/me/email", json={"friends": False}, headers=A).json()["email"] == {"friends": False, "shares": True})
+check("bad unsubscribe link -> 400", requests.post(f"{API}/email/unsubscribe", params={"u": ida, "k": "friends", "t": "nope"}).status_code == 400)
+# two-step sign-in: codes go by email, so the test puts them in the database itself (only hashes are kept)
+import hashlib
+def seed_code(uid, purpose, code="123456"):
+    h = hashlib.sha256(f"{uid}:{purpose}:{code}".encode()).hexdigest()
+    subprocess.run(["psql", DBURL, "-q", "-c", f"insert into email_codes (user_id, purpose, code_hash, expires_at) values ('{uid}', '{purpose}', '{h}', now() + interval '10 minutes') on conflict (user_id, purpose) do update set code_hash = excluded.code_hash, attempts = 0, expires_at = excluded.expires_at"], check=True)
+check("2fa off: no code to disable", requests.post(f"{API}/me/2fa/code", json={"purpose": "disable"}, headers=A).status_code in (409, 503))
+check("enable without a code -> expired", requests.post(f"{API}/me/2fa/enable", json={"code": "123456"}, headers=A).json()["error"] == "code_expired")
+seed_code(ida, "enable")
+check("wrong code -> 400", requests.post(f"{API}/me/2fa/enable", json={"code": "000000"}, headers=A).json()["error"] == "wrong_code")
+r = requests.post(f"{API}/me/2fa/enable", json={"code": "123456", "label": "e2e"}, headers=A)
+check("enable with the code", r.ok and len(r.json()["device_token"]) > 20); devA = r.json()["device_token"]
+me_ = requests.get(f"{API}/me", headers=A).json()["user"]
+check("new device: /me says code needed, shows little", me_["two_factor_required"] is True and "is_admin" not in me_)
+check("new device: everything else locked", requests.get(f"{API}/friends", headers=A).json().get("error") == "two_factor_required")
+check("new device: can't turn 2fa off", requests.post(f"{API}/me/2fa/code", json={"purpose": "disable"}, headers=A).status_code == 403)
+AD = {**A, "x-tessera-device": devA}
+check("code works once", requests.post(f"{API}/me/2fa/enable", json={"code": "123456"}, headers=AD).json()["error"] == "code_expired")
+check("trusted device gets in", requests.get(f"{API}/friends", headers=AD).ok and requests.get(f"{API}/me", headers=AD).json()["user"]["two_factor"] is True)
+check("forged device token refused", requests.get(f"{API}/friends", headers={**A, "x-tessera-device": "x" * 43}).status_code == 403)
+seed_code(ida, "sign_in")
+for _ in range(5): requests.post(f"{API}/me/2fa/verify", json={"code": "999999"}, headers=A)
+check("five wrong codes lock it", requests.post(f"{API}/me/2fa/verify", json={"code": "123456"}, headers=A).status_code == 429)
+seed_code(ida, "sign_in")
+r = requests.post(f"{API}/me/2fa/verify", json={"code": "123456", "label": "second"}, headers=A)
+check("sign-in code trusts a second device", r.ok); AD2 = {**A, "x-tessera-device": r.json()["device_token"]}
+check("both devices listed", len(requests.get(f"{API}/me/2fa/devices", headers=AD2).json()["devices"]) == 2)
+check("forget the others", requests.delete(f"{API}/me/2fa/devices", headers=AD2).json()["removed"] == 1 and requests.get(f"{API}/friends", headers=AD).status_code == 403)
+seed_code(ida, "disable")
+check("turn 2fa off", requests.post(f"{API}/me/2fa/disable", json={"code": "123456"}, headers=AD2).ok)
+check("off: no device needed", requests.get(f"{API}/friends", headers=A).ok and requests.get(f"{API}/me", headers=A).json()["user"]["two_factor_required"] is False)
 check("news is public", len(requests.get(f"{API}/news").json()["news"]) > 0)
 subprocess.run(["psql", DBURL, "-q", "-c", f"delete from invites where created_by = '{ida0}'"], check=True)
 open("/tmp/neon_e2e_users", "w").write(f"{ea}\n{eb}\n")

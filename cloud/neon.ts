@@ -12,6 +12,16 @@ export default defineConfig({
     api: {
       name: "Tessera API",
       source: "functions/api/index.ts",
+      // Email through Proton Mail SMTP (see functions/api/mail.ts). The secrets come from
+      // .env.mail (not in git): `neon deploy --env .env.mail`. Without them no email goes out.
+      env: {
+        SMTP_HOST: process.env.SMTP_HOST ?? "smtp.protonmail.ch",
+        SMTP_PORT: process.env.SMTP_PORT ?? "587",
+        SMTP_USER: process.env.SMTP_USER ?? "",
+        SMTP_PASS: process.env.SMTP_PASS ?? "",
+        MAIL_FROM: process.env.MAIL_FROM ?? "",
+        MAIL_SECRET: process.env.MAIL_SECRET ?? "",
+      },
     },
   },
 });

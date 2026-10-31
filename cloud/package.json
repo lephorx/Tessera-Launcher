@@ -26,6 +26,7 @@
     "files-sdk": "^3.1.2",
     "hono": "^4.13.14",
     "jose": "^6.2.14",
+    "nodemailer": "^10.3.1",
     "otplib": "^13.5.0",
     "pg": "^8.23.1",
     "pino": "^10.4.0",
@@ -35,6 +36,7 @@
   "devDependencies": {
     "@neon/config": "^1.9.5",
     "@types/node": "^26.6.6",
+    "@types/nodemailer": "^8.0.2",
     "@types/pg": "^8.23.1",
     "@types/ws": "^8.18.2",
     "drizzle-kit": "^0.31.11",

@@ -36,6 +36,19 @@
  *   POST   /v1/blocks            {username}    block: also unfriends and takes them off my shares
  *   DELETE /v1/blocks/:userId
  *   GET    /v1/news                             public: launcher news and releases, newest first
+ *   GET    /v1/me/email                         which notice emails I get
+ *   PUT    /v1/me/email          {friends?, shares?}
+ *   GET    /v1/email/unsubscribe?u=&k=&t=      public: the link in notice emails (POST turns them off)
+ *   POST   /v1/webhooks/neon-authNeon Auth's send.otp webhook (signed): we email its codes ourselves
+ *
+ * Two-step sign-in by email. With it on, only GET /v1/me and the two sign-in calls work until
+ * this device sends `X-Tessera-Device: <token>` from /me/2fa/verify (or /enable):
+ *   POST   /v1/me/2fa/code       {purpose: sign_in|enable|disable}   email me a code
+ *   POST   /v1/me/2fa/verify     {code, label?}   sign-in step → {device_token}, good for 30 days
+ *   POST   /v1/me/2fa/enable     {code, label?}   turn it on → {device_token} for this device
+ *   POST   /v1/me/2fa/disable    {code}           turn it off (forgets every trusted device)
+ *   GET    /v1/me/2fa/devices                     trusted devices
+ *   DELETE /v1/me/2fa/devices                     forget every device but this one
  *
  * Closed beta: only accounts with a profile can use the API, and a profile is only made by
  * redeeming an invite (each works once):
@@ -46,7 +59,7 @@
  *   POST   /v1/invites                          make one (3 for members, any number for admins)
  *   DELETE /v1/invites/:code                    revoke an unused one
  */
-import { randomInt } from "node:crypto";
+import { createHash, createPublicKey, randomBytes, randomInt, verify } from "node:crypto";
 import { attachDatabasePool } from "@neon/functions";
 import { unzipSync, strFromU8 } from "fflate";
 import { Files } from "files-sdk";
@@ -55,6 +68,7 @@ import { Hono, type Context } from "hono";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import pg from "pg";
 import { z } from "zod";
+import { checkUnsubscribe, deliverable, mailReady, sendMail, unsubscribeUrl, type NoticeKind } from "./mail.js";
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 5 });
 attachDatabasePool(pool);
@@ -92,9 +106,9 @@ const publicLookups = new RateLimiter(60, 60_000);
 
 // ── helpers ──────────────────────────────────────────────────────────────
 
-type Env = { Variables: { userId: string; isAdmin: boolean } };
+type Env = { Variables: { userId: string; isAdmin: boolean; twoFactorPending: boolean; deviceId: string | null } };
 
-function err(c: Context, status: 400 | 401 | 403 | 404 | 409 | 410 | 413 | 429, error: string, message?: string) {
+function err(c: Context, status: 400 | 401 | 403 | 404 | 409 | 410 | 413 | 429 | 503, error: string, message?: string) {
   return c.json({ error, ...(message ? { message } : {}) }, status, status === 429 ? { "retry-after": "60" } : undefined);
 }
 
@@ -255,6 +269,116 @@ app.get("/invites/:code", async (c, next) => {
   return c.json({ valid: true, invited_by: rows[0].invited_by });
 });
 
+// Public: the "turn these emails off" link in notices. GET only asks (mail scanners open links),
+// POST turns them off: the button on that page, or the mail app's one-click unsubscribe.
+const unsubscribeQuery = (c: Context) => ({ u: c.req.query("u") ?? "", k: c.req.query("k") ?? "", t: c.req.query("t") ?? "" });
+
+function unsubscribePage(c: Context, body: string, status: 200 | 400 = 200) {
+  return c.html(
+    `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Tessera emails</title></head>
+<body style="margin:0;background:#f4f4f8;font-family:Inter,-apple-system,Segoe UI,sans-serif;color:#17171f">
+<div style="max-width:440px;margin:12vh auto;background:#fff;border-radius:20px;padding:28px">
+<p style="margin:0 0 14px;font-weight:800;font-size:18px">Tessera</p>${body}</div></body></html>`,
+    status,
+  );
+}
+
+const NOTICE_NAMES: Record<NoticeKind, string> = { friends: "friend request", shares: "shared pack" };
+
+app.get("/email/unsubscribe", (c) => {
+  const { u, k, t } = unsubscribeQuery(c);
+  if (!UUID.test(u) || !checkUnsubscribe(u, k, t)) return unsubscribePage(c, `<p>That link doesn't work. Change your email settings in the launcher instead.</p>`, 400);
+  const q = new URLSearchParams({ u, k, t });
+  return unsubscribePage(
+    c,
+    `<p>Stop getting ${NOTICE_NAMES[k]} emails? You can turn them back on in the launcher's settings.</p>
+<form method="post" action="?${q}"><button style="background:#5b5bf0;color:#fff;border:0;padding:11px 18px;border-radius:12px;font-weight:600;font-size:15px;cursor:pointer">Turn them off</button></form>`,
+  );
+});
+
+app.post("/email/unsubscribe", async (c) => {
+  const { u, k, t } = unsubscribeQuery(c);
+  if (!UUID.test(u) || !checkUnsubscribe(u, k, t)) return unsubscribePage(c, `<p>That link doesn't work.</p>`, 400);
+  await pool.query(`update profiles set ${k === "friends" ? "email_friends" : "email_shares"} = false where user_id = $1`, [u]);
+  return unsubscribePage(c, `<p>Done: no more ${NOTICE_NAMES[k]} emails.</p>`);
+});
+
+// Public but signed: Neon Auth hands us its one-time codes (verify email, reset password) through
+// the send.otp webhook and skips its own email, so every email comes from Tessera. The body is
+// signed with Ed25519 as a detached JWS, keyed from Neon Auth's JWKS. A non-2xx answer makes Neon
+// Auth retry (3 tries, 15 s in all) and then fail the sign-up, so only send failures return 5xx.
+let webhookKeys: { at: number; keys: (JsonWebKey & { kid?: string })[] } = { at: 0, keys: [] };
+
+async function webhookKey(kid: string) {
+  const find = () => webhookKeys.keys.find((k) => k.kid === kid);
+  // refresh for a new kid (rotation), at most once a minute
+  if (!find() && Date.now() - webhookKeys.at > 60_000) {
+    const res = await fetch(process.env.NEON_AUTH_JWKS_URL!, { signal: AbortSignal.timeout(4000) });
+    if (res.ok) webhookKeys = { at: Date.now(), keys: ((await res.json()) as { keys: (JsonWebKey & { kid?: string })[] }).keys };
+  }
+  const jwk = find();
+  return jwk ? createPublicKey({ key: jwk, format: "jwk" }) : null;
+}
+
+async function webhookSigned(c: Context, body: string): Promise<boolean> {
+  const sig = c.req.header("x-neon-signature") ?? "";
+  const kid = c.req.header("x-neon-signature-kid") ?? "";
+  const ts = c.req.header("x-neon-timestamp") ?? "";
+  const [header, middle, signature] = sig.split(".");
+  if (!header || middle !== "" || !signature || !kid || !/^\d+$/.test(ts)) return false;
+  if (Math.abs(Date.now() - Number(ts)) > 5 * 60_000) return false;
+  const key = await webhookKey(kid).catch(() => null);
+  if (!key) return false;
+  const payload = Buffer.from(`${ts}.${Buffer.from(body).toString("base64url")}`).toString("base64url");
+  return verify(null, Buffer.from(`${header}.${payload}`), key, Buffer.from(signature, "base64url"));
+}
+
+type OtpMail = { subject: string; title: string; line: string };
+const OTP_MAIL: Record<string, OtpMail | undefined> = {
+  "email-verification": { subject: "Verify your Tessera email", title: "Verify your email", line: "Enter this code in Tessera to verify your email address:" },
+  "sign-in": { subject: "Your Tessera sign-in code", title: "Sign in to Tessera", line: "Enter this code in Tessera to sign in:" },
+  "forget-password": { subject: "Reset your Tessera password", title: "Reset your password", line: "Enter this code in Tessera to choose a new password:" },
+};
+// retries reuse the event id: answer them without a second email
+const webhookEvents = new Map<string, number>();
+
+app.post("/webhooks/neon-auth", async (c) => {
+  const body = await c.req.text();
+  if (!(await webhookSigned(c, body))) return err(c, 401, "bad_signature");
+  const event = z
+    .object({
+      event_id: z.string(),
+      event_type: z.string(),
+      user: z.object({ email: z.string().email().optional() }).passthrough().optional(),
+      event_data: z.object({ otp_code: z.string().optional(), otp_type: z.string().optional() }).passthrough().optional(),
+    })
+    .safeParse((() => { try { return JSON.parse(body); } catch { return null; } })());
+  if (!event.success) return err(c, 400, "invalid_event");
+  const { event_id, event_type, user, event_data } = event.data;
+  if (event_type !== "send.otp") return c.json({ ok: true });
+  const to = user?.email;
+  const code = event_data?.otp_code;
+  const text = OTP_MAIL[event_data?.otp_type ?? ""] ?? (OTP_MAIL["email-verification"] as OtpMail);
+  if (!to || !code) return err(c, 400, "invalid_event");
+  if (webhookEvents.has(event_id)) return c.json({ ok: true });
+  for (const [id, at] of webhookEvents) if (Date.now() - at > 30 * 60_000) webhookEvents.delete(id);
+  const sent = await sendMail({
+    to,
+    subject: text.subject,
+    title: text.title,
+    lines: [text.line],
+    code,
+    after: ["It works for 10 minutes. If you didn't ask for it, you can ignore this email."],
+  });
+  // test addresses (example.com) never get mail: that's fine, not a failure
+  if (!sent && deliverable(to)) return err(c, 503, "email_unavailable");
+  webhookEvents.set(event_id, Date.now());
+  return c.json({ ok: true });
+});
+
+/** sha256 hex, for codes and device tokens: only hashes are stored. */
+const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
+
 // Everything else needs a signed-in user.
 app.use("*", async (c, next) => {
   const auth = c.req.header("authorization");
@@ -267,29 +391,47 @@ app.use("*", async (c, next) => {
     return err(c, 401, "unauthenticated");
   }
   if (!perUser.take(c.var.userId)) return err(c, 429, "rate_limited", "Too many requests. Slow down a little.");
-  // closed beta: everything but "who am I" and joining needs a redeemed invite
   const path = new URL(c.req.url).pathname.replace(/^\/v1/, "");
+  const device = c.req.header("x-tessera-device")?.slice(0, 200);
+  const { rows } = await pool.query(
+    `select p.is_admin, p.two_factor_email,
+       (select d.id from trusted_devices d where d.user_id = p.user_id and d.token_hash = $2 and d.expires_at > now()) as device_id
+     from profiles p where p.user_id = $1`,
+    [c.var.userId, device ? sha256(device) : ""],
+  );
+  const profile = rows[0];
+  c.set("deviceId", profile?.device_id ?? null);
+  // two-step sign-in: until this device entered a code, only "who am I" and the code itself
+  const pending = !!profile?.two_factor_email && !profile.device_id;
+  c.set("twoFactorPending", pending);
+  if (pending && !((c.req.method === "GET" && path === "/me") || (c.req.method === "POST" && (path === "/me/2fa/code" || path === "/me/2fa/verify")))) {
+    return err(c, 403, "two_factor_required", "Enter the code we emailed you to finish signing in.");
+  }
+  // closed beta: everything but "who am I" and joining needs a redeemed invite
   // also open: your own data (export, delete) and accepting the Terms, member or not
   const open =
     (c.req.method === "GET" && (path === "/me" || path === "/me/export")) ||
     (c.req.method === "DELETE" && path === "/me") ||
     (c.req.method === "POST" && (path === "/me/consent" || /^\/invites\/[^/]+\/redeem$/.test(path)));
-  if (!open) {
-    const { rows } = await pool.query(`select is_admin from profiles where user_id = $1`, [c.var.userId]);
-    if (!rows[0]) return err(c, 403, "invite_required", "Tessera is invite-only for now. Join with an invite link from a friend.");
-    c.set("isAdmin", rows[0].is_admin);
-  }
+  if (!open && !profile) return err(c, 403, "invite_required", "Tessera is invite-only for now. Join with an invite link from a friend.");
+  c.set("isAdmin", !!profile?.is_admin);
   await next();
 });
 
 app.get("/me", async (c) => {
   const { rows } = await pool.query(
     `select u.id, u.email, u.name, p.username, coalesce(p.is_admin, false) as is_admin, p.user_id is not null as member,
-       p.terms_version, p.age_declaration
+       p.terms_version, p.age_declaration, u."emailVerified" as email_verified,
+       coalesce(p.two_factor_email, false) as two_factor
      from neon_auth."user" u left join profiles p on p.user_id = u.id where u.id = $1`,
     [c.var.userId],
   );
-  return rows[0] ? c.json({ user: rows[0] }) : err(c, 401, "unauthenticated");
+  if (!rows[0]) return err(c, 401, "unauthenticated");
+  // waiting for the emailed code: nothing but who it is
+  const user = c.var.twoFactorPending
+    ? { id: rows[0].id, email: rows[0].email, name: rows[0].name, username: rows[0].username, member: rows[0].member, two_factor: true }
+    : rows[0];
+  return c.json({ user: { ...user, two_factor_required: c.var.twoFactorPending } });
 });
 
 // Existing members accept new Terms (and say how old they are) here.
@@ -308,11 +450,12 @@ app.post("/me/consent", async (c) => {
 app.get("/me/export", async (c) => {
   const id = c.var.userId;
   const q = async (sql: string) => (await pool.query(sql, [id])).rows;
-  const [account, profile, sharesOwned, memberships, friendships, invitesCreated, inviteUsed, blocks] = await Promise.all([
+  const [account, profile, sharesOwned, memberships, friendships, invitesCreated, inviteUsed, blocks, devices] = await Promise.all([
     // Better Auth's columns are camelCase; read created_at either way
     q(`select u.email, u.name, coalesce(to_jsonb(u)->>'createdAt', to_jsonb(u)->>'created_at') as created_at
        from neon_auth."user" u where u.id = $1`),
-    q(`select username, created_at, is_admin, friend_requests, share_invites, terms_version, terms_accepted_at, age_declaration
+    q(`select username, created_at, is_admin, friend_requests, share_invites, terms_version, terms_accepted_at, age_declaration,
+         email_friends, email_shares, two_factor_email
        from profiles where user_id = $1`),
     q(`select s.code, s.name, s.game_version, s.loader, s.loader_version, s.size_bytes, s.created_at, s.updated_at, s.expires_at, s.revision,
          coalesce((select json_agg(json_build_object('username', mp.username, 'role', m.role, 'added_at', m.added_at) order by mp.username)
@@ -329,6 +472,7 @@ app.get("/me/export", async (c) => {
     q(`select i.code, i.used_at, p.username as invited_by
        from invites i left join profiles p on p.user_id = i.created_by where i.used_by = $1`),
     q(`select p.username, b.created_at from blocks b left join profiles p on p.user_id = b.blocked_id where b.blocker_id = $1 order by b.created_at`),
+    q(`select label, created_at, last_used_at, expires_at from trusted_devices where user_id = $1 order by created_at`),
   ]);
   return c.json(
     {
@@ -340,6 +484,7 @@ app.get("/me/export", async (c) => {
       invites_created: invitesCreated,
       invite_used: inviteUsed[0] ?? null,
       blocks,
+      trusted_devices: devices,
       exported_at: new Date().toISOString(),
     },
     200,
@@ -555,7 +700,8 @@ app.post("/shares/:code/members", async (c) => {
   if (!(await mayInviteToShare(c.var.userId, friend.user_id))) {
     return err(c, 403, "not_accepting", `${friend.username} doesn't accept shared packs from you.`);
   }
-  await pool.query(`insert into share_members (code, user_id, role) values ($1, $2, $3) on conflict do nothing`, [share.code, friend.user_id, body.data.role]);
+  const added = await pool.query(`insert into share_members (code, user_id, role) values ($1, $2, $3) on conflict do nothing`, [share.code, friend.user_id, body.data.role]);
+  if (added.rowCount) notify(friend.user_id, { kind: "share_added", from: await usernameOf(c.var.userId), code: share.code, pack: share.name });
   return c.json({ member: { ...friend, role: body.data.role } }, 201);
 });
 
@@ -719,9 +865,217 @@ app.delete("/invites/:code", async (c) => {
   return rowCount ? c.json({ ok: true }) : err(c, 404, "not_found", "That invite is gone or was already used.");
 });
 
+// ── email notices ────────────────────────────────────────────────────────
+
+/** Where the unsubscribe links in notices point (this API's public address). */
+const PUBLIC_API_URL = (process.env.PUBLIC_API_URL || "https://br-rapid-thunder-b9spxx3v-api.compute.c-7.eu-central-1.aws.neon.tech").replace(/\/$/, "");
+const SITE = "https://tesseralauncher.com";
+
+type Notice =
+  | { kind: "friend_request"; from: string; fromId: string }
+  | { kind: "friend_accepted"; from: string; fromId: string }
+  | { kind: "share_added"; from: string; code: string; pack: string };
+
+/**
+ * Emails `to` about something a friend did, unless they turned that kind off, their address
+ * isn't verified, or they got the same notice in the last day. Runs after the response is
+ * sent; failures only get logged.
+ */
+function notify(to: string, n: Notice) {
+  if (!mailReady) return;
+  const setting: NoticeKind = n.kind === "share_added" ? "shares" : "friends";
+  const ref = n.kind === "share_added" ? n.code : n.fromId;
+  void (async () => {
+    const { rows } = await pool.query(
+      `select u.email from neon_auth."user" u join profiles p on p.user_id = u.id
+       where u.id = $1 and u."emailVerified" and ${setting === "friends" ? "p.email_friends" : "p.email_shares"}`,
+      [to],
+    );
+    if (!rows[0]) return;
+    // one per person and thing a day: asking, cancelling and asking again sends one email
+    const { rowCount } = await pool.query(
+      `insert into email_log (user_id, kind, ref) values ($1, $2, $3)
+       on conflict (user_id, kind, ref) do update set sent_at = now() where email_log.sent_at < now() - interval '1 day'`,
+      [to, n.kind, ref],
+    );
+    if (!rowCount) return;
+    const unsubscribe = unsubscribeUrl(PUBLIC_API_URL, to, setting);
+    const mail =
+      n.kind === "friend_request"
+        ? { subject: `${n.from} wants to be friends on Tessera`, title: `${n.from} wants to be friends`, lines: [`${n.from} sent you a friend request on Tessera.`, "Open the launcher to accept or decline it. Friends can share modpacks with each other."] }
+        : n.kind === "friend_accepted"
+          ? { subject: `${n.from} accepted your friend request`, title: `You and ${n.from} are friends now`, lines: [`${n.from} accepted your friend request on Tessera.`, "You can share packs with each other from the launcher."] }
+          : { subject: `${n.from} shared "${n.pack}" with you`, title: `${n.from} shared a pack with you`, lines: [`${n.from} added you to their pack "${n.pack}" on Tessera.`, "Open the launcher to install it. It stays in sync when they change it."] };
+    await sendMail({ to: rows[0].email, ...mail, action: { label: "Open Tessera", url: `${SITE}/account` }, unsubscribe });
+  })().catch((e) => console.error("notify", n.kind, e));
+}
+
+app.get("/me/email", async (c) => {
+  const { rows } = await pool.query(
+    `select p.email_friends as friends, p.email_shares as shares, u."emailVerified" as verified
+     from profiles p join neon_auth."user" u on u.id = p.user_id where p.user_id = $1`,
+    [c.var.userId],
+  );
+  return rows[0] ? c.json({ email: { ...rows[0], available: mailReady } }) : err(c, 404, "not_found");
+});
+
+app.put("/me/email", async (c) => {
+  const body = z.object({ friends: z.boolean().nullish(), shares: z.boolean().nullish() }).safeParse(await c.req.json().catch(() => null));
+  if (!body.success) return err(c, 400, "invalid_settings");
+  const { rows } = await pool.query(
+    `update profiles set email_friends = coalesce($2, email_friends), email_shares = coalesce($3, email_shares)
+     where user_id = $1 returning email_friends as friends, email_shares as shares`,
+    [c.var.userId, body.data.friends ?? null, body.data.shares ?? null],
+  );
+  return rows[0] ? c.json({ email: rows[0] }) : err(c, 404, "not_found");
+});
+
+// ── two-step sign-in by email ────────────────────────────────────────────
+
+const CODE_MINUTES = 10;
+const CODE_ATTEMPTS = 5;
+const DEVICE_DAYS = 30;
+const MAX_DEVICES = 20;
+const codeMails = new RateLimiter(5, 60 * 60_000);
+const codePurpose = z.enum(["sign_in", "enable", "disable"]);
+type CodePurpose = z.infer<typeof codePurpose>;
+const codeHash = (userId: string, purpose: CodePurpose, code: string) => sha256(`${userId}:${purpose}:${code}`);
+
+const CODE_MAIL: Record<CodePurpose, { subject: string; title: string; line: string }> = {
+  sign_in: { subject: "Your Tessera sign-in code", title: "Finish signing in", line: "Someone (hopefully you) is signing in to your Tessera account. Enter this code to finish:" },
+  enable: { subject: "Turn on two-step sign-in", title: "Turn on two-step sign-in", line: "Enter this code in Tessera to turn on two-step sign-in by email:" },
+  disable: { subject: "Turn off two-step sign-in", title: "Turn off two-step sign-in", line: "Enter this code in Tessera to turn off two-step sign-in:" },
+};
+
+app.post("/me/2fa/code", async (c) => {
+  const body = z.object({ purpose: codePurpose }).safeParse(await c.req.json().catch(() => null));
+  if (!body.success) return err(c, 400, "invalid_purpose");
+  const purpose = body.data.purpose;
+  if (c.var.twoFactorPending && purpose !== "sign_in") return err(c, 403, "two_factor_required", "Enter the code we emailed you to finish signing in.");
+  if (!mailReady) return err(c, 503, "email_unavailable", "Tessera can't send email right now. Try again later.");
+  const { rows } = await pool.query(
+    `select u.email, p.two_factor_email as on,
+       (select sent_at > now() - interval '1 minute' from email_codes where user_id = u.id and purpose = $2) as recent
+     from neon_auth."user" u join profiles p on p.user_id = u.id where u.id = $1`,
+    [c.var.userId, purpose],
+  );
+  const me = rows[0];
+  if (!me) return err(c, 403, "invite_required", "Join with an invite first.");
+  if (purpose === "enable" && me.on) return err(c, 409, "already_on", "Two-step sign-in is already on.");
+  if (purpose !== "enable" && !me.on) return err(c, 409, "not_on", "Two-step sign-in is off.");
+  if (me.recent || !codeMails.take(c.var.userId)) return err(c, 429, "rate_limited", "We just sent you a code. Wait a minute before asking for another.");
+  const code = String(randomInt(1_000_000)).padStart(6, "0");
+  await pool.query(
+    `insert into email_codes (user_id, purpose, code_hash, expires_at)
+     values ($1, $2, $3, now() + make_interval(mins => $4))
+     on conflict (user_id, purpose) do update set code_hash = excluded.code_hash, sent_at = now(), expires_at = excluded.expires_at, attempts = 0`,
+    [c.var.userId, purpose, codeHash(c.var.userId, purpose, code), CODE_MINUTES],
+  );
+  const text = CODE_MAIL[purpose];
+  const sent = await sendMail({
+    to: me.email,
+    subject: text.subject,
+    title: text.title,
+    lines: [text.line],
+    code,
+    after: [`It works for ${CODE_MINUTES} minutes. If you didn't ask for it, change your password: someone knows it.`],
+  });
+  if (!sent) {
+    await pool.query(`delete from email_codes where user_id = $1 and purpose = $2`, [c.var.userId, purpose]);
+    return err(c, 503, "email_unavailable", "We couldn't send the email. Try again in a moment.");
+  }
+  return c.json({ ok: true, expires_in: CODE_MINUTES * 60 });
+});
+
+/** Uses up the caller's code for `purpose`: true if it matched. */
+async function takeCode(userId: string, purpose: CodePurpose, code: string): Promise<boolean | "expired" | "locked"> {
+  const { rows } = await pool.query(
+    `update email_codes set attempts = attempts + 1 where user_id = $1 and purpose = $2
+     returning code_hash, attempts, expires_at > now() as fresh`,
+    [userId, purpose],
+  );
+  const row = rows[0];
+  if (!row || !row.fresh) return "expired";
+  if (row.attempts > CODE_ATTEMPTS) return "locked";
+  if (row.code_hash !== codeHash(userId, purpose, code)) return false;
+  await pool.query(`delete from email_codes where user_id = $1 and purpose = $2`, [userId, purpose]);
+  return true;
+}
+
+function codeError(c: Context, result: false | "expired" | "locked") {
+  if (result === "expired") return err(c, 400, "code_expired", "That code ran out. Ask for a new one.");
+  if (result === "locked") return err(c, 429, "too_many_attempts", "Too many wrong codes. Ask for a new one.");
+  return err(c, 400, "wrong_code", "That code isn't right.");
+}
+
+const codeBody = z.object({ code: z.string().trim().regex(/^\d{6}$/), label: z.string().trim().max(60).optional() });
+
+/** Trusts this device for 30 days; the token goes back to it once, only its hash stays here. */
+async function trustDevice(userId: string, label: string | undefined): Promise<string> {
+  const token = randomBytes(32).toString("base64url");
+  await pool.query(
+    `insert into trusted_devices (user_id, token_hash, label, expires_at) values ($1, $2, $3, now() + make_interval(days => $4))`,
+    [userId, sha256(token), label || null, DEVICE_DAYS],
+  );
+  // the oldest ones go once there are too many
+  await pool.query(
+    `delete from trusted_devices where user_id = $1 and (expires_at <= now() or id not in
+       (select id from trusted_devices where user_id = $1 order by created_at desc limit ${MAX_DEVICES}))`,
+    [userId],
+  );
+  return token;
+}
+
+app.post("/me/2fa/verify", async (c) => {
+  const body = codeBody.safeParse(await c.req.json().catch(() => null));
+  if (!body.success) return err(c, 400, "wrong_code", "The code is 6 digits.");
+  const ok = await takeCode(c.var.userId, "sign_in", body.data.code);
+  if (ok !== true) return codeError(c, ok);
+  return c.json({ device_token: await trustDevice(c.var.userId, body.data.label), expires_in_days: DEVICE_DAYS });
+});
+
+app.post("/me/2fa/enable", async (c) => {
+  const body = codeBody.safeParse(await c.req.json().catch(() => null));
+  if (!body.success) return err(c, 400, "wrong_code", "The code is 6 digits.");
+  const ok = await takeCode(c.var.userId, "enable", body.data.code);
+  if (ok !== true) return codeError(c, ok);
+  await pool.query(`update profiles set two_factor_email = true where user_id = $1`, [c.var.userId]);
+  // this device stays signed in
+  return c.json({ device_token: await trustDevice(c.var.userId, body.data.label), expires_in_days: DEVICE_DAYS });
+});
+
+app.post("/me/2fa/disable", async (c) => {
+  const body = codeBody.safeParse(await c.req.json().catch(() => null));
+  if (!body.success) return err(c, 400, "wrong_code", "The code is 6 digits.");
+  const ok = await takeCode(c.var.userId, "disable", body.data.code);
+  if (ok !== true) return codeError(c, ok);
+  await pool.query(`update profiles set two_factor_email = false where user_id = $1`, [c.var.userId]);
+  await pool.query(`delete from trusted_devices where user_id = $1`, [c.var.userId]);
+  return c.json({ ok: true });
+});
+
+app.get("/me/2fa/devices", async (c) => {
+  const { rows } = await pool.query(
+    `select id, label, created_at, expires_at, id = $2 as current from trusted_devices
+     where user_id = $1 and expires_at > now() order by created_at desc`,
+    [c.var.userId, c.var.deviceId],
+  );
+  return c.json({ devices: rows });
+});
+
+app.delete("/me/2fa/devices", async (c) => {
+  const { rowCount } = await pool.query(`delete from trusted_devices where user_id = $1 and id is distinct from $2`, [c.var.userId, c.var.deviceId]);
+  return c.json({ ok: true, removed: rowCount });
+});
+
 // ── friends ──────────────────────────────────────────────────────────────
 
 const MAX_FRIENDS = 200;
+
+async function usernameOf(userId: string): Promise<string> {
+  const { rows } = await pool.query(`select username from profiles where user_id = $1`, [userId]);
+  return rows[0]?.username ?? "Someone";
+}
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 app.get("/friends", async (c) => {
@@ -757,7 +1111,10 @@ app.post("/friends", async (c) => {
     `update friendships set status = 'accepted', accepted_at = now() where requester_id = $2 and addressee_id = $1 returning status`,
     [c.var.userId, other.user_id],
   );
-  if (accepted.rowCount) return c.json({ friend: { ...other, status: "friend" } });
+  if (accepted.rowCount) {
+    notify(other.user_id, { kind: "friend_accepted", from: await usernameOf(c.var.userId), fromId: c.var.userId });
+    return c.json({ friend: { ...other, status: "friend" } });
+  }
   if (!(await mayRequestFriendship(c.var.userId, other.user_id))) {
     return err(c, 403, "not_accepting", `${other.username} doesn't accept friend requests from you.`);
   }
@@ -767,6 +1124,7 @@ app.post("/friends", async (c) => {
      returning case when status = 'accepted' then 'friend' else 'outgoing' end as status`,
     [c.var.userId, other.user_id],
   );
+  if (made[0].status === "outgoing") notify(other.user_id, { kind: "friend_request", from: await usernameOf(c.var.userId), fromId: c.var.userId });
   return c.json({ friend: { ...other, status: made[0].status } }, 201);
 });
 
@@ -776,7 +1134,9 @@ app.post("/friends/:userId/accept", async (c) => {
     `update friendships set status = 'accepted', accepted_at = now() where requester_id = $2 and addressee_id = $1 and status = 'pending'`,
     [c.var.userId, c.req.param("userId")],
   );
-  return rowCount ? c.json({ ok: true }) : err(c, 404, "not_found", "That friend request is gone.");
+  if (!rowCount) return err(c, 404, "not_found", "That friend request is gone.");
+  notify(c.req.param("userId"), { kind: "friend_accepted", from: await usernameOf(c.var.userId), fromId: c.var.userId });
+  return c.json({ ok: true });
 });
 
 app.delete("/friends/:userId", async (c) => {
