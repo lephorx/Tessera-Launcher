@@ -233,12 +233,17 @@ pub struct Texture {
     pub url: String,
     #[serde(default)]
     pub alias: Option<String>,
+    /// Skins: "CLASSIC" | "SLIM"
+    #[serde(default)]
+    pub variant: Option<String>,
 }
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct Profile {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub skins: Vec<Texture>,
     #[serde(default)]
     pub capes: Vec<Texture>,
 }
@@ -340,6 +345,18 @@ pub async fn capes(client: &reqwest::Client, paths: &Paths, id: &str) -> Result<
         });
     }
     Ok(out)
+}
+
+/// The skin the account wears on Mojang's servers: the picture, whether it's slim, and the
+/// cape it has on.
+pub async fn current_skin(client: &reqwest::Client, paths: &Paths, id: &str) -> Result<Option<(Vec<u8>, bool, Option<String>)>> {
+    let account = fresh(client, paths, id).await?;
+    let p = profile(client, &account.mc_token).await?;
+    let Some(skin) = p.skins.iter().find(|s| s.state == "ACTIVE") else { return Ok(None) };
+    let png = client.get(skin.url.replacen("http://", "https://", 1)).send().await?.error_for_status()?.bytes().await?.to_vec();
+    let slim = skin.variant.as_deref().is_some_and(|v| v.eq_ignore_ascii_case("slim"));
+    let cape = p.capes.iter().find(|c| c.state == "ACTIVE").map(|c| c.id.clone());
+    Ok(Some((png, slim, cape)))
 }
 
 /// Makes the skin (and cape, or no cape) the account's skin on Mojang's servers.

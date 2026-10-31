@@ -19,7 +19,7 @@ import { account } from "@/lib/account";
 import { player, removeMicrosoft, signInMicrosoft, useMicrosoft } from "@/lib/player";
 import { errorText, toast } from "@/lib/toast";
 
-/** Home's right column: the Minecraft account you play as, Tessera friends, and launcher news. */
+/** The sidebar on the left of every page: the Minecraft account you play as, Tessera friends, and launcher news. */
 
 // ── Playing as ──
 const accountsOpen = ref(false);

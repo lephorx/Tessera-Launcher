@@ -17,7 +17,7 @@ const adding = ref(false);
 const capes = ref<Cape[]>([]);
 const applying = ref<string | null>(null);
 
-const all = computed(() => [...(skins.value?.saved ?? []), ...(skins.value?.defaults ?? [])]);
+const all = computed(() => [...(skins.value?.account ? [skins.value.account] : []), ...(skins.value?.saved ?? []), ...(skins.value?.defaults ?? [])]);
 const current = computed(() => all.value.find((s) => s.id === skins.value?.selected) ?? skins.value?.defaults.find((s) => s.id === "default:steve:classic") ?? null);
 const capeOf = (s: Skin) => capes.value.find((c) => c.id === s.cape)?.texture ?? null;
 
@@ -120,6 +120,13 @@ async function saved(id: string) {
     </aside>
 
     <div class="skins-lists">
+      <template v-if="skins?.account">
+        <h2 class="skins-section" style="cursor: default">On your Minecraft account</h2>
+        <div class="skins-grid">
+          <SkinTile :skin="skins.account" :selected="skins.selected === skins.account.id" @pick="pick(skins.account)" @edit="editing = skins.account" />
+        </div>
+      </template>
+
       <button class="skins-section" :aria-expanded="open_.saved" @click="open_.saved = !open_.saved">
         <ChevronDown :size="18" class="side-chevron" :class="{ open: !open_.saved }" style="transform-origin: center" /> Saved skins
       </button>

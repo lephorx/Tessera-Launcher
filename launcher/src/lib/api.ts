@@ -122,6 +122,8 @@ export interface Skins {
   saved: Skin[];
   defaults: Skin[];
   selected: string | null;
+  /** What the Microsoft account wears right now. */
+  account: Skin | null;
 }
 
 export interface Friend {

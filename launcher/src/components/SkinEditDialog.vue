@@ -13,7 +13,9 @@ import SkinViewer from "./SkinViewer.vue";
 const props = defineProps<{ skin: Skin; capes: { id: string; name: string; texture: string }[] }>();
 const emit = defineEmits<{ close: []; saved: [id: string]; removed: [] }>();
 
-const name = ref(props.skin.default ? props.skin.name.replace(" (slim)", "") : props.skin.name);
+/** Default skins and the account's current one are saved as your own copy. */
+const copy = props.skin.default || props.skin.id.startsWith("account:");
+const name = ref(props.skin.default ? props.skin.name.replace(" (slim)", "") : props.skin.id.startsWith("account:") ? "My Minecraft skin" : props.skin.name);
 const model = ref<"classic" | "slim">(props.skin.model);
 const cape = ref<string | null>(props.skin.cape);
 const busy = ref(false);
@@ -23,7 +25,7 @@ const capeTexture = (id: string | null) => props.capes.find((c) => c.id === id)?
 async function save() {
   busy.value = true;
   try {
-    if (props.skin.default) {
+    if (copy) {
       const s = await api.skins.add({ from: props.skin.id, name: name.value, model: model.value, cape: cape.value });
       toast.success(`${s.name} saved to your skins`);
       emit("saved", s.id);
@@ -82,7 +84,7 @@ async function remove() {
       </div>
     </div>
     <div class="dialog-footer">
-      <button v-if="!skin.default" class="btn btn-ghost" style="margin-right: auto; color: var(--fill-red)" @click="confirmDelete = true"><Trash2 /> Delete</button>
+      <button v-if="!copy" class="btn btn-ghost" style="margin-right: auto; color: var(--fill-red)" @click="confirmDelete = true"><Trash2 /> Delete</button>
       <button class="btn btn-lg" @click="emit('close')"><X /> Cancel</button>
       <button class="btn btn-primary btn-lg" :disabled="busy" @click="save"><Loader2 v-if="busy" class="spin" /><Save v-else /> Save skin</button>
     </div>

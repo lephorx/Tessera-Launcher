@@ -1236,8 +1236,14 @@ fn server_list(state: State<AppState>, id: String) -> Vec<serverlist::Entry> {
 async fn skins_list(state: State<'_, AppState>) -> CmdResult<skins::Skins> {
     // the nine default skins come from a Minecraft jar; a failure just leaves them out
     let _ = skins::ensure_defaults(&state.client, &state.paths).await;
-    let player = settings::load(&state.paths).player_name;
-    Ok(skins::list(&state.paths, &player))
+    let settings = settings::load(&state.paths);
+    // the skin the Microsoft account wears now; offline, the last one seen
+    if let Some(ms) = settings.microsoft.as_deref() {
+        if let Ok(Some((png, slim, cape))) = msauth::current_skin(&state.client, &state.paths, ms).await {
+            let _ = skins::set_account_skin(&state.paths, ms, &png, slim, cape);
+        }
+    }
+    Ok(skins::list(&state.paths, &settings.player_name, settings.microsoft.as_deref()))
 }
 
 #[tauri::command]

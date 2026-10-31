@@ -403,17 +403,17 @@ html[data-design="modern"] .account-menu-item {
   image-rendering: pixelated;
 }
 
-/* ── Home's right column ─────────────────────────────────────────────── */
+/* ── Sidebar (left, every page) ─────────────────────────────────────────────── */
 
 .side {
   width: 320px;
   flex-shrink: 0;
   overflow-y: auto;
-  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
   user-select: none;
 }
 html[data-design="modern"] .side {
-  border-left-color: var(--separator, var(--border));
+  border-right-color: var(--separator, var(--border));
 }
 @media (max-width: 1100px) {
   .side {
@@ -1887,7 +1887,7 @@ html[data-design="modern"] .panel-back-enter-active {
   box-shadow: var(--raised-shadow);
 }
 
-/* plain buttons in the top bar and Home's right column */
+/* plain buttons in the top bar and the sidebar */
 .account-button,
 .account-menu-item,
 .side-player,

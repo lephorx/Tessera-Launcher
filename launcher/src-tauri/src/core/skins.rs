@@ -163,6 +163,10 @@ fn default_id(name: &str, model: &Model) -> String {
 }
 
 fn texture_of(paths: &Paths, id: &str) -> Result<(Vec<u8>, Model)> {
+    if let Some(uuid) = id.strip_prefix("account:") {
+        let (png, model, _) = account_skin(paths, uuid).ok_or_else(|| anyhow!("Unknown skin"))?;
+        return Ok((png, model));
+    }
     if let Some(rest) = id.strip_prefix("default:") {
         let (name, model) = rest.split_once(':').ok_or_else(|| anyhow!("Unknown skin"))?;
         if !DEFAULT_NAMES.contains(&name) {
@@ -183,9 +187,41 @@ pub struct Skins {
     pub saved: Vec<SkinView>,
     pub defaults: Vec<SkinView>,
     pub selected: Option<String>,
+    /// What the Microsoft account wears right now (id "account:<uuid>").
+    pub account: Option<SkinView>,
 }
 
-pub fn list(paths: &Paths, player: &str) -> Skins {
+// ── the Microsoft account's current skin ──
+
+#[derive(Serialize, Deserialize)]
+struct AccountSkin {
+    slim: bool,
+    cape: Option<String>,
+}
+
+/// Keeps the account's current skin, so the Skins page has it (also offline).
+pub fn set_account_skin(paths: &Paths, uuid: &str, png: &[u8], slim: bool, cape: Option<String>) -> Result<()> {
+    if !uuid.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+        bail!("Unknown account");
+    }
+    let d = dir(paths).join("account");
+    std::fs::create_dir_all(&d)?;
+    std::fs::write(d.join(format!("{uuid}.png")), png)?;
+    std::fs::write(d.join(format!("{uuid}.json")), serde_json::to_vec(&AccountSkin { slim, cape })?)?;
+    Ok(())
+}
+
+fn account_skin(paths: &Paths, uuid: &str) -> Option<(Vec<u8>, Model, Option<String>)> {
+    if !uuid.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+        return None;
+    }
+    let d = dir(paths).join("account");
+    let png = std::fs::read(d.join(format!("{uuid}.png"))).ok()?;
+    let meta: AccountSkin = serde_json::from_slice(&std::fs::read(d.join(format!("{uuid}.json"))).ok()?).ok()?;
+    Some((png, if meta.slim { Model::Slim } else { Model::Classic }, meta.cape))
+}
+
+pub fn list(paths: &Paths, player: &str, account: Option<&str>) -> Skins {
     let store = load(paths);
     let saved = store
         .skins
@@ -204,7 +240,13 @@ pub fn list(paths: &Paths, player: &str) -> Skins {
             }
         }
     }
-    Skins { saved, defaults, selected: store.selected.get(&player.to_lowercase()).cloned() }
+    let account = account.and_then(|uuid| {
+        let (png, model, cape) = account_skin(paths, uuid)?;
+        Some(SkinView { id: format!("account:{uuid}"), name: "Current skin".into(), model, cape, texture: data_url(&png), default: false })
+    });
+    // nothing picked in the launcher yet: the account's own skin is the one in use
+    let selected = store.selected.get(&player.to_lowercase()).cloned().or_else(|| account.as_ref().map(|a| a.id.clone()));
+    Skins { saved, defaults, selected, account }
 }
 
 /// Saves a skin from a file, or (with `from`) as a copy of another skin, e.g. a default
@@ -252,7 +294,10 @@ pub fn remove(paths: &Paths, id: &str) -> Result<()> {
 /// The skin's picture, whether it's slim, and its cape: what Mojang gets for a Microsoft account.
 pub fn for_upload(paths: &Paths, id: &str) -> Result<(Vec<u8>, bool, Option<String>)> {
     let (bytes, model) = texture_of(paths, id)?;
-    let cape = load(paths).skins.into_iter().find(|s| s.id == id).and_then(|s| s.cape);
+    let cape = match id.strip_prefix("account:") {
+        Some(uuid) => account_skin(paths, uuid).and_then(|a| a.2),
+        None => load(paths).skins.into_iter().find(|s| s.id == id).and_then(|s| s.cape),
+    };
     Ok((bytes, model == Model::Slim, cape))
 }
 
