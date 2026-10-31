@@ -44,9 +44,17 @@ check("public lookup works", requests.get(f"{API}/shares/{code}").json()["share"
 check("B can't delete A's share", requests.delete(f"{API}/shares/{code}", headers=B).status_code == 404)
 check("B can't add members", requests.post(f"{API}/shares/{code}/members", json={"username": ub}, headers=B).status_code == 404)
 # new members are private by default; B opens up for the share checks
-check("new members are private by default", requests.get(f"{API}/me/privacy", headers=B).json()["privacy"] == {"friend_requests": "friends_of_friends", "share_invites": "friends"})
+check("new members: friend requests from anyone, packs from friends", requests.get(f"{API}/me/privacy", headers=B).json()["privacy"] == {"friend_requests": "everyone", "share_invites": "friends"})
 check("A and B accept requests and shares from anyone", all(requests.put(f"{API}/me/privacy", json={"friend_requests": "everyone", "share_invites": "everyone"}, headers=h).ok for h in (A, B)))
+check("sharing needs friendship", requests.post(f"{API}/shares/{code}/members", json={"username": ub}, headers=A).json().get("error") == "not_friends")
+check("B can't download a pack by its link alone", requests.get(f"{API}/shares/{code}/download", headers=B).status_code == 403)
+_ida = requests.get(f"{API}/me", headers=A).json()["user"]["id"]
+check("A and B become friends", requests.post(f"{API}/friends", json={"username": ub}, headers=A).ok and requests.post(f"{API}/friends/{_ida}/accept", headers=B).ok)
+n = requests.get(f"{API}/notifications", headers=A).json()
+check("A is told B accepted", any(x["kind"] == "friend_accepted" and x["username"] == ub for x in n["notifications"]) and n["unread"] >= 1)
+check("seen clears unread", requests.post(f"{API}/notifications/seen", headers=A).ok and requests.get(f"{API}/notifications", headers=A).json()["unread"] == 0)
 check("add B by username", requests.post(f"{API}/shares/{code}/members", json={"username": ub}, headers=A).status_code == 201)
+check("B is told about the pack", any(x["kind"] == "share_added" and x["code"] == code and x["username"] == ua for x in requests.get(f"{API}/notifications", headers=B).json()["notifications"]))
 check("unknown username -> 404", requests.post(f"{API}/shares/{code}/members", json={"username": "nobody_x_y"}, headers=A).status_code == 404)
 check("B sees it under received", any(s["code"] == code for s in requests.get(f"{API}/shares/received", headers=B).json()["shares"]))
 mine = requests.get(f"{API}/shares/mine", headers=A).json()["shares"]; check("A sees member B", mine[0]["members"][0]["username"] == ub)
@@ -92,6 +100,10 @@ check("A can't delete it anymore", requests.delete(f"{API}/shares/{code2}", head
 ida = requests.get(f"{API}/me", headers=A).json()["user"]["id"]
 check("A leaves the share", requests.delete(f"{API}/shares/{code2}/members/{ida}", headers=A).ok and requests.get(f"{API}/shares/{code2}", headers=A).json()["share"]["role"] is None)
 check("new owner deletes it", requests.delete(f"{API}/shares/{code2}", headers=B).ok)
+code3 = requests.post(f"{API}/shares", params=q, data=pack(), headers=A).json()["share"]["code"]
+requests.post(f"{API}/shares/{code3}/members", json={"username": ub}, headers=A)
+check("unfriending takes B off A's packs", requests.delete(f"{API}/friends/{ida}", headers=B).ok and requests.get(f"{API}/shares/{code3}", headers=B).json()["share"]["role"] is None)
+requests.delete(f"{API}/shares/{code3}", headers=A)
 F = lambda h: {f["username"]: f["status"] for f in requests.get(f"{API}/friends", headers=h).json()["friends"]}
 check("friend request to self -> 400", requests.post(f"{API}/friends", json={"username": ua}, headers=A).status_code == 400)
 check("A asks B", requests.post(f"{API}/friends", json={"username": ub}, headers=A).json()["friend"]["status"] == "outgoing")

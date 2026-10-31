@@ -17,17 +17,19 @@
  *   GET    /v1/shares/received                  what friends share with me
  *   PATCH  /v1/shares/:code       {expires_in_days: 1|7|30|null}
  *   DELETE /v1/shares/:code
- *   POST   /v1/shares/:code/members   {username, role?}
+ *   POST   /v1/shares/:code/members   {username, role?}   friends only, at most 10 per pack
  *   PATCH  /v1/shares/:code/members/:userId   {role: viewer|editor}
  *   DELETE /v1/shares/:code/members/:userId   owner removes a friend, or a friend leaves
  *   POST   /v1/shares/:code/transfer  {user_id}  hand the share to a friend; you stay as editor
  *   GET    /v1/shares/:code                     public: pack info for an invite link
- *   GET    /v1/shares/:code/download            invite link or friend: short-lived download URL
+ *   GET    /v1/shares/:code/download            owner or a friend on it: short-lived download URL
  *   GET    /v1/shares/sync?codes=a,b            live sync: revision of each share I'm on
  *   GET    /v1/friends                          friends + incoming and outgoing requests
  *   POST   /v1/friends           {username}    send a request (accepts theirs if they asked first)
  *   POST   /v1/friends/:userId/accept
- *   DELETE /v1/friends/:userId                  unfriend, decline or cancel a request
+ *   DELETE /v1/friends/:userId                  unfriend (also off each other's packs), decline or cancel
+ *   GET    /v1/notifications                    friend requests, accepted requests, packs shared with me
+ *   POST   /v1/notifications/seen               the bell's unread count starts again from now
  *   GET    /v1/me/privacy                       who may send me friend requests / add me to shares
  *   PUT    /v1/me/privacy        {friend_requests?, share_invites?}
  *   GET    /v1/blocks                           people I blocked
@@ -62,6 +64,8 @@ const issuer = new URL(process.env.NEON_AUTH_BASE_URL!).origin;
 
 const MAX_PACK_BYTES = 50 * 1024 * 1024;
 const MAX_SHARES_PER_USER = 20;
+/** Friends per shared pack: each one's launcher checks the pack for changes while it's open. */
+const MAX_SHARE_MEMBERS = 10;
 
 // ── rate limits (per isolate, in memory) ─────────────────────────────────
 
@@ -183,8 +187,8 @@ app.get("/shares/:code", async (c, next) => {
     [c.req.param("code")],
   );
   const share = rows[0];
-  if (!share) return err(c, 404, "not_found", "That invite link doesn't exist.");
-  if (share.expires_at && new Date(share.expires_at) < new Date()) return err(c, 410, "expired", "That invite link has expired.");
+  if (!share) return err(c, 404, "not_found", "That shared pack doesn't exist.");
+  // the link only shows what it is: the pack itself is for the friends the owner added
   return c.json({ share });
 });
 
@@ -540,6 +544,14 @@ app.post("/shares/:code/members", async (c) => {
   const friend = rows[0];
   if (!friend) return err(c, 404, "user_not_found", "No Tessera account with that username.");
   if (friend.user_id === c.var.userId) return err(c, 400, "self", "That's you.");
+  const { rowCount: friends } = await pool.query(
+    `select 1 from friendships where status = 'accepted'
+       and ((requester_id = $1 and addressee_id = $2) or (requester_id = $2 and addressee_id = $1))`,
+    [c.var.userId, friend.user_id],
+  );
+  if (!friends) return err(c, 403, "not_friends", `You can only share with friends. Add ${friend.username} as a friend first.`);
+  const { rows: count } = await pool.query(`select count(*)::int as n from share_members where code = $1 and user_id <> $2`, [share.code, friend.user_id]);
+  if (count[0].n >= MAX_SHARE_MEMBERS) return err(c, 409, "too_many_members", `A pack can be shared with ${MAX_SHARE_MEMBERS} friends.`);
   if (!(await mayInviteToShare(c.var.userId, friend.user_id))) {
     return err(c, 403, "not_accepting", `${friend.username} doesn't accept shared packs from you.`);
   }
@@ -608,9 +620,9 @@ app.get("/shares/:code/download", async (c) => {
     [c.req.param("code"), c.var.userId],
   );
   const share = rows[0];
-  if (!share) return err(c, 404, "not_found", "That invite link doesn't exist.");
-  // invited friends always; everyone else only while the invite link is valid
-  if (!share.invited && share.expires_at && new Date(share.expires_at) < new Date()) return err(c, 410, "expired", "That invite link has expired.");
+  if (!share) return err(c, 404, "not_found", "That shared pack doesn't exist.");
+  // shared packs are for the owner's friends they added: a link alone doesn't open it
+  if (!share.invited) return err(c, 403, "friends_only", "This pack is shared with friends only. Ask its owner to add you.");
   const url = await files.url(share.object_key, { expiresIn: 600 });
   return c.json({ url, size_bytes: share.size_bytes });
 });
@@ -652,8 +664,10 @@ app.post("/invites/:code/redeem", async (c) => {
     }
     try {
       await db.query(
-        `insert into profiles (user_id, username, terms_version, terms_accepted_at, age_declaration)
-         values ($1, $2, $3, case when $3::text is null then null else now() end, $4)`,
+        // friend requests from anyone, except for members under 16: friends of friends
+        `insert into profiles (user_id, username, terms_version, terms_accepted_at, age_declaration, friend_requests)
+         values ($1, $2, $3, case when $3::text is null then null else now() end, $4,
+                 case when $4::text = '13-15' then 'friends_of_friends' else 'everyone' end)`,
         [c.var.userId, body.data.username, consent?.terms_version ?? null, consent?.age ?? null],
       );
     } catch (e) {
@@ -740,7 +754,7 @@ app.post("/friends", async (c) => {
   if (count[0].n >= MAX_FRIENDS) return err(c, 409, "too_many_friends", "You have 200 friends and requests already.");
   // They asked first: this accepts their request.
   const accepted = await pool.query(
-    `update friendships set status = 'accepted' where requester_id = $2 and addressee_id = $1 returning status`,
+    `update friendships set status = 'accepted', accepted_at = now() where requester_id = $2 and addressee_id = $1 returning status`,
     [c.var.userId, other.user_id],
   );
   if (accepted.rowCount) return c.json({ friend: { ...other, status: "friend" } });
@@ -759,7 +773,7 @@ app.post("/friends", async (c) => {
 app.post("/friends/:userId/accept", async (c) => {
   if (!UUID.test(c.req.param("userId"))) return err(c, 404, "not_found");
   const { rowCount } = await pool.query(
-    `update friendships set status = 'accepted' where requester_id = $2 and addressee_id = $1 and status = 'pending'`,
+    `update friendships set status = 'accepted', accepted_at = now() where requester_id = $2 and addressee_id = $1 and status = 'pending'`,
     [c.var.userId, c.req.param("userId")],
   );
   return rowCount ? c.json({ ok: true }) : err(c, 404, "not_found", "That friend request is gone.");
@@ -767,10 +781,52 @@ app.post("/friends/:userId/accept", async (c) => {
 
 app.delete("/friends/:userId", async (c) => {
   if (!UUID.test(c.req.param("userId"))) return err(c, 404, "not_found");
+  const [me, other] = [c.var.userId, c.req.param("userId")];
+  await pool.query(`delete from friendships where (requester_id = $1 and addressee_id = $2) or (requester_id = $2 and addressee_id = $1)`, [me, other]);
+  // packs are shared with friends only: no longer friends, no longer on each other's packs
   await pool.query(
-    `delete from friendships where (requester_id = $1 and addressee_id = $2) or (requester_id = $2 and addressee_id = $1)`,
-    [c.var.userId, c.req.param("userId")],
+    `delete from share_members m using shares s
+     where s.code = m.code and ((s.owner_id = $1 and m.user_id = $2) or (s.owner_id = $2 and m.user_id = $1))`,
+    [me, other],
   );
+  return c.json({ ok: true });
+});
+
+// ── notifications ────────────────────────────────────────────────────────
+
+/**
+ * What the bell shows: friend requests waiting for you, requests of yours that were accepted
+ * and packs friends shared with you (both from the last 14 days), newest first. Built from
+ * the tables they live in, so there's nothing extra to store or clean up. The launcher asks
+ * every 30 seconds (less often in the background): one cheap query.
+ */
+app.get("/notifications", async (c) => {
+  const [list, seen] = await Promise.all([
+    pool.query(
+      `select * from (
+         select 'friend_request' as kind, f.requester_id as user_id, p.username, null::text as code, null::text as name, f.created_at as at
+         from friendships f join profiles p on p.user_id = f.requester_id
+         where f.addressee_id = $1 and f.status = 'pending'
+         union all
+         select 'friend_accepted', f.addressee_id, p.username, null, null, f.accepted_at
+         from friendships f join profiles p on p.user_id = f.addressee_id
+         where f.requester_id = $1 and f.status = 'accepted' and f.accepted_at > now() - interval '14 days'
+         union all
+         select 'share_added', s.owner_id, p.username, s.code, s.name, m.added_at
+         from share_members m join shares s on s.code = m.code join profiles p on p.user_id = s.owner_id
+         where m.user_id = $1 and m.added_at > now() - interval '14 days'
+       ) n order by at desc limit 30`,
+      [c.var.userId],
+    ),
+    pool.query(`select notifications_seen_at from profiles where user_id = $1`, [c.var.userId]),
+  ]);
+  const seenAt: Date | null = seen.rows[0]?.notifications_seen_at ?? null;
+  const unread = list.rows.filter((n) => !seenAt || new Date(n.at) > seenAt).length;
+  return c.json({ notifications: list.rows, seen_at: seenAt, unread });
+});
+
+app.post("/notifications/seen", async (c) => {
+  await pool.query(`update profiles set notifications_seen_at = now() where user_id = $1`, [c.var.userId]);
   return c.json({ ok: true });
 });
 

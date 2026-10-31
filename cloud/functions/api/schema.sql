@@ -114,7 +114,12 @@ do $$ begin
   alter table profiles add constraint profiles_age_declaration_check check (age_declaration in ('16+', '13-15'));
 exception when duplicate_object then null; end $$;
 
--- Private by default for new members: friend requests only from friends of friends, shared
--- packs only from friends. Existing members keep what they have.
-alter table profiles alter column friend_requests set default 'friends_of_friends';
+-- New members: friend requests from anyone (members aged 13-15 start with friends of friends,
+-- set when they join), shared packs only from friends. Existing members keep what they have.
+alter table profiles alter column friend_requests set default 'everyone';
 alter table profiles alter column share_invites set default 'friends';
+
+-- Notifications (2026-11-01): when a friend request was accepted, and up to when a member
+-- has seen their notifications.
+alter table friendships add column if not exists accepted_at timestamptz;
+alter table profiles add column if not exists notifications_seen_at timestamptz;
