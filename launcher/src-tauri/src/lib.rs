@@ -1349,7 +1349,10 @@ async fn skins_select(state: State<'_, AppState>, id: Option<String>) -> CmdResu
     let settings = settings::load(&state.paths);
     if let (Some(ms), Some(skin)) = (settings.microsoft.as_deref(), id.as_deref()) {
         let (png, slim, cape) = skins::for_upload(&state.paths, skin).map_err(err)?;
-        msauth::apply_skin(&state.client, &state.paths, ms, png, slim, cape.as_deref()).await.map_err(err)?;
+        let now = skins::account_skin(&state.paths, ms).map(|(png, model, cape)| (png, model == skins::Model::Slim, cape));
+        msauth::apply_skin(&state.client, &state.paths, ms, png.clone(), slim, cape.as_deref(), now).await.map_err(err)?;
+        // what the account wears now, so picking it again sends nothing
+        let _ = skins::set_account_skin(&state.paths, ms, &png, slim, cape);
     }
     skins::select(&state.paths, &settings.player_name, id.as_deref()).map_err(err)
 }

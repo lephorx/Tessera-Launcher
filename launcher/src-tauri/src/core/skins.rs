@@ -211,7 +211,7 @@ pub fn set_account_skin(paths: &Paths, uuid: &str, png: &[u8], slim: bool, cape:
     Ok(())
 }
 
-fn account_skin(paths: &Paths, uuid: &str) -> Option<(Vec<u8>, Model, Option<String>)> {
+pub fn account_skin(paths: &Paths, uuid: &str) -> Option<(Vec<u8>, Model, Option<String>)> {
     if !uuid.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
         return None;
     }

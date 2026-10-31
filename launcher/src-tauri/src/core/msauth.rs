@@ -359,21 +359,59 @@ pub async fn current_skin(client: &reqwest::Client, paths: &Paths, id: &str) -> 
     Ok(Some((png, slim, cape)))
 }
 
-/// Makes the skin (and cape, or no cape) the account's skin on Mojang's servers.
-pub async fn apply_skin(client: &reqwest::Client, paths: &Paths, id: &str, png: Vec<u8>, slim: bool, cape: Option<&str>) -> Result<()> {
-    let account = fresh(client, paths, id).await?;
-    let form = reqwest::multipart::Form::new()
-        .text("variant", if slim { "slim" } else { "classic" })
-        .part("file", reqwest::multipart::Part::bytes(png).file_name("skin.png").mime_str("image/png")?);
-    let res = client.post(format!("{MC}/minecraft/profile/skins")).bearer_auth(&account.mc_token).multipart(form).send().await.context("reaching Minecraft")?;
-    check(res, "Changing your skin").await?;
-    let cape_url = format!("{MC}/minecraft/profile/capes/active");
-    let res = match cape {
-        Some(c) => client.put(&cape_url).bearer_auth(&account.mc_token).json(&json!({ "capeId": c })).send().await,
-        None => client.delete(&cape_url).bearer_auth(&account.mc_token).send().await,
+/// Sends a skin or cape change. Mojang allows only a few a minute per account: on 429 it
+/// waits (Retry-After, at most 30 s) and tries again, twice.
+async fn send_change(make: impl Fn() -> Result<reqwest::RequestBuilder>, what: &str) -> Result<()> {
+    for attempt in 0..3 {
+        let res = make()?.send().await.context("reaching Minecraft")?;
+        if res.status() != reqwest::StatusCode::TOO_MANY_REQUESTS {
+            check(res, what).await?;
+            return Ok(());
+        }
+        if attempt == 2 {
+            break;
+        }
+        let wait = res.headers().get("retry-after").and_then(|v| v.to_str().ok()?.parse::<u64>().ok()).unwrap_or(10 * (attempt + 1));
+        tokio::time::sleep(std::time::Duration::from_secs(wait.clamp(1, 30))).await;
     }
-    .context("reaching Minecraft")?;
-    check(res, "Changing your cape").await?;
+    bail!("Minecraft only lets you change your skin a few times a minute. Wait a minute and try again")
+}
+
+/// Makes the skin (and cape, or no cape) the account's skin on Mojang's servers. `now` is
+/// what the account wears already (as last seen); unchanged parts aren't sent.
+pub async fn apply_skin(client: &reqwest::Client, paths: &Paths, id: &str, png: Vec<u8>, slim: bool, cape: Option<&str>, now: Option<(Vec<u8>, bool, Option<String>)>) -> Result<()> {
+    let same_skin = now.as_ref().is_some_and(|n| n.0 == png && n.1 == slim);
+    let same_cape = now.as_ref().is_some_and(|n| n.2.as_deref() == cape);
+    if same_skin && same_cape {
+        return Ok(());
+    }
+    let account = fresh(client, paths, id).await?;
+    if !same_skin {
+        let token = account.mc_token.clone();
+        send_change(
+            || {
+                let form = reqwest::multipart::Form::new()
+                    .text("variant", if slim { "slim" } else { "classic" })
+                    .part("file", reqwest::multipart::Part::bytes(png.clone()).file_name("skin.png").mime_str("image/png")?);
+                Ok(client.post(format!("{MC}/minecraft/profile/skins")).bearer_auth(&token).multipart(form))
+            },
+            "Changing your skin",
+        )
+        .await?;
+    }
+    if !same_cape {
+        let cape_url = format!("{MC}/minecraft/profile/capes/active");
+        send_change(
+            || {
+                Ok(match cape {
+                    Some(c) => client.put(&cape_url).bearer_auth(&account.mc_token).json(&json!({ "capeId": c })),
+                    None => client.delete(&cape_url).bearer_auth(&account.mc_token),
+                })
+            },
+            "Changing your cape",
+        )
+        .await?;
+    }
     Ok(())
 }
 

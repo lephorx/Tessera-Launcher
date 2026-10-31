@@ -1,6 +1,6 @@
 [package]
 name = "tessera-launcher"
-version = "0.6.9"
+version = "0.6.10"
 edition = "2021"
 
 [lib]
@@ -18,7 +18,7 @@ base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "multipart"] }
-tokio = { version = "1", features = ["fs", "process", "io-util", "macros", "rt-multi-thread", "sync"] }
+tokio = { version = "1", features = ["fs", "process", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
 futures = "0.3"
 sha1 = "0.10"
 md-5 = "0.10"
