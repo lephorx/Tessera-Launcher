@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { openPath } from "@tauri-apps/plugin-opener";
-import { Copy, FolderOpen, Globe, Loader2, Play, RefreshCw, Search, Server, Trash2 } from "lucide-vue-next";
+import { Copy, FolderOpen, Globe, Loader2, Play, RefreshCw, RotateCw, Search, Server, Trash2 } from "lucide-vue-next";
 import { api, type Instance, type LinkedServer, type ServerEntry, type World } from "@/lib/api";
 import { relative } from "@/lib/format";
 import { runOf, runs, serverSync } from "@/lib/store";
@@ -61,6 +61,25 @@ async function syncNow() {
     await api.instances.syncServers(props.instance.id);
   } finally {
     syncing.value = false;
+  }
+}
+
+const restarting = ref<number | null>(null);
+
+/** Restarts the server so it installs the mods it got (it's never restarted for you: players may be on). */
+async function restart(s: LinkedServer) {
+  restarting.value = s.server_id;
+  try {
+    const res = await api.machines.request<{ message?: string }>(s.machine_id, "POST", `/servers/${s.server_id}/restart`);
+    if (res.status >= 400) throw new Error(res.body?.message ?? `The server answered ${res.status}`);
+    const sync = syncOf(s);
+    if (sync) sync.needsRestart = false;
+    toast.success(`${s.name} is restarting and installs the new mods`);
+    await loadServers();
+  } catch (e) {
+    toast.error(errorText(e));
+  } finally {
+    restarting.value = null;
   }
 }
 
@@ -135,7 +154,11 @@ const size = (n: number) => (n > 1e9 ? `${(n / 1e9).toFixed(1)} GB` : n > 1e6 ? 
           </span>
           <span v-if="syncOf(s)?.state === 'syncing'" class="hint row" style="gap: 6px"><Loader2 class="spin" :size="12" /> Sending the new mods…</span>
           <span v-else-if="syncOf(s)?.state === 'failed'" class="error-text">{{ syncOf(s)?.message }}</span>
-          <span v-else class="hint">Gets this instance's server-side mods automatically when you change them.</span>
+          <span v-else-if="syncOf(s)?.needsRestart" class="row" style="gap: 8px; flex-wrap: wrap">
+            <span class="hint" style="color: var(--fill-orange)">New mods are waiting: they're installed when the server restarts.</span>
+            <button class="btn btn-sm" :disabled="restarting === s.server_id" @click="restart(s)"><Loader2 v-if="restarting === s.server_id" class="spin" /><RotateCw v-else /> Restart now</button>
+          </span>
+          <span v-else class="hint">Gets this instance's server-side mods when you change them; a running server installs them when you restart it.</span>
         </div>
         <button class="btn btn-ghost btn-icon" title="Send the mods to the server now" aria-label="Send the mods to the server now" :disabled="syncing || syncOf(s)?.state === 'syncing'" @click="syncNow">
           <RefreshCw :class="{ spin: syncing }" />

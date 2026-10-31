@@ -234,10 +234,18 @@ pub fn machine_url(paths: &Paths, id: &str) -> Option<String> {
     load(paths).into_iter().find(|m| m.id == id).map(|m| m.url)
 }
 
-/// Sends a newer server pack to a modpack server (CSCM 1.15+). CSCM swaps it in and
-/// restarts the server if it's running; the server then installs the new mods and removes
-/// the ones that left the pack. Returns whether the server restarted.
-pub async fn update_pack(client: &reqwest::Client, paths: &Paths, id: &str, server_id: i64, pack: Vec<u8>) -> Result<bool> {
+/// What happened to a server after it got a new pack.
+pub struct PackSent {
+    /// CSCM before 1.16.1 restarts a running server itself
+    pub restarted: bool,
+    /// it's running: the new mods are installed when someone restarts it
+    pub needs_restart: bool,
+}
+
+/// Sends a newer server pack to a modpack server (CSCM 1.15+). CSCM swaps it in; the server
+/// installs the new mods (and removes the ones that left the pack) on its next start. A
+/// running server isn't restarted (CSCM 1.16.1+): players may be on, the owner decides.
+pub async fn update_pack(client: &reqwest::Client, paths: &Paths, id: &str, server_id: i64, pack: Vec<u8>) -> Result<PackSent> {
     let machines = load(paths);
     let m = machines.iter().find(|m| m.id == id).ok_or_else(|| anyhow!("Unknown server"))?;
     let token = m.token.clone().ok_or_else(|| anyhow!("Sign in to {} first", m.name))?;
@@ -254,7 +262,7 @@ pub async fn update_pack(client: &reqwest::Client, paths: &Paths, id: &str, serv
     let status = res.status();
     let body: Value = res.json().await.unwrap_or(Value::Null);
     match status.as_u16() {
-        200..=299 => Ok(body["restarted"].as_bool().unwrap_or(false)),
+        200..=299 => Ok(PackSent { restarted: body["restarted"].as_bool().unwrap_or(false), needs_restart: body["needs_restart"].as_bool().unwrap_or(false) }),
         // the route itself is missing on older CSCM; a missing server says so in its message
         404 if body["message"].is_null() && body["error"].is_null() => bail!("{} runs an older CSCM. Update it to keep the server's mods in sync.", m.name),
         _ => bail!("{}", body["error"].as_str().or(body["message"].as_str()).unwrap_or("CSCM refused the pack")),

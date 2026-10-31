@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { RouterLink, useRouter } from "vue-router";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { ArrowLeft, Copy, ExternalLink, KeyRound, Loader2, PackagePlus, Play, RefreshCw, ShieldCheck, Square, Trash2 } from "lucide-vue-next";
+import { ArrowLeft, Copy, ExternalLink, KeyRound, Loader2, PackagePlus, Play, RefreshCw, RotateCw, ShieldCheck, Square, Trash2 } from "lucide-vue-next";
 import AppDialog from "@/components/AppDialog.vue";
 import { api, type Machine } from "@/lib/api";
 import { serverAddresses } from "@/lib/serverAddress";
@@ -89,12 +89,12 @@ function state(s: CscmServer) {
 
 const addresses = (s: CscmServer) => serverAddresses(s, machine.value?.url ?? "");
 
-async function action(s: CscmServer, what: "start" | "stop") {
+async function action(s: CscmServer, what: "start" | "stop" | "restart") {
   busy.value = s.id;
   try {
     const res = await api.machines.request<{ message?: string }>(props.id, "POST", `/servers/${s.id}/${what}`);
     if (res.status >= 400) throw new Error(res.body?.message ?? `CSCM answered ${res.status}`);
-    toast.success(`${s.name}: ${what === "start" ? "starting" : "stopping"}`);
+    toast.success(`${s.name}: ${what === "start" ? "starting" : what === "restart" ? "restarting" : "stopping"}`);
     await load();
   } catch (e) {
     toast.error(errorText(e));
@@ -186,9 +186,12 @@ async function copy(text: string) {
             <button v-if="state(s).key === 'idle'" class="btn btn-play" :disabled="busy === s.id" @click="action(s, 'start')">
               <Loader2 v-if="busy === s.id" class="spin" /><Play v-else /> Start
             </button>
-            <button v-else class="btn btn-stop" :disabled="busy === s.id" @click="action(s, 'stop')">
-              <Loader2 v-if="busy === s.id" class="spin" /><Square v-else /> Stop
-            </button>
+            <template v-else>
+              <button class="btn btn-stop" :disabled="busy === s.id" @click="action(s, 'stop')">
+                <Loader2 v-if="busy === s.id" class="spin" /><Square v-else /> Stop
+              </button>
+              <button class="btn btn-icon" :disabled="busy === s.id" title="Restart (installs new mods)" aria-label="Restart" @click="action(s, 'restart')"><RotateCw /></button>
+            </template>
             <span class="spacer" />
             <button
               v-if="s.type !== 'bedrock'"

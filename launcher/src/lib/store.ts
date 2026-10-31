@@ -18,7 +18,8 @@ export const runs = reactive<Record<string, Run>>({});
 export const packProgress = reactive({ stage: "", done: 0, total: 0 });
 
 /** Pushing an instance's server-side mods to its CSCM servers, by `${instance}:${serverId}`. */
-export const serverSync = reactive<Record<string, { state: "syncing" | "synced" | "failed"; message: string | null }>>({});
+/** `needsRestart`: the server got the mods while running; they're installed when it restarts. */
+export const serverSync = reactive<Record<string, { state: "syncing" | "synced" | "failed"; message: string | null; needsRestart?: boolean }>>({});
 
 /** Live share sync per instance: last result, for the Share tab. */
 export const shareSync = reactive<Record<string, { state: "pulled" | "published" | "waiting" | "error"; at: number; by: string | null; message: string | null }>>({});
@@ -53,8 +54,11 @@ export async function startEvents() {
   await listen<{ stage: string; done: number; total: number }>("pack-progress", ({ payload }) => {
     Object.assign(packProgress, payload);
   });
-  await listen<{ instance: string; server_id: number; state: "syncing" | "synced" | "failed"; message: string | null }>("server-sync", ({ payload }) => {
-    serverSync[`${payload.instance}:${payload.server_id}`] = { state: payload.state, message: payload.message };
+  await listen<{ instance: string; server_id: number; state: "syncing" | "synced" | "failed"; message: string | null; needs_restart: boolean }>("server-sync", ({ payload }) => {
+    const key = `${payload.instance}:${payload.server_id}`;
+    // still waiting for a restart while the next change is sent
+    const waiting = payload.needs_restart || (payload.state === "syncing" && !!serverSync[key]?.needsRestart);
+    serverSync[key] = { state: payload.state, message: payload.message, needsRestart: waiting };
     if (payload.state === "synced") toast.success(payload.message ?? "Server updated with the new mods");
     if (payload.state === "failed") toast.error(`Couldn't update the server: ${payload.message ?? "unknown error"}`);
   });

@@ -1327,6 +1327,8 @@ struct ServerSyncEvent<'a> {
     /// "syncing" | "synced" | "failed"
     state: &'a str,
     message: Option<String>,
+    /// synced to a running server: restart it to install the mods
+    needs_restart: bool,
 }
 
 /// Latest change per instance; a sync waits a few seconds so several changes go up as one.
@@ -1362,7 +1364,7 @@ async fn sync_servers(app: &AppHandle, id: &str, force: bool) {
         return;
     }
     let emit = |server_id: i64, st: &str, message: Option<String>| {
-        let _ = app.emit("server-sync", ServerSyncEvent { instance: id, server_id, state: st, message });
+        let _ = app.emit("server-sync", ServerSyncEvent { instance: id, server_id, state: st, message, needs_restart: false });
     };
     let built = match serverpack::build(&state.client, &state.paths, id, &|_, _, _| {}).await {
         Ok(b) => b,
@@ -1380,7 +1382,7 @@ async fn sync_servers(app: &AppHandle, id: &str, force: bool) {
         }
         emit(linked.server_id, "syncing", None);
         match servers::update_pack(&state.client, &state.paths, &linked.machine_id, linked.server_id, built.bytes.clone()).await {
-            Ok(restarted) => {
+            Ok(sent) => {
                 // fresh copy: the instance may have changed meanwhile
                 if let Ok(mut now) = instances::get(&state.paths, id) {
                     if let Some(l) = now.servers.iter_mut().find(|l| l.machine_id == linked.machine_id && l.server_id == linked.server_id) {
@@ -1388,8 +1390,17 @@ async fn sync_servers(app: &AppHandle, id: &str, force: bool) {
                     }
                     let _ = instances::save(&state.paths, &now);
                 }
-                let note = if restarted { "It restarts to install them." } else { "They're installed when it starts." };
-                emit(linked.server_id, "synced", Some(format!("{} got the new mods. {note}", linked.name)));
+                let note = if sent.restarted {
+                    "It restarts to install them."
+                } else if sent.needs_restart {
+                    "Restart it to install them."
+                } else {
+                    "They're installed when it starts."
+                };
+                let _ = app.emit(
+                    "server-sync",
+                    ServerSyncEvent { instance: id, server_id: linked.server_id, state: "synced", message: Some(format!("{} got the new mods. {note}", linked.name)), needs_restart: sent.needs_restart },
+                );
             }
             Err(e) => emit(linked.server_id, "failed", Some(format!("{e:#}"))),
         }
