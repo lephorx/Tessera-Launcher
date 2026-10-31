@@ -471,7 +471,8 @@ export const api = {
     /** .tapack or .mrpack */
     importPack: (path: string) => call<Instance>("import_pack", { path }),
     /** "Get local pack": a new instance that can join this server. */
-    fromServer: (machineId: string, serverId: number) => call<Instance>("server_local_pack", { machineId, serverId }),
+    /** The instance, and mods it needs that couldn't be found (mod ids). */
+    fromServer: (machineId: string, serverId: number) => call<{ instance: Instance; missing: string[] }>("server_local_pack", { machineId, serverId }),
     entries: (id: string) => call<PackEntry[]>("pack_entries", { id }),
     export: (id: string, path: string, options: { name: string; version: string; author: string; summary: string; include: string[]; format: "tapack" | "mrpack" }) =>
       call<{ linked: number; embedded: number; bytes: number }>("export_pack", { id, path, options }),

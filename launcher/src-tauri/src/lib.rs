@@ -419,6 +419,30 @@ async fn run_instance(app: &AppHandle, mut inst: Instance, quick_play: Option<Qu
     let progress = |stage: &str, done: usize, total: usize| {
         let _ = app.emit("launch-progress", ProgressEvent { instance: &id, stage, done, total });
     };
+    // a mod another mod needs that isn't there would stop the game at Fabric's error screen:
+    // add it from Modrinth first
+    if matches!(inst.loader, Loader::Fabric | Loader::Quilt) {
+        let mods = state.paths.game_dir(&id).join("mods");
+        let missing = tokio::task::spawn_blocking(move || core::moddeps::missing(&mods)).await.unwrap_or_default();
+        if !missing.is_empty() {
+            let names: Vec<String> = missing.iter().map(|(m, by)| format!("{m} (for {by})")).collect();
+            push_log(app, &id, &format!("[Tessera] Missing mods: {}. Adding them from Modrinth.", names.join(", ")));
+            let before = inst.mods.len();
+            match core::serverclient::complete(&state.client, &state.paths, &mut inst, &[], &progress).await {
+                Ok(still) => {
+                    let added: Vec<&str> = inst.mods[before..].iter().map(|m| m.title.as_str()).collect();
+                    if !added.is_empty() {
+                        push_log(app, &id, &format!("[Tessera] Added {}", added.join(", ")));
+                        instances::save(&state.paths, &inst)?;
+                    }
+                    if !still.is_empty() {
+                        push_log(app, &id, &format!("[Tessera] Couldn't find {} on Modrinth for Minecraft {}", still.join(", "), inst.game_version));
+                    }
+                }
+                Err(e) => push_log(app, &id, &format!("[Tessera] Couldn't add them: {e:#}")),
+            }
+        }
+    }
     let plan = prepare(&state.client, &state.paths, &inst, &player, inst.memory_mb.unwrap_or(settings.memory_mb), quick_play.as_ref(), &progress).await?;
 
     // the skin comes from Mojang; this takes out the "Tessera Skin" pack older versions added
@@ -769,7 +793,7 @@ fn easy_file_open(state: State<AppState>, id: String, path: String) -> CmdResult
 
 /// "Get local pack": a new instance that can join a server on a machine.
 #[tauri::command]
-async fn server_local_pack(app: AppHandle, state: State<'_, AppState>, machine_id: String, server_id: i64) -> CmdResult<Instance> {
+async fn server_local_pack(app: AppHandle, state: State<'_, AppState>, machine_id: String, server_id: i64) -> CmdResult<core::serverclient::Made> {
     let progress = |stage: &str, done: usize, total: usize| {
         let _ = app.emit("pack-progress", PackProgress { stage, done, total });
     };

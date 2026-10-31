@@ -41,8 +41,9 @@ const packing = ref<number | null>(null);
 async function localPack(s: CscmServer) {
   packing.value = s.id;
   try {
-    const inst = await api.projects.fromServer(props.id, s.id);
+    const { instance: inst, missing } = await api.projects.fromServer(props.id, s.id);
     toast.success(`${inst.name} is in your library, ready to join the server`);
+    if (missing.length) toast.error(`Some mods need ${missing.join(", ")}, which isn't on Modrinth for Minecraft ${inst.game_version}. Add it by hand.`);
     void router.push(`/instance/${inst.id}`);
   } catch (e) {
     toast.error(errorText(e));

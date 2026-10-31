@@ -3,6 +3,7 @@
 
 use anyhow::{anyhow, bail, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use super::download::{download_all, fetch_json, Download};
 use super::instances::{self, InstalledMod, Instance, Loader};
@@ -162,6 +163,8 @@ pub async fn projects(client: &reqwest::Client, ids: &[String]) -> Result<std::c
 #[derive(Deserialize)]
 struct Dependency {
     project_id: Option<String>,
+    /// the exact version the mod asks for, if it names one
+    version_id: Option<String>,
     dependency_type: String,
 }
 
@@ -255,6 +258,85 @@ pub async fn install(
     download_all(client, downloads, |_, _| {}).await?;
     instances::save(paths, &inst)?;
     Ok(inst)
+}
+
+/// The Modrinth project of a mod id from a mod's own metadata: a project with that slug, or
+/// a search hit whose name or slug is the id without spaces or dashes, for this Minecraft
+/// and loader.
+pub async fn project_for_mod_id(client: &reqwest::Client, mod_id: &str, game: &str, loaders: &[&str]) -> Option<String> {
+    // "Roughly Enough Items (REI)" is roughlyenoughitems
+    let norm = |s: &str| s.split('(').next().unwrap_or(s).to_lowercase().chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>();
+    let want = norm(mod_id);
+    let loaders: Vec<String> = loaders.iter().map(|l| l.to_string()).collect();
+    let text = mod_id.replace(['_', '-'], " ");
+    let found = search(client, Query { text: &text, project_type: "mod", game_version: Some(game), loaders: &loaders, sort: "relevance", limit: 20, offset: 0 }).await.ok()?;
+    if let Some(h) = found.hits.iter().find(|h| norm(&h.slug) == want || norm(&h.title) == want) {
+        return Some(h.project_id.clone());
+    }
+    let p: Value = fetch_json(client, &format!("{API}/project/{}", enc(mod_id))).await.ok()?;
+    p["id"].as_str().map(String::from)
+}
+
+/// Adds the required dependencies of `needed_by` (and theirs) that the instance doesn't have:
+/// the exact version a mod names, otherwise the newest for the instance's Minecraft and
+/// loader. Also projects asked for by id or slug (`wanted`). Returns the titles added, and
+/// the ids nothing was found for.
+pub async fn add_dependencies(client: &reqwest::Client, paths: &Paths, inst: &mut Instance, needed_by: &[&Version], wanted: &[String]) -> Result<(Vec<String>, Vec<String>)> {
+    let dir = paths.game_dir(&inst.id).join("mods");
+    let loaders = inst.loader.modrinth_loaders().to_vec();
+    let mut have: std::collections::HashSet<String> = inst.mods.iter().map(|m| m.project_id.clone()).collect();
+    have.extend(needed_by.iter().map(|v| v.project_id.clone()));
+    let required = |v: &Version| -> Vec<(Option<String>, Option<String>)> {
+        v.dependencies.iter().filter(|d| d.dependency_type == "required").map(|d| (d.project_id.clone(), d.version_id.clone())).collect()
+    };
+    let mut queue: Vec<(Option<String>, Option<String>)> = needed_by.iter().flat_map(|v| required(v)).collect();
+    queue.extend(wanted.iter().map(|w| (Some(w.clone()), None)));
+    let mut downloads = Vec::new();
+    let (mut added, mut missing) = (Vec::new(), Vec::new());
+    while let Some((pid, vid)) = queue.pop() {
+        if pid.as_ref().is_some_and(|p| have.contains(p)) {
+            continue;
+        }
+        let exact: Option<Version> = match &vid {
+            Some(v) => fetch_json(client, &format!("{API}/version/{}", enc(v))).await.ok(),
+            None => None,
+        };
+        let version = match (exact, &pid) {
+            (Some(v), _) => v,
+            (None, Some(p)) => match versions(client, p, &loaders, Some(&inst.game_version)).await.ok().and_then(|l| l.into_iter().next()) {
+                Some(v) => v,
+                None => {
+                    missing.push(p.clone());
+                    continue;
+                }
+            },
+            (None, None) => continue,
+        };
+        // a slug asked for resolves to the project's id
+        if !have.insert(version.project_id.clone()) {
+            continue;
+        }
+        if let Some(p) = &pid {
+            have.insert(p.clone());
+        }
+        let file = primary(&version)?;
+        let project: Project = fetch_json(client, &format!("{API}/project/{}", enc(&version.project_id))).await?;
+        downloads.push(Download { url: file.url.clone(), path: dir.join(&file.filename), sha1: Some(file.hashes.sha1.clone()), size: Some(file.size), executable: false });
+        added.push(project.title.clone());
+        inst.mods.push(InstalledMod {
+            kind: "mod".into(),
+            world: None,
+            project_id: version.project_id.clone(),
+            version_id: version.id.clone(),
+            title: project.title,
+            version: version.version_number.clone(),
+            filename: file.filename.clone(),
+            icon_url: project.icon_url,
+        });
+        queue.extend(required(&version));
+    }
+    download_all(client, downloads, |_, _| {}).await?;
+    Ok((added, missing))
 }
 
 /// Downloads the newest version of a modpack project and creates an instance from it.

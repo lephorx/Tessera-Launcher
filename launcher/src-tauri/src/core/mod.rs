@@ -17,6 +17,7 @@ pub mod livesync;
 pub mod loaders;
 pub mod mrpack;
 pub mod msauth;
+pub mod moddeps;
 pub mod modrinth;
 pub mod paths;
 pub mod rcon;
