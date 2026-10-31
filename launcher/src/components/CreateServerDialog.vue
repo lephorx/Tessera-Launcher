@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { RouterLink, useRouter } from "vue-router";
-import { Check, Loader2, Server, X } from "lucide-vue-next";
+import { Check, ChevronRight, Laptop, Loader2, Server, X } from "lucide-vue-next";
 import { api, type Instance, type Machine } from "@/lib/api";
 import { LEGAL, openLegal } from "@/lib/legal";
 import { packProgress } from "@/lib/store";
@@ -199,6 +199,11 @@ onUnmounted(stopPolling);
         The server gets the same Minecraft version, loader and server-side mods. Client-only mods (shaders, minimaps,
         performance mods like Sodium) and your options stay out. Configs come along.
       </p>
+      <RouterLink :to="`/servers/new?instance=${instance.id}`" class="inset row" style="gap: 10px; color: inherit" @click="emit('close')">
+        <Laptop :size="18" />
+        <span style="flex: 1"><b>Run it on this computer, the easy way</b><br /><span class="hint">No Docker or Tessera needed: the launcher runs it.</span></span>
+        <ChevronRight :size="18" class="muted" />
+      </RouterLink>
       <div v-if="machines && !usable.length" class="inset stack" style="gap: 8px">
         <span>No signed-in machine to create it on.</span>
         <RouterLink to="/servers/host" class="btn btn-primary" style="align-self: flex-start" @click="emit('close')"><Server /> Host a server</RouterLink>

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { RouterLink } from "vue-router";
-import { ArrowLeft, CreditCard, Laptop, Network, PlugZap, Wrench } from "lucide-vue-next";
+import { ArrowLeft, CreditCard, Laptop, Network, PlugZap, Sparkles, Wrench } from "lucide-vue-next";
 import AddMachineForm from "@/components/AddMachineForm.vue";
 import HostLocal from "@/components/HostLocal.vue";
 
@@ -28,11 +28,18 @@ const step = ref<Path>(null);
           <span class="hint">Click, pay, play. Runs on our machines, sleeps when nobody is online.</span>
         </span>
       </button>
+      <RouterLink to="/servers/new" class="card card-hover option" style="color: inherit">
+        <span class="icon"><Sparkles /></span>
+        <span>
+          <h3>On this computer, easy <span class="pill">Recommended</span></h3>
+          <span class="hint">A few clicks and it runs. The launcher sets up everything itself, no Docker or other programs. Great to start with.</span>
+        </span>
+      </RouterLink>
       <button class="card card-hover option" @click="step = 'diy'">
         <span class="icon"><Wrench /></span>
         <span>
-          <h3>Do it yourself <span class="pill">Free</span></h3>
-          <span class="hint">Run Tessera on your own hardware: this computer, another machine, or one you already have.</span>
+          <h3>Advanced: with Tessera <span class="pill">Free</span></h3>
+          <span class="hint">Tessera's dashboard with backups, your own domain and several users, on this computer (with Docker), another machine, or one you already have.</span>
         </span>
       </button>
     </div>
@@ -41,7 +48,7 @@ const step = ref<Path>(null);
     <div v-else-if="step === 'diy'" class="stack">
       <button class="card card-hover option" @click="step = 'here'">
         <span class="icon"><Laptop /></span>
-        <span><h3>On this computer</h3><span class="hint">One click installs Tessera here; then you set it up. Servers run while this computer is on.</span></span>
+        <span><h3>On this computer, with Docker</h3><span class="hint">One click installs Tessera and Docker here; then you set it up. Servers run while this computer is on.</span></span>
       </button>
       <button class="card card-hover option" @click="step = 'other'">
         <span class="icon"><Network /></span>

@@ -216,6 +216,35 @@ export interface Blocked {
   created_at: string;
 }
 
+export type EasyKind = "vanilla" | "paper" | "fabric" | "forge" | "neoforge";
+
+/** A server the launcher runs itself (no Docker). */
+export interface EasyServer {
+  id: string;
+  name: string;
+  kind: EasyKind;
+  game_version: string;
+  loader_version: string | null;
+  port: number;
+  memory_mb: number;
+  instance: string | null;
+  created_at: string;
+  state: "stopped" | "starting" | "running" | "stopping";
+  players: string[];
+  lan_address: string | null;
+}
+
+export interface EasyChanges {
+  name?: string;
+  memory_mb?: number;
+  port?: number;
+  max_players?: number;
+  difficulty?: string;
+  gamemode?: string;
+  pvp?: boolean;
+  whitelist?: boolean;
+}
+
 export interface StorageUsage {
   unique: number;
   shared: number;
@@ -408,6 +437,20 @@ export const api = {
     add: (username: string) => call<{ friend: Friend }>("friend_add", { username }).then((r) => r.friend),
     accept: (userId: string) => call<void>("friend_accept", { userId }),
     remove: (userId: string) => call<void>("friend_remove", { userId }),
+  },
+  easy: {
+    list: () => call<EasyServer[]>("easy_servers"),
+    get: (id: string) => call<EasyServer>("easy_server", { id }),
+    create: (server: { name: string; kind: EasyKind; game_version: string; memory_mb: number; instance: string | null; eula: boolean }) =>
+      call<EasyServer>("easy_create", { server }),
+    start: (id: string) => call<void>("easy_start", { id }),
+    stop: (id: string) => call<void>("easy_stop", { id }),
+    send: (id: string, line: string) => call<void>("easy_send", { id, line }),
+    log: (id: string) => call<string[]>("easy_log", { id }),
+    properties: (id: string) => call<Record<string, string>>("easy_properties", { id }),
+    update: (id: string, changes: EasyChanges) => call<EasyServer>("easy_update", { id, changes }),
+    remove: (id: string) => call<void>("easy_delete", { id }),
+    openFolder: (id: string) => call<void>("easy_open_folder", { id }),
   },
   privacy: {
     get: () => call<Privacy>("privacy_get"),

@@ -540,6 +540,87 @@ async fn install_modpack(app: AppHandle, state: State<'_, AppState>, project_id:
     result
 }
 
+// ── easy servers (no Docker) ──
+
+#[derive(Serialize, Clone)]
+struct EasyServerEvent<'a> {
+    id: &'a str,
+    /// a console line; None when the state or players changed
+    line: Option<&'a str>,
+}
+
+fn easy_emit(app: &AppHandle) -> core::easyhost::Emit {
+    let app = app.clone();
+    Arc::new(move |e| {
+        let _ = match e {
+            core::easyhost::Event::Line(id, line) => app.emit("easy-server", EasyServerEvent { id, line: Some(line) }),
+            core::easyhost::Event::Changed(id) => app.emit("easy-server", EasyServerEvent { id, line: None }),
+        };
+    })
+}
+
+#[tauri::command]
+fn easy_servers(state: State<AppState>) -> Vec<core::easyhost::View> {
+    core::easyhost::list(&state.paths)
+}
+
+#[tauri::command]
+fn easy_server(state: State<AppState>, id: String) -> CmdResult<core::easyhost::View> {
+    core::easyhost::get_view(&state.paths, &id).map_err(err)
+}
+
+#[tauri::command]
+async fn easy_create(app: AppHandle, state: State<'_, AppState>, server: core::easyhost::NewServer) -> CmdResult<core::easyhost::View> {
+    let progress = |stage: &str, done: usize, total: usize| {
+        let _ = app.emit("pack-progress", PackProgress { stage, done, total });
+    };
+    let result = core::easyhost::create(&state.client, &state.paths, server, &progress).await;
+    let _ = app.emit("pack-progress", PackProgress { stage: "", done: 0, total: 0 });
+    result.map_err(err)
+}
+
+#[tauri::command]
+async fn easy_start(app: AppHandle, state: State<'_, AppState>, id: String) -> CmdResult<()> {
+    core::easyhost::start(&state.client, &state.paths, &id, easy_emit(&app)).await.map_err(err)
+}
+
+#[tauri::command]
+async fn easy_stop(id: String) -> CmdResult<()> {
+    core::easyhost::stop(&id, std::time::Duration::from_secs(30)).await.map_err(err)
+}
+
+#[tauri::command]
+async fn easy_send(id: String, line: String) -> CmdResult<()> {
+    core::easyhost::send(&id, &line).await.map_err(err)
+}
+
+#[tauri::command]
+fn easy_log(id: String) -> Vec<String> {
+    core::easyhost::log(&id)
+}
+
+#[tauri::command]
+fn easy_properties(state: State<AppState>, id: String) -> CmdResult<HashMap<String, String>> {
+    core::easyhost::get(&state.paths, &id).map_err(err)?;
+    Ok(core::easyhost::read_properties(&core::easyhost::data_dir(&state.paths, &id)).into_iter().collect())
+}
+
+#[tauri::command]
+fn easy_update(state: State<AppState>, id: String, changes: core::easyhost::Changes) -> CmdResult<core::easyhost::View> {
+    core::easyhost::update(&state.paths, &id, changes).map_err(err)
+}
+
+#[tauri::command]
+fn easy_delete(state: State<AppState>, id: String) -> CmdResult<()> {
+    core::easyhost::delete(&state.paths, &id).map_err(err)
+}
+
+#[tauri::command]
+fn easy_open_folder(state: State<AppState>, id: String) -> CmdResult<()> {
+    core::easyhost::get(&state.paths, &id).map_err(err)?;
+    tauri_plugin_opener::open_path(core::easyhost::data_dir(&state.paths, &id), None::<&str>).map_err(err)
+}
+
 /// "Get local pack": a new instance that can join a server on a machine.
 #[tauri::command]
 async fn server_local_pack(app: AppHandle, state: State<'_, AppState>, machine_id: String, server_id: i64) -> CmdResult<Instance> {
@@ -1581,7 +1662,26 @@ pub fn run() {
             clear_cache,
             export_debug,
             server_local_pack,
+            easy_servers,
+            easy_server,
+            easy_create,
+            easy_start,
+            easy_stop,
+            easy_send,
+            easy_log,
+            easy_properties,
+            easy_update,
+            easy_delete,
+            easy_open_folder,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Tessera Launcher");
+        .build(tauri::generate_context!())
+        .expect("error while running Tessera Launcher")
+        .run(|_, event| {
+            // servers save their worlds before the launcher goes
+            if let tauri::RunEvent::Exit = event {
+                if core::easyhost::any_running() {
+                    tauri::async_runtime::block_on(core::easyhost::stop_all());
+                }
+            }
+        });
 }

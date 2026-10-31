@@ -5,6 +5,7 @@ pub mod account;
 pub mod assets;
 pub mod debug;
 pub mod download;
+pub mod easyhost;
 pub mod forge;
 pub mod hostlocal;
 pub mod instances;
