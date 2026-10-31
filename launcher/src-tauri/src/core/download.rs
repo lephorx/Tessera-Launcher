@@ -76,7 +76,11 @@ async fn present(d: &Download) -> bool {
 
 async fn download_one(client: &reqwest::Client, d: &Download) -> Result<()> {
     ensure_parent(&d.path).with_context(|| format!("creating the folder for {}", d.path.display()))?;
-    let tmp = d.path.with_extension("part");
+    // "jvm.part" for both lib/jvm.cfg and lib/jvm.lib (Windows' Java) would have the two
+    // downloads write and move one temp file: keep the whole name
+    let mut tmp = d.path.clone().into_os_string();
+    tmp.push(".part");
+    let tmp = PathBuf::from(tmp);
     let mut last_err = None;
     for attempt in 0..3 {
         if attempt > 0 {
