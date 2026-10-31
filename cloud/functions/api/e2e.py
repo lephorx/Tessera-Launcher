@@ -43,6 +43,9 @@ r = requests.post(f"{API}/shares", params=q, data=buf.getvalue(), headers=A); ch
 check("public lookup works", requests.get(f"{API}/shares/{code}").json()["share"]["owner"] == ua)
 check("B can't delete A's share", requests.delete(f"{API}/shares/{code}", headers=B).status_code == 404)
 check("B can't add members", requests.post(f"{API}/shares/{code}/members", json={"username": ub}, headers=B).status_code == 404)
+# new members are private by default; B opens up for the share checks
+check("new members are private by default", requests.get(f"{API}/me/privacy", headers=B).json()["privacy"] == {"friend_requests": "friends_of_friends", "share_invites": "friends"})
+check("A and B accept requests and shares from anyone", all(requests.put(f"{API}/me/privacy", json={"friend_requests": "everyone", "share_invites": "everyone"}, headers=h).ok for h in (A, B)))
 check("add B by username", requests.post(f"{API}/shares/{code}/members", json={"username": ub}, headers=A).status_code == 201)
 check("unknown username -> 404", requests.post(f"{API}/shares/{code}/members", json={"username": "nobody_x_y"}, headers=A).status_code == 404)
 check("B sees it under received", any(s["code"] == code for s in requests.get(f"{API}/shares/received", headers=B).json()["shares"]))
@@ -103,8 +106,11 @@ check("B unfriends", requests.delete(f"{API}/friends/{ida}", headers=B).ok and F
 check("B asks, A asking back accepts", requests.post(f"{API}/friends", json={"username": ua}, headers=B).ok
       and requests.post(f"{API}/friends", json={"username": ub}, headers=A).json()["friend"]["status"] == "friend")
 idb_ = requests.get(f"{API}/me", headers=B).json()["user"]["id"]
-check("privacy defaults to everyone", requests.get(f"{API}/me/privacy", headers=B).json()["privacy"] == {"friend_requests": "everyone", "share_invites": "everyone"})
+check("privacy is as B set it", requests.get(f"{API}/me/privacy", headers=B).json()["privacy"] == {"friend_requests": "everyone", "share_invites": "everyone"})
 check("bad privacy value -> 400", requests.put(f"{API}/me/privacy", json={"friend_requests": "friends"}, headers=B).status_code == 400)
+# what launchers up to 0.6.12 send: the unchanged setting as null
+r = requests.put(f"{API}/me/privacy", json={"friend_requests": "everyone", "share_invites": None}, headers=B)
+check("privacy with a null setting -> keeps it", r.ok and r.json()["privacy"] == {"friend_requests": "everyone", "share_invites": "everyone"})
 check("B: shares from friends only", requests.put(f"{API}/me/privacy", json={"share_invites": "friends"}, headers=B).json()["privacy"]["share_invites"] == "friends")
 code3 = requests.post(f"{API}/shares", params=q, data=pack(), headers=A).json()["share"]["code"]
 check("friend A may still share with B", requests.post(f"{API}/shares/{code3}/members", json={"username": ub}, headers=A).status_code == 201)

@@ -1040,7 +1040,15 @@ async fn privacy_get(state: State<'_, AppState>) -> CmdResult<Value> {
 
 #[tauri::command]
 async fn privacy_set(state: State<'_, AppState>, friend_requests: Option<String>, share_invites: Option<String>) -> CmdResult<Value> {
-    let body = serde_json::json!({ "friend_requests": friend_requests, "share_invites": share_invites });
+    // only what changes: a missing setting stays as it is
+    let mut body = serde_json::Map::new();
+    if let Some(f) = friend_requests {
+        body.insert("friend_requests".into(), f.into());
+    }
+    if let Some(s) = share_invites {
+        body.insert("share_invites".into(), s.into());
+    }
+    let body = Value::Object(body);
     let v = account::api(&state.client, reqwest::Method::PUT, "/me/privacy", Some(body), None).await.map_err(err)?;
     Ok(v["privacy"].clone())
 }

@@ -818,9 +818,10 @@ async function mayInviteToShare(from: string, to: string) {
   return !!rowCount;
 }
 
+// a setting left out or null stays as it is (launchers up to 0.6.12 send null for the other one)
 const privacy = z.object({
-  friend_requests: z.enum(["everyone", "friends_of_friends", "no_one"]).optional(),
-  share_invites: z.enum(["everyone", "friends", "no_one"]).optional(),
+  friend_requests: z.enum(["everyone", "friends_of_friends", "no_one"]).nullish(),
+  share_invites: z.enum(["everyone", "friends", "no_one"]).nullish(),
 });
 
 app.get("/me/privacy", async (c) => {
