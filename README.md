@@ -69,3 +69,7 @@ This repo started as the concept for the next stage of [Tessera](https://github.
 |---|---|
 | [`lephorx/Tessera`](https://github.com/lephorx/Tessera) | The server manager (agent + local dashboard), formerly CSCM. Stays usable on its own. |
 | [`lephorx/Tessera-Launcher`](https://github.com/lephorx/Tessera-Launcher) | This repo (pnpm monorepo): [`launcher/`](launcher/) (desktop app), [`cloud/`](cloud/) (accounts and sharing API on Neon) and the concept docs. |
+
+## Team
+
+Tessera is made by [lephor](https://github.com/lephorx) and [Nanoriddler](https://github.com/Nanoriddler).
