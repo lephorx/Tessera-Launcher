@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { RouterLink, useRouter } from "vue-router";
-import { openPath } from "@tauri-apps/plugin-opener";
 import { ArrowLeft, FolderOpen, Globe, Package, PackageCheck, Pencil, Plus, Server, Settings2, SquareTerminal, Trash2, UserPlus } from "lucide-vue-next";
 import AppDialog from "@/components/AppDialog.vue";
 import CreateServerDialog from "@/components/CreateServerDialog.vue";
@@ -146,7 +145,7 @@ async function remove() {
 
 async function openFolder() {
   try {
-    await openPath(await api.instances.folder(props.id));
+    await api.instances.openFolder(props.id);
   } catch (e) {
     toast.error(errorText(e));
   }

@@ -449,6 +449,8 @@ export const api = {
     removeMany: (ids: string[]) => call<number>("delete_instances", { ids }),
     setGroup: (ids: string[], name: string, member: boolean) => call<void>("set_group", { ids, name, member }),
     folder: (id: string) => call<string>("instance_folder", { id }),
+    /** Opens the instance's folder (or a world's) in Explorer / Finder. */
+    openFolder: (id: string, world?: string) => call<void>("instance_open_folder", { id, world: world ?? null }),
     running: () => call<string[]>("running_instances"),
     logs: (id: string) => call<string[]>("instance_logs", { id }),
     launch: (id: string, world: string | null = null, server: string | null = null) => call<void>("launch_instance", { id, world, server }),

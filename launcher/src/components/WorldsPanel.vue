@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
-import { openPath } from "@tauri-apps/plugin-opener";
 import { Copy, FolderOpen, Globe, Loader2, Play, RefreshCw, RotateCw, Search, Server, Trash2 } from "lucide-vue-next";
 import { api, type Instance, type LinkedServer, type ServerEntry, type World } from "@/lib/api";
 import { relative } from "@/lib/format";
@@ -111,8 +110,7 @@ async function play(w: World) {
 }
 
 async function openFolder(w: World) {
-  const game = await api.instances.folder(props.instance.id);
-  await openPath(`${game}/saves/${w.folder}`);
+  await api.instances.openFolder(props.instance.id, w.folder).catch((e) => toast.error(errorText(e)));
 }
 
 async function remove() {

@@ -345,6 +345,22 @@ fn instance_folder(state: State<AppState>, id: String) -> CmdResult<String> {
     Ok(state.paths.game_dir(&id).to_string_lossy().into_owned())
 }
 
+/// Opens the instance's folder, or one of its worlds, in Explorer / Finder (the window itself
+/// may not open paths).
+#[tauri::command]
+fn instance_open_folder(state: State<AppState>, id: String, world: Option<String>) -> CmdResult<()> {
+    instances::get(&state.paths, &id).map_err(err)?;
+    let mut dir = state.paths.game_dir(&id);
+    if let Some(w) = world {
+        if !instances::worlds(&state.paths, &id).iter().any(|x| *x == w) {
+            return Err("That world doesn't exist".into());
+        }
+        dir = dir.join("saves").join(w);
+    }
+    std::fs::create_dir_all(&dir).map_err(err)?;
+    tauri_plugin_opener::open_path(dir, None::<&str>).map_err(err)
+}
+
 #[tauri::command]
 fn running_instances(state: State<AppState>) -> Vec<String> {
     state.running.lock().unwrap().keys().cloned().collect()
@@ -1779,6 +1795,7 @@ pub fn run() {
             update_instance,
             delete_instance,
             instance_folder,
+            instance_open_folder,
             create_group,
             delete_group,
             set_group,
