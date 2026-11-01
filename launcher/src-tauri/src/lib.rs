@@ -109,6 +109,8 @@ async fn game_versions(state: State<'_, AppState>) -> CmdResult<GameVersions> {
         versions: manifest
             .versions
             .into_iter()
+            // a dozen old pre-releases have spaces in their names ("1.14 Pre-Release 1"): not offered
+            .filter(|v| versions::is_safe_version(&v.id))
             .map(|v| GameVersion { fabric: fabric.contains(&v.id), id: v.id, kind: v.kind })
             .collect(),
     })
@@ -423,6 +425,50 @@ fn launch_instance(app: AppHandle, state: State<AppState>, id: String, world: Op
     Ok(())
 }
 
+/// Waiting answers to "deps-confirm" questions, by question id.
+static CONFIRMS: std::sync::LazyLock<Mutex<HashMap<u64, oneshot::Sender<bool>>>> = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[derive(Serialize, Clone)]
+struct DepsConfirm<'a> {
+    id: u64,
+    /// The instance being launched (None: a pack being made, e.g. from a server).
+    instance: Option<&'a str>,
+    name: Option<&'a str>,
+    items: &'a [modrinth::NameMatch],
+}
+
+/// Asks the launcher window whether to install mods Modrinth found only by name: a
+/// "deps-confirm" event, answered with `deps_confirm_answer`. No answer in 10 minutes is a no.
+fn ask_to_install(app: &AppHandle, instance: Option<(&str, &str)>) -> impl Fn(Vec<modrinth::NameMatch>) -> futures::future::BoxFuture<'static, bool> + Send + Sync {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let app = app.clone();
+    let instance = instance.map(|(id, name)| (id.to_string(), name.to_string()));
+    move |items| {
+        let app = app.clone();
+        let instance = instance.clone();
+        Box::pin(async move {
+            let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let (tx, rx) = oneshot::channel();
+            CONFIRMS.lock().unwrap().insert(id, tx);
+            if let Some((inst, _)) = &instance {
+                let _ = app.emit("launch-progress", ProgressEvent { instance: inst, stage: "Waiting for your answer", done: 0, total: 0 });
+            }
+            let ask = DepsConfirm { id, instance: instance.as_ref().map(|i| i.0.as_str()), name: instance.as_ref().map(|i| i.1.as_str()), items: &items };
+            let _ = app.emit("deps-confirm", ask);
+            let answer = tokio::time::timeout(std::time::Duration::from_secs(600), rx).await;
+            CONFIRMS.lock().unwrap().remove(&id);
+            matches!(answer, Ok(Ok(true)))
+        })
+    }
+}
+
+#[tauri::command]
+fn deps_confirm_answer(id: u64, install: bool) {
+    if let Some(tx) = CONFIRMS.lock().unwrap().remove(&id) {
+        let _ = tx.send(install);
+    }
+}
+
 async fn run_instance(app: &AppHandle, mut inst: Instance, quick_play: Option<QuickPlay>) -> anyhow::Result<Option<i32>> {
     let state = app.state::<AppState>();
     let settings = settings::load(&state.paths);
@@ -444,7 +490,9 @@ async fn run_instance(app: &AppHandle, mut inst: Instance, quick_play: Option<Qu
             let names: Vec<String> = missing.iter().map(|(m, by)| format!("{m} (for {by})")).collect();
             push_log(app, &id, &format!("[Tessera] Missing mods: {}. Adding them from Modrinth.", names.join(", ")));
             let before = inst.mods.len();
-            match core::serverclient::complete(&state.client, &state.paths, &mut inst, &[], &progress).await {
+            // mods found only by name wait for a yes in the launcher; the launch waits too
+            let ask = ask_to_install(app, Some((&id, &inst.name)));
+            match core::serverclient::complete(&state.client, &state.paths, &mut inst, &[], &progress, &ask).await {
                 Ok(still) => {
                     let added: Vec<&str> = inst.mods[before..].iter().map(|m| m.title.as_str()).collect();
                     if !added.is_empty() {
@@ -557,6 +605,7 @@ async fn search_projects(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn install_project(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -564,19 +613,60 @@ async fn install_project(
     project_id: String,
     kind: String,
     world: Option<String>,
+    version_id: Option<String>,
 ) -> CmdResult<Instance> {
-    let inst = modrinth::install(&state.client, &state.paths, &instance_id, &project_id, &kind, world.as_deref()).await.map_err(err)?;
+    let inst = modrinth::install(&state.client, &state.paths, &instance_id, &project_id, &kind, world.as_deref(), version_id.as_deref())
+        .await
+        .map_err(err)?;
     schedule_server_sync(&app, &instance_id);
     Ok(inst)
 }
 
 #[tauri::command]
-async fn install_modpack(app: AppHandle, state: State<'_, AppState>, project_id: String) -> CmdResult<Instance> {
+async fn install_modpack(app: AppHandle, state: State<'_, AppState>, project_id: String, version_id: Option<String>) -> CmdResult<Instance> {
     let progress = |stage: &str, done: usize, total: usize| {
         let _ = app.emit("pack-progress", PackProgress { stage, done, total });
     };
-    let result = modrinth::install_modpack(&state.client, &state.paths, &project_id, &progress).await.map_err(err);
+    let result = modrinth::install_modpack(&state.client, &state.paths, &project_id, version_id.as_deref(), &progress).await.map_err(err);
     let _ = app.emit("pack-progress", PackProgress { stage: "", done: 0, total: 0 });
+    result
+}
+
+#[tauri::command]
+async fn project_detail(state: State<'_, AppState>, id: String) -> CmdResult<modrinth::ProjectDetail> {
+    modrinth::project_detail(&state.client, &id).await.map_err(err)
+}
+
+#[tauri::command]
+async fn project_versions(state: State<'_, AppState>, id: String, loaders: Option<Vec<String>>, game_version: Option<String>) -> CmdResult<Vec<modrinth::VersionInfo>> {
+    let loaders = loaders.unwrap_or_default();
+    let loaders: Vec<&str> = loaders.iter().map(String::as_str).collect();
+    modrinth::project_versions(&state.client, &id, &loaders, game_version.as_deref()).await.map_err(err)
+}
+
+/// What a modpack version brings (downloads the .mrpack once, it's reused to install).
+#[tauri::command]
+async fn modpack_contents(state: State<'_, AppState>, project_id: String, version_id: Option<String>) -> CmdResult<core::mrpack::Contents> {
+    let version = modrinth::modpack_version(&state.client, &project_id, version_id.as_deref()).await.map_err(err)?;
+    let file = modrinth::cached_mrpack(&state.client, &state.paths, &version, &|_, _, _| {}).await.map_err(err)?;
+    core::mrpack::open(&file).map_err(err)?.contents(&state.client).await.map_err(err)
+}
+
+/// Moves a modpack instance to another version of its pack (None: the newest), or with
+/// `reset`, back to exactly what its version installs.
+#[tauri::command]
+async fn modpack_apply(app: AppHandle, state: State<'_, AppState>, id: String, version_id: Option<String>, reset: bool) -> CmdResult<Instance> {
+    if state.running.lock().unwrap().contains_key(&id) {
+        return Err("Stop the game first".into());
+    }
+    let progress = |stage: &str, done: usize, total: usize| {
+        let _ = app.emit("pack-progress", PackProgress { stage, done, total });
+    };
+    let result = modrinth::modpack_apply(&state.client, &state.paths, &id, version_id.as_deref(), reset, &progress).await.map_err(err);
+    let _ = app.emit("pack-progress", PackProgress { stage: "", done: 0, total: 0 });
+    if result.is_ok() {
+        schedule_server_sync(&app, &id);
+    }
     result
 }
 
@@ -813,7 +903,8 @@ async fn server_local_pack(app: AppHandle, state: State<'_, AppState>, machine_i
     let progress = |stage: &str, done: usize, total: usize| {
         let _ = app.emit("pack-progress", PackProgress { stage, done, total });
     };
-    let result = core::serverclient::make(&state.client, &state.paths, &machine_id, server_id, &progress).await;
+    let ask = ask_to_install(&app, None);
+    let result = core::serverclient::make(&state.client, &state.paths, &machine_id, server_id, &progress, &ask).await;
     let _ = app.emit("pack-progress", PackProgress { stage: "", done: 0, total: 0 });
     result.map_err(err)
 }
@@ -912,7 +1003,7 @@ async fn account_change_email(state: State<'_, AppState>, email: String, passwor
 
 // ── two-step sign-in by email ──
 
-/// Emails a code for "sign_in", "enable" or "disable".
+/// Emails a code for "sign_in", "enable", "disable" or "delete_account".
 #[tauri::command]
 async fn account_2fa_send(state: State<'_, AppState>, purpose: String) -> CmdResult<()> {
     account::two_factor_send(&state.client, &purpose).await.map_err(err)
@@ -945,7 +1036,7 @@ async fn account_sessions(state: State<'_, AppState>) -> CmdResult<Value> {
 #[tauri::command]
 async fn account_session_end(state: State<'_, AppState>, id: Option<String>) -> CmdResult<u64> {
     match id {
-        Some(id) if id.len() == 36 && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') => {
+        Some(id) if is_uuid(&id) => {
             account::api(&state.client, reqwest::Method::DELETE, &format!("/me/sessions/{id}"), None, None).await.map_err(err)?;
             Ok(1)
         }
@@ -1012,8 +1103,8 @@ async fn account_export(state: State<'_, AppState>, path: String) -> CmdResult<(
 }
 
 #[tauri::command]
-async fn account_delete(state: State<'_, AppState>, password: String, confirm: String) -> CmdResult<()> {
-    account::delete(&state.client, &password, &confirm).await.map_err(err)
+async fn account_delete(state: State<'_, AppState>, password: String, confirm: String, code: Option<String>) -> CmdResult<()> {
+    account::delete(&state.client, &password, &confirm, code.as_deref()).await.map_err(err)
 }
 
 #[tauri::command]
@@ -1080,6 +1171,7 @@ async fn share_stop(state: State<'_, AppState>, id: String) -> CmdResult<()> {
 
 #[tauri::command]
 async fn share_add_friend(state: State<'_, AppState>, code: String, username: String, role: Option<String>) -> CmdResult<Value> {
+    let code = account::share_code(&code).map_err(err)?;
     let role = role.filter(|r| r == "viewer" || r == "editor").unwrap_or_else(|| "viewer".into());
     account::api(&state.client, reqwest::Method::POST, &format!("/shares/{code}/members"), Some(serde_json::json!({ "username": username.trim(), "role": role })), None)
         .await
@@ -1088,12 +1180,15 @@ async fn share_add_friend(state: State<'_, AppState>, code: String, username: St
 
 #[tauri::command]
 async fn share_remove_friend(state: State<'_, AppState>, code: String, user_id: String) -> CmdResult<()> {
-    account::api(&state.client, reqwest::Method::DELETE, &format!("/shares/{code}/members/{user_id}"), None, None).await.map_err(err)?;
+    let code = account::share_code(&code).map_err(err)?;
+    let id = self::user_id(&user_id)?;
+    account::api(&state.client, reqwest::Method::DELETE, &format!("/shares/{code}/members/{id}"), None, None).await.map_err(err)?;
     Ok(())
 }
 
 #[tauri::command]
 async fn share_set_expiry(state: State<'_, AppState>, code: String, days: Option<u32>) -> CmdResult<Value> {
+    let code = account::share_code(&code).map_err(err)?;
     account::api(&state.client, reqwest::Method::PATCH, &format!("/shares/{code}"), Some(serde_json::json!({ "expires_in_days": days })), None)
         .await
         .map_err(err)
@@ -1153,9 +1248,14 @@ async fn friend_add(state: State<'_, AppState>, username: String) -> CmdResult<V
         .map_err(err)
 }
 
-/// Friend ids go into the URL path: only accept what a uuid can contain.
+/// User and session ids go into the URL path: only uuids (8-4-4-4-12 hex digits).
+fn is_uuid(id: &str) -> bool {
+    let parts: Vec<&str> = id.split('-').collect();
+    parts.iter().map(|p| p.len()).eq([8, 4, 4, 4, 12]) && parts.iter().all(|p| p.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
 fn user_id(id: &str) -> CmdResult<&str> {
-    if !id.is_empty() && id.len() <= 36 && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+    if is_uuid(id) {
         Ok(id)
     } else {
         Err("Unknown friend".into())
@@ -1338,6 +1438,48 @@ fn start_live_sync(app: AppHandle) {
     });
 }
 
+/// What sharing an instance uploads, shown before the first upload.
+#[tauri::command]
+fn share_preview(state: State<'_, AppState>, id: String) -> CmdResult<Value> {
+    instances::get(&state.paths, &id).map_err(err)?;
+    share::preview(&state.paths, &id).map_err(err)
+}
+
+/// Shared instances with jars or a version change waiting for this member's answer.
+#[tauri::command]
+fn share_reviews(state: State<'_, AppState>) -> Vec<crate::core::sharetrust::Review> {
+    crate::core::sharetrust::pending(&state.paths)
+}
+
+/// One instance's held-back jars (waiting and declined) and version change, for its Share tab.
+#[tauri::command]
+fn share_review(state: State<'_, AppState>, id: String) -> CmdResult<crate::core::sharetrust::Review> {
+    let inst = instances::get(&state.paths, &id).map_err(err)?;
+    Ok(crate::core::sharetrust::review(&state.paths, &inst))
+}
+
+/// Accepts (installs) or declines jars from a share that Tessera doesn't know, by SHA-512.
+#[tauri::command]
+fn share_decide_jars(state: State<'_, AppState>, id: String, accept: Vec<String>, decline: Vec<String>) -> CmdResult<crate::core::sharetrust::Review> {
+    crate::core::sharetrust::decide_jars(&state.paths, &id, &accept, &decline).map_err(err)?;
+    let inst = instances::get(&state.paths, &id).map_err(err)?;
+    Ok(crate::core::sharetrust::review(&state.paths, &inst))
+}
+
+/// Accepts or declines a share's new Minecraft or loader version. Accepted: synced right away
+/// (after the game closes, if it's running).
+#[tauri::command]
+async fn share_decide_version(app: AppHandle, state: State<'_, AppState>, id: String, accept: bool) -> CmdResult<()> {
+    crate::core::sharetrust::decide_version(&state.paths, &id, accept).map_err(err)?;
+    if accept {
+        let running: std::collections::HashSet<String> = state.running.lock().unwrap().keys().cloned().collect();
+        for e in livesync::tick(&state.client, &state.paths, &running, Some(&id)).await {
+            let _ = app.emit("share-sync", e);
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn share_member_status(state: State<'_, AppState>, id: String) -> CmdResult<Value> {
     share::member_status(&state.client, &state.paths, &id).await.map_err(err)
@@ -1367,15 +1509,14 @@ async fn share_leave(state: State<'_, AppState>, id: String) -> CmdResult<()> {
 
 #[tauri::command]
 async fn share_transfer(state: State<'_, AppState>, id: String, user_id: String) -> CmdResult<()> {
+    self::user_id(&user_id)?;
     share::transfer(&state.client, &state.paths, &id, &user_id).await.map_err(err)
 }
 
 #[tauri::command]
 async fn share_set_role(state: State<'_, AppState>, code: String, user_id: String, role: String) -> CmdResult<()> {
     let id = self::user_id(&user_id)?;
-    if !code.chars().all(|c| c.is_ascii_alphanumeric()) {
-        return Err("Unknown share".into());
-    }
+    let code = account::share_code(&code).map_err(err)?;
     account::api(&state.client, reqwest::Method::PATCH, &format!("/shares/{code}/members/{id}"), Some(serde_json::json!({ "role": role })), None)
         .await
         .map_err(err)?;
@@ -1386,6 +1527,13 @@ async fn share_set_role(state: State<'_, AppState>, code: String, user_id: Strin
 async fn share_join(app: AppHandle, state: State<'_, AppState>, link: String) -> CmdResult<Instance> {
     let r = share::join(&state.client, &state.paths, &link, &pack_progress(&app)).await.map_err(err);
     pack_done(&app);
+    // jars Tessera doesn't know were held back: the popup asks right away
+    if let Ok(inst) = &r {
+        let review = crate::core::sharetrust::review(&state.paths, inst);
+        if let Some(h) = review.held.iter().find(|h| !h.declined) {
+            let _ = app.emit("share-sync", livesync::SyncEvent { instance: inst.id.clone(), name: inst.name.clone(), state: "review", by: h.by.clone(), message: None });
+        }
+    }
     r
 }
 
@@ -1733,7 +1881,7 @@ async fn ms_sign_in(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Opt
             true
         })
         .on_new_window(|u, _| {
-            let _ = tauri_plugin_opener::open_url(u.as_str(), None::<&str>);
+            open_web_link(&u);
             tauri::webview::NewWindowResponse::Deny
         })
         // not private: Microsoft remembers the accounts, so adding one again is one click
@@ -1757,6 +1905,18 @@ async fn ms_sign_in(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Opt
     settings.player_name = account.name.clone();
     settings::save(&state.paths, &settings).map_err(err)?;
     Ok(Some(account))
+}
+
+/// Links out of the Microsoft and setup windows go to the browser, but only web links: a page
+/// there must not make the OS open file:, smb: or app links (those can run programs).
+fn is_web_link(u: &tauri::Url) -> bool {
+    matches!(u.scheme(), "http" | "https") && u.host_str().is_some()
+}
+
+fn open_web_link(u: &tauri::Url) {
+    if is_web_link(u) {
+        let _ = tauri_plugin_opener::open_url(u.as_str(), None::<&str>);
+    }
 }
 
 /// Signs the account out of the launcher; if it was playing, the next account plays.
@@ -1848,11 +2008,11 @@ async fn host_local_open_setup(app: AppHandle, state: State<'_, AppState>) -> Cm
             if is_tessera(u) || u.scheme() == "about" {
                 return true;
             }
-            let _ = tauri_plugin_opener::open_url(u.as_str(), None::<&str>);
+            open_web_link(u);
             false
         })
         .on_new_window(|u, _| {
-            let _ = tauri_plugin_opener::open_url(u.as_str(), None::<&str>);
+            open_web_link(&u);
             tauri::webview::NewWindowResponse::Deny
         })
         .title("Tessera setup")
@@ -1940,6 +2100,10 @@ pub fn run() {
             search_projects,
             install_project,
             install_modpack,
+            project_detail,
+            project_versions,
+            modpack_contents,
+            modpack_apply,
             import_pack,
             pack_entries,
             export_pack,
@@ -1984,12 +2148,18 @@ pub fn run() {
             share_join,
             share_member_status,
             share_sync_now,
+            share_preview,
+            share_reviews,
+            share_review,
+            share_decide_jars,
+            share_decide_version,
             start_live_sync,
             share_pull,
             share_publish,
             share_leave,
             share_transfer,
             share_set_role,
+            deps_confirm_answer,
             friends_list,
             notifications_list,
             notifications_seen,
@@ -2071,4 +2241,28 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Tessera Launcher");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ids_in_api_paths_are_uuids() {
+        assert!(is_uuid("0b7f6c1e-1c2d-4e5f-8a9b-0c1d2e3f4a5b"));
+        assert!(!is_uuid("../me#"));
+        assert!(!is_uuid("0b7f6c1e1c2d4e5f8a9b0c1d2e3f4a5b"));
+        assert!(!is_uuid("0b7f6c1e-1c2d-4e5f-8a9b-0c1d2e3f4a5/"));
+        assert!(user_id("--------").is_err());
+    }
+
+    #[test]
+    fn only_web_links_go_to_the_browser() {
+        let url = |s: &str| s.parse::<tauri::Url>().unwrap();
+        assert!(is_web_link(&url("https://playit.gg/download")));
+        assert!(is_web_link(&url("http://example.com/")));
+        for bad in ["file:///Applications/Calculator.app", "smb://host/share", "ms-settings:display", "javascript:alert(1)", "vscode://x"] {
+            assert!(!is_web_link(&url(bad)), "{bad}");
+        }
+    }
 }

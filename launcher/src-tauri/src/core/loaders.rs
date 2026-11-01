@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use super::download::{cached_json, fetch_json};
 use super::paths::Paths;
-use super::versions::{Arguments, Library};
+use super::versions::{check_version, is_safe_version, Arguments, Library};
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -88,6 +88,7 @@ fn version_key(v: &str) -> Vec<u64> {
 
 /// Versions of `loader` for `game`, newest first.
 pub async fn versions(client: &reqwest::Client, loader: Loader, game: &str) -> Result<Vec<LoaderVersion>> {
+    super::versions::check_version(game)?;
     match loader {
         Loader::Vanilla => Ok(vec![]),
         Loader::Fabric | Loader::Quilt => {
@@ -95,6 +96,7 @@ pub async fn versions(client: &reqwest::Client, loader: Loader, game: &str) -> R
             let entries: Vec<MetaEntry> = fetch_json(client, &format!("{base}/versions/loader/{game}")).await.unwrap_or_default();
             Ok(entries
                 .into_iter()
+                .filter(|e| is_safe_version(&e.loader.version))
                 .map(|e| LoaderVersion { stable: e.loader.stable.unwrap_or_else(|| looks_stable(&e.loader.version)), version: e.loader.version })
                 .collect())
         }
@@ -109,7 +111,7 @@ pub async fn versions(client: &reqwest::Client, loader: Loader, game: &str) -> R
                 .filter_map(|s| s.split("</version>").next())
                 .filter_map(|full| full.strip_prefix(&prefix))
                 // "1.20.1-47.3.0" → "47.3.0"; skip odd branch builds like "1.7.10-10.13.4.1614-1.7.10"
-                .filter(|v| !v.contains('-'))
+                .filter(|v| !v.contains('-') && is_safe_version(v))
                 .map(|v| LoaderVersion { stable: recommended.as_deref() == Some(v), version: v.to_string() })
                 .collect();
             list.sort_by(|a, b| version_key(&b.version).cmp(&version_key(&a.version)));
@@ -131,7 +133,7 @@ pub async fn versions(client: &reqwest::Client, loader: Loader, game: &str) -> R
             let mut list: Vec<LoaderVersion> = all
                 .versions
                 .into_iter()
-                .filter(|v| v.starts_with(&prefix))
+                .filter(|v| v.starts_with(&prefix) && is_safe_version(v))
                 .map(|v| LoaderVersion { stable: looks_stable(&v), version: v })
                 .collect();
             list.sort_by(|a, b| version_key(&b.version).cmp(&version_key(&a.version)));
@@ -157,6 +159,8 @@ pub async fn meta_profile(client: &reqwest::Client, paths: &Paths, loader: Loade
         Loader::Quilt => (QUILT, "quilt-loader"),
         _ => return Err(anyhow!("not a meta loader")),
     };
+    check_version(game)?;
+    check_version(version)?;
     let id = format!("{name}-{version}-{game}");
     let url = format!("{base}/versions/loader/{game}/{version}/profile/json");
     cached_json(client, &url, paths.version_dir(&id).join(format!("{id}.json")), None).await

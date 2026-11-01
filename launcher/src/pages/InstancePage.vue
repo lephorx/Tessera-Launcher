@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { RouterLink, useRouter } from "vue-router";
-import { ArrowLeft, FolderOpen, Globe, Package, PackageCheck, Pencil, Plus, Server, Settings2, SquareTerminal, Trash2, UserPlus } from "lucide-vue-next";
+import { ArrowLeft, FolderOpen, Globe, Package, PackageCheck, Pencil, Plus, Search, Server, Settings2, SquareTerminal, Trash2, UserPlus } from "lucide-vue-next";
 import AppDialog from "@/components/AppDialog.vue";
 import CreateServerDialog from "@/components/CreateServerDialog.vue";
 import ExportDialog from "@/components/ExportDialog.vue";
 import InstanceOptions from "@/components/InstanceOptions.vue";
+import ModpackPanel from "@/components/ModpackPanel.vue";
 import SharePanel from "@/components/SharePanel.vue";
 import WorldsPanel from "@/components/WorldsPanel.vue";
 import IconEditor from "@/components/IconEditor.vue";
@@ -31,6 +32,7 @@ function goTab(to: (typeof TAB_ORDER)[number]) {
 }
 const content = ref<ContentFile[]>([]);
 const kindFilter = ref<"all" | ContentFile["kind"]>("all");
+const contentQuery = ref("");
 const editingIcon = ref(false);
 const exporting = ref(false);
 const creatingServer = ref(false);
@@ -55,7 +57,23 @@ const summary = computed(() => {
   if (off) parts.push(`${off} turned off`);
   return parts.join(" · ");
 });
-const shownContent = computed(() => content.value.filter((c) => kindFilter.value === "all" || c.kind === kindFilter.value));
+/** A modpack instance whose pack Tessera can update (from Modrinth). */
+const fromModpack = computed(() => !!inst.value?.pack?.project_id);
+/** Content added since the modpack was installed (the pack's files are known for packs installed since 0.6.22). */
+const addedCount = computed(() => (inst.value?.pack?.files.length ? content.value.filter((c) => !c.from_pack && c.kind !== "datapack").length : 0));
+async function packChanged(i: Instance) {
+  inst.value = i;
+  await loadContent();
+}
+// the search matches a name, file name, version or world, in any order of words
+const shownContent = computed(() => {
+  const words = contentQuery.value.toLowerCase().split(/\s+/).filter(Boolean);
+  return content.value.filter((c) => {
+    if (kindFilter.value !== "all" && c.kind !== kindFilter.value) return false;
+    const text = `${c.title} ${c.filename} ${c.version ?? ""} ${c.world ?? ""}`.toLowerCase();
+    return words.every((w) => text.includes(w));
+  });
+});
 
 /** After a share update, leaving a share, or an ownership change. */
 async function reloadInstance() {
@@ -219,25 +237,41 @@ async function openFolder() {
             {{ k.label }}<span v-if="countOf(k.id)" class="choice-count num">{{ countOf(k.id) }}</span>
           </button>
         </div>
-        <span class="spacer" />
+        <div v-if="content.length" class="input-icon" style="flex: 1; min-width: 160px">
+          <Search />
+          <input v-model="contentQuery" class="input" style="height: 30px" placeholder="Search content" aria-label="Search content" @keydown.esc="contentQuery = ''" />
+        </div>
+        <span v-else class="spacer" />
         <RouterLink
           :to="{ path: `/instance/${inst.id}/add`, query: { type: inst.loader === 'vanilla' ? 'resourcepack' : 'mod' } }"
           class="btn btn-primary btn-sm"
         ><Plus /> Add content</RouterLink>
       </div>
+      <ModpackPanel v-if="fromModpack" :key="inst.pack?.version_id ?? ''" :instance="inst" :added="addedCount" @changed="packChanged" />
       <p v-if="content.length" class="hint" style="margin: 0">{{ summary }}</p>
       <p v-if="!content.length" class="hint">
         Nothing here yet. {{ inst.loader === "vanilla" ? "Vanilla can use resource packs, data packs and shaders." : "Add mods, resource packs and more from Discover." }}
+      </p>
+      <p v-else-if="!shownContent.length" class="hint">
+        Nothing{{ contentQuery.trim() ? ` matches “${contentQuery.trim()}”` : " of this kind" }}.
+        <button v-if="contentQuery" class="btn btn-ghost btn-sm" @click="contentQuery = ''">Clear search</button>
       </p>
       <div v-for="f in shownContent" :key="f.kind + (f.world ?? '') + f.filename" class="inset row" style="gap: 12px" :style="f.enabled ? '' : 'opacity: .55'">
         <img v-if="f.icon_url" :src="f.icon_url" alt="" width="36" height="36" style="border-radius: 9px" />
         <span v-else class="tile tile-sm" style="--type: #a2a9b4"><Package /></span>
         <div style="flex: 1; min-width: 0">
-          <div style="font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{ f.title }}</div>
+          <RouterLink
+            v-if="f.project_id"
+            :to="{ path: `/project/${f.project_id}`, query: { instance: inst.id } }"
+            class="content-title"
+            :title="`${f.title}: other versions`"
+          >{{ f.title }}</RouterLink>
+          <div v-else style="font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{ f.title }}</div>
           <div class="hint mono" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap">
             {{ f.version ?? f.filename }}{{ f.world ? ` · ${f.world}` : "" }}
           </div>
         </div>
+        <span v-if="inst.pack?.files.length && !f.from_pack && f.kind !== 'datapack'" class="chip" title="Not part of the modpack: updates keep it">Added</span>
         <span class="chip">{{ KINDS.find((k) => k.id === f.kind)?.label.replace(/s$/, "") }}</span>
         <label class="switch" :title="f.enabled ? 'Turn off' : 'Turn on'">
           <input type="checkbox" :checked="f.enabled" :aria-label="`${f.title} turned on`" @change="toggle(f)" /><span />
@@ -285,6 +319,18 @@ async function openFolder() {
 </template>
 
 <style scoped>
+.content-title {
+  display: block;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: inherit;
+  text-decoration: none;
+}
+.content-title:hover {
+  color: var(--tint);
+}
 .choice-count {
   margin-left: 6px;
   opacity: 0.6;

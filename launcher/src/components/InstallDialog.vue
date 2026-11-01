@@ -1,14 +1,18 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { Download, Loader2 } from "lucide-vue-next";
-import { api, type Instance, type ProjectHit } from "@/lib/api";
+import { api, type Instance, type ProjectHit, type ProjectVersion } from "@/lib/api";
 import { LOADERS } from "@/lib/format";
 import { errorText, toast } from "@/lib/toast";
 import AppDialog from "./AppDialog.vue";
 import InstanceIcon from "./InstanceIcon.vue";
 
-/** Pick which instance (and for datapacks, which world) a project goes into. */
-const props = defineProps<{ hit: ProjectHit; preselect?: string }>();
+/** Pick which instance (and for datapacks, which world) a project goes into; with `version`, that version of it. */
+const props = defineProps<{
+  hit: Pick<ProjectHit, "project_id" | "project_type" | "title" | "versions" | "categories">;
+  version?: ProjectVersion | null;
+  preselect?: string;
+}>();
 const emit = defineEmits<{ close: []; installed: [Instance] }>();
 
 const instances = ref<Instance[]>([]);
@@ -17,12 +21,13 @@ const worlds = ref<string[]>([]);
 const world = ref("");
 const busy = ref(false);
 
+const gameVersions = computed(() => props.version?.game_versions ?? props.hit.versions);
 function fits(i: Instance) {
-  if (props.hit.versions.length && !props.hit.versions.includes(i.game_version)) return false;
+  if (gameVersions.value.length && !gameVersions.value.includes(i.game_version)) return false;
   if (props.hit.project_type !== "mod") return true;
   if (i.loader === "vanilla") return false;
   const ok = i.loader === "quilt" ? ["quilt", "fabric"] : [i.loader];
-  return props.hit.categories.some((c) => ok.includes(c));
+  return (props.version?.loaders ?? props.hit.categories).some((c) => ok.includes(c));
 }
 
 const compatible = computed(() => instances.value.filter(fits));
@@ -41,7 +46,8 @@ watch(target, async (id) => {
 async function install() {
   busy.value = true;
   try {
-    const inst = await api.projects.install(target.value, props.hit.project_id, props.hit.project_type, props.hit.project_type === "datapack" ? world.value : null);
+    const dpWorld = props.hit.project_type === "datapack" ? world.value : null;
+    const inst = await api.projects.install(target.value, props.hit.project_id, props.hit.project_type, dpWorld, props.version?.id ?? null);
     toast.success(`${props.hit.title} added to ${inst.name}`);
     emit("installed", inst);
   } catch (e) {
@@ -53,11 +59,11 @@ async function install() {
 </script>
 
 <template>
-  <AppDialog :title="`Install ${hit.title}`" :width="480" @close="emit('close')">
+  <AppDialog :title="`Install ${hit.title}${version ? ` ${version.version_number}` : ''}`" :width="480" @close="emit('close')">
     <div class="stack">
       <p v-if="!compatible.length" class="muted">
         None of your instances can use this. It needs
-        {{ hit.project_type === "mod" ? "a matching loader and " : "" }}one of these Minecraft versions: {{ hit.versions.slice(-4).join(", ") }}.
+        {{ hit.project_type === "mod" ? "a matching loader and " : "" }}one of these Minecraft versions: {{ gameVersions.slice(-4).join(", ") }}.
       </p>
       <label v-for="i in compatible" :key="i.id" class="option-row" :style="target === i.id ? 'outline: 2px solid var(--primary)' : ''">
         <input v-model="target" type="radio" :value="i.id" style="display: none" />

@@ -9,6 +9,8 @@ export const router = createRouter({
     // "Add content": Discover for one instance; everything clicked goes straight in
     { path: "/instance/:id/add", component: () => import("./pages/DiscoverPage.vue"), props: (r) => ({ instanceId: r.params.id }) },
     { path: "/discover", component: () => import("./pages/DiscoverPage.vue") },
+    // a Modrinth project (id or slug): versions, what's in a modpack; ?instance= from "Add content"
+    { path: "/project/:id", component: () => import("./pages/ProjectPage.vue"), props: (r) => ({ id: r.params.id, instanceId: r.query.instance ?? null }) },
     { path: "/servers", component: () => import("./pages/ServersPage.vue") },
     { path: "/servers/host", component: () => import("./pages/HostPage.vue") },
     // easy servers, run by the launcher itself (no Docker)

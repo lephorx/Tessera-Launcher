@@ -172,3 +172,24 @@ create table if not exists trusted_devices (
   expires_at   timestamptz not null
 );
 create index if not exists trusted_devices_user_idx on trusted_devices (user_id);
+
+-- Deleting the account with two-step sign-in on takes an emailed code too (2026-11-01).
+alter table email_codes drop constraint if exists email_codes_purpose_check;
+alter table email_codes add constraint email_codes_purpose_check check (purpose in ('sign_in', 'enable', 'disable', 'delete_account'));
+
+-- Rate limits that guard passwords and codes (2026-11-01): shared by every API instance and kept
+-- across restarts, unlike the in-memory ones. The key is a SHA-256 hash (it holds addresses).
+create table if not exists rate_limits (
+  key      text primary key,
+  hits     integer not null,
+  reset_at timestamptz not null
+);
+
+-- Accounts whose email was verified at some point (2026-11-01): the public email fix
+-- (/v1/email/change) only works for addresses that never were. The API adds to it when it sees
+-- a verified account; this catches every account verified by now.
+create table if not exists verified_users (
+  user_id  uuid primary key references neon_auth."user"(id) on delete cascade,
+  first_at timestamptz not null default now()
+);
+insert into verified_users (user_id) select id from neon_auth."user" where "emailVerified" on conflict do nothing;

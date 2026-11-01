@@ -11,10 +11,12 @@ import Toast from "./components/AppToast.vue";
 import AppDialog from "./components/AppDialog.vue";
 import AccountCard from "./components/AccountCard.vue";
 import ConsentDialog from "./components/ConsentDialog.vue";
+import ShareReviewDialog from "./components/ShareReviewDialog.vue";
 import VerifyEmailDialog from "./components/VerifyEmailDialog.vue";
 import HomeSidebar from "./components/HomeSidebar.vue";
 import NotificationBell from "./components/NotificationBell.vue";
 import SettingsDialog from "./components/SettingsDialog.vue";
+import DepsConfirmDialog from "./components/DepsConfirmDialog.vue";
 import { openSettings, settingsDialog } from "./lib/settingsDialog";
 import { api } from "./lib/api";
 import { account, loadAccount, signOut } from "./lib/account";
@@ -184,6 +186,7 @@ const nav = [
       <HomeSidebar />
     </div>
     <SettingsDialog v-if="settingsDialog.open" />
+    <DepsConfirmDialog />
     <AppDialog v-if="account.dialog" title="Tessera account" :width="440" @close="account.dialog = false">
       <AccountCard bare @signed-in="account.dialog = false" />
     </AppDialog>
@@ -207,6 +210,8 @@ const nav = [
         </template>
       </div>
     </div>
+    <!-- a shared pack's update brought a mod Tessera doesn't know, or a new version: ask -->
+    <ShareReviewDialog />
     <Toast />
   </div>
 </template>

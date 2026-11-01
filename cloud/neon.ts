@@ -21,6 +21,9 @@ export default defineConfig({
         SMTP_PASS: process.env.SMTP_PASS ?? "",
         MAIL_FROM: process.env.MAIL_FROM ?? "",
         MAIL_SECRET: process.env.MAIL_SECRET ?? "",
+        // Shared with the website (Vercel env, same name): signs the visitor address its pages
+        // send and its calls to /v1/site/limit. Also from .env.mail.
+        TESSERA_SITE_SECRET: process.env.TESSERA_SITE_SECRET ?? "",
       },
     },
   },

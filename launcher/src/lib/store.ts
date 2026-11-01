@@ -1,6 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { reactive } from "vue";
-import { api } from "./api";
+import { api, type ShareReview } from "./api";
 import { toast } from "./toast";
 
 export type RunState = "idle" | "preparing" | "running" | "error";
@@ -21,11 +21,35 @@ export const packProgress = reactive({ stage: "", done: 0, total: 0 });
 /** `needsRestart`: the server got the mods while running; they're installed when it restarts. */
 export const serverSync = reactive<Record<string, { state: "syncing" | "synced" | "failed"; message: string | null; needsRestart?: boolean }>>({});
 
+type SyncState = "pulled" | "published" | "waiting" | "error" | "paused";
 /** Live share sync per instance: last result, for the Share tab. */
-export const shareSync = reactive<Record<string, { state: "pulled" | "published" | "waiting" | "error"; at: number; by: string | null; message: string | null }>>({});
+export const shareSync = reactive<Record<string, { state: SyncState; at: number; by: string | null; message: string | null }>>({});
 const lastNotice = new Map<string, string>();
 
+/** Shared instances waiting for this member's answer (unknown jars, a new version): the popup. */
+export const shareReviews = reactive<{ list: ShareReview[] }>({ list: [] });
+export async function refreshReviews() {
+  try {
+    shareReviews.list = await api.share.reviews();
+  } catch {
+    // the next sync event tries again
+  }
+}
+
 export const logListeners = new Set<(instance: string, line: string) => void>();
+
+/** A mod Modrinth found only by its name (look-alikes exist): installed only after a yes. */
+export interface NameMatch {
+  mod_id: string;
+  needed_by: string;
+  project_id: string;
+  slug: string;
+  title: string;
+  author: string | null;
+  downloads: number | null;
+}
+/** Questions from the Rust side, answered with `deps_confirm_answer`; the first is shown. */
+export const depsQuestions = reactive<{ id: number; instance: string | null; name: string | null; items: NameMatch[] }[]>([]);
 
 export function runOf(id: string): Run {
   return runs[id] ?? { state: "idle", stage: "", done: 0, total: 0 };
@@ -36,6 +60,8 @@ export async function startEvents() {
   if (started) return;
   started = true;
   for (const id of await api.instances.running()) runs[id] = { state: "running", stage: "", done: 0, total: 0 };
+  // answers still owed from before the launcher was closed
+  void refreshReviews();
 
   await listen<{ instance: string; stage: string; done: number; total: number }>("launch-progress", ({ payload }) => {
     runs[payload.instance] = { state: "preparing", stage: payload.stage, done: payload.done, total: payload.total };
@@ -62,9 +88,15 @@ export async function startEvents() {
     if (payload.state === "synced") toast.success(payload.message ?? "Server updated with the new mods");
     if (payload.state === "failed") toast.error(`Couldn't update the server: ${payload.message ?? "unknown error"}`);
   });
-  await listen<{ instance: string; name: string; state: "pulled" | "published" | "waiting" | "error"; by: string | null; message: string | null }>(
+  await listen<{ instance: string; name: string; state: SyncState | "review"; by: string | null; message: string | null }>(
     "share-sync",
     ({ payload: p }) => {
+      // jars waiting for an answer: the popup asks, the Share tab lists them
+      if (p.state === "review" || p.state === "paused") {
+        void refreshReviews();
+        window.dispatchEvent(new CustomEvent("tessera-share-review", { detail: p.instance }));
+      }
+      if (p.state === "review") return;
       shareSync[p.instance] = { state: p.state, at: Date.now(), by: p.by, message: p.message };
       // tell the instance page to reload what it shows
       if (p.state === "pulled") window.dispatchEvent(new CustomEvent("tessera-instance-changed", { detail: p.instance }));
@@ -72,11 +104,14 @@ export async function startEvents() {
       const key = `${p.state}:${p.message ?? ""}`;
       if (p.state !== "pulled" && lastNotice.get(p.instance) === key) return;
       lastNotice.set(p.instance, key);
-      if (p.state === "pulled") toast.success(`${p.name} updated${p.by ? ` with ${p.by}'s changes` : ""}`);
+      if (p.state === "pulled") toast.success(`${p.name} updated${p.by ? `: ${p.by} ${p.message ?? "changed it"}` : p.message ? `: ${p.message}` : ""}`);
       else if (p.state === "waiting") toast.info(`${p.name} has new changes. They're applied when you close the game.`);
       else if (p.state === "error") toast.error(`Couldn't sync ${p.name}: ${p.message ?? "unknown error"}`);
     },
   );
+  await listen<{ id: number; instance: string | null; name: string | null; items: NameMatch[] }>("deps-confirm", ({ payload }) => {
+    depsQuestions.push(payload);
+  });
   await listen<{ instance: string; line: string }>("instance-log", ({ payload }) => {
     for (const fn of logListeners) fn(payload.instance, payload.line);
   });

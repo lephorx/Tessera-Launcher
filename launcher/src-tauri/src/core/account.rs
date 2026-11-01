@@ -372,9 +372,9 @@ fn device_label() -> String {
     format!("Tessera Launcher on {os}")
 }
 
-/// Emails a two-step code: "sign_in", "enable" or "disable".
+/// Emails a two-step code: "sign_in", "enable", "disable" or "delete_account".
 pub async fn two_factor_send(client: &reqwest::Client, purpose: &str) -> Result<()> {
-    if !matches!(purpose, "sign_in" | "enable" | "disable") {
+    if !matches!(purpose, "sign_in" | "enable" | "disable" | "delete_account") {
         bail!("Unknown code purpose");
     }
     api(client, reqwest::Method::POST, "/me/2fa/code", Some(serde_json::json!({ "purpose": purpose })), None).await?;
@@ -478,9 +478,14 @@ pub async fn export(client: &reqwest::Client) -> Result<Value> {
 }
 
 /// Deletes the account with its shares and their packs, then forgets the sign-in here. Takes
-/// the password and the username (or email) typed out; the API checks both.
-pub async fn delete(client: &reqwest::Client, password: &str, confirm: &str) -> Result<()> {
-    api(client, reqwest::Method::DELETE, "/me", Some(serde_json::json!({ "password": password, "confirm": confirm.trim() })), None).await?;
+/// the password and the username (or email) typed out, and with two-step sign-in on the code
+/// emailed for "delete_account"; the API checks them all.
+pub async fn delete(client: &reqwest::Client, password: &str, confirm: &str, code: Option<&str>) -> Result<()> {
+    let mut body = serde_json::json!({ "password": password, "confirm": confirm.trim() });
+    if let Some(code) = code.map(str::trim).filter(|c| !c.is_empty()) {
+        body["code"] = code.into();
+    }
+    api(client, reqwest::Method::DELETE, "/me", Some(body), None).await?;
     forget_session();
     Ok(())
 }
@@ -530,6 +535,9 @@ async fn token(client: &reqwest::Client) -> Result<String> {
 
 /// Calls the Tessera API with the caller's token. `body` is JSON or raw bytes.
 pub async fn api(client: &reqwest::Client, method: reqwest::Method, path: &str, json: Option<Value>, bytes: Option<Vec<u8>>) -> Result<Value> {
+    if !safe_api_path(path) {
+        bail!("That isn't a valid link or code");
+    }
     let jwt = token(client).await?;
     let mut req = client.request(method, format!("{API_URL}{path}")).bearer_auth(jwt).timeout(Duration::from_secs(120));
     if let Some(d) = device() {
@@ -553,6 +561,15 @@ pub async fn api(client: &reqwest::Client, method: reqwest::Method, path: &str, 
         bail!("{}", body["message"].as_str().or(body["error"].as_str()).unwrap_or("Something went wrong"));
     }
     Ok(body)
+}
+
+/// Codes and ids go into API paths: every segment plain, so "../me#" can't turn a call into
+/// another one (DELETE /shares/../me# is DELETE /me). The query is ours, made with `enc`.
+fn safe_api_path(path: &str) -> bool {
+    let p = path.split_once('?').map_or(path, |(p, _)| p);
+    !path.contains('#')
+        && p.starts_with('/')
+        && p[1..].split('/').all(|seg| !seg.is_empty() && seg != "." && seg != ".." && seg.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b)))
 }
 
 /// Who is signed in, or None.
@@ -584,6 +601,20 @@ pub fn share_code(input: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn api_paths_stay_on_their_endpoint() {
+        assert!(safe_api_path("/me/sessions"));
+        assert!(safe_api_path("/shares/AbCd2345/members/0b7f6c1e-1c2d-4e5f-8a9b-0c1d2e3f4a5b"));
+        assert!(safe_api_path("/shares/AbCd2345?name=My%20Pack&game_version=1.21.1"));
+        assert!(!safe_api_path("/shares/../me#/members"));
+        assert!(!safe_api_path("/shares/../me"));
+        assert!(!safe_api_path("/shares/%2e%2e/me"));
+        assert!(!safe_api_path("/shares//x"));
+        assert!(!safe_api_path("/shares/a#b"));
+        assert!(!safe_api_path("/friends/a b"));
+        assert!(!safe_api_path("me"));
+    }
 
     #[test]
     fn old_session_files_still_load() {
@@ -619,6 +650,7 @@ mod tests {
         assert_eq!(share_code("https://tesseralauncher.com/share/AbCd2345").unwrap(), "AbCd2345");
         assert_eq!(share_code(" AbCd2345/ ").unwrap(), "AbCd2345");
         assert!(share_code("https://tesseralauncher.com/share/../../x").is_err());
+        assert!(share_code("../me#").is_err());
     }
 
     /// Real round trip against the Tessera API on Neon (needs network; leaves an

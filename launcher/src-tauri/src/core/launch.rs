@@ -13,7 +13,7 @@ use super::instances::{Instance, Loader};
 use super::loaders::{self, Profile};
 use super::java::ensure_java;
 use super::paths::{maven_path, Paths};
-use super::versions::{flatten_arguments, os_name, rules_allow, version_json, Library};
+use super::versions::{check_version, flatten_arguments, os_name, rules_allow, version_json, Library};
 
 /// `progress(stage, done, total)`; stage is shown to the user as is.
 pub type Progress<'a> = &'a (dyn Fn(&str, usize, usize) + Send + Sync);
@@ -168,6 +168,11 @@ pub async fn prepare(
     progress: Progress<'_>,
 ) -> Result<LaunchPlan> {
     progress("Reading version", 0, 0);
+    // also checked when instances are saved; an instance.json edited since must not get through
+    check_version(&inst.game_version)?;
+    if let Some(v) = &inst.loader_version {
+        check_version(v)?;
+    }
     let vanilla = version_json(client, paths, &inst.game_version).await?;
     let component = vanilla.java_version.as_ref().map(|j| j.component.clone()).unwrap_or_else(|| "jre-legacy".into());
     let java = match inst.java_path.as_deref().filter(|p| !p.trim().is_empty()) {

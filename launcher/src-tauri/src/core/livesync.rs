@@ -10,6 +10,10 @@
 //!
 //! Uploads carry the revision they're based on; the API refuses outdated ones (409), which
 //! is what sends us down the merge path.
+//!
+//! What a pulled pack may bring in is decided here, not by the editor (see `sharetrust`):
+//! jars Modrinth doesn't know wait for the member's answer, and a new Minecraft or loader
+//! version pauses syncing until it's accepted.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -25,20 +29,24 @@ use super::account::api;
 use super::instances::{self, Instance, ShareSync};
 use super::paths::Paths;
 use super::share::{pack_bytes, query};
+use super::sharetrust::{self, Prepared};
 use super::tapack::{self, rel_string, walk};
 
-/// Folders that make up a shared instance (what the pack carries and what we watch).
-const WATCHED: [&str; 4] = ["mods", "resourcepacks", "shaderpacks", "config"];
+/// Folders whose changes are published (the pack carries all of `share::SHARED`; options.txt
+/// isn't watched: the game rewrites it every time it closes).
+const WATCHED: [&str; 7] = ["mods", "resourcepacks", "shaderpacks", "config", "defaultconfigs", "kubejs", "scripts"];
 const CONTENT: [&str; 3] = ["mods", "resourcepacks", "shaderpacks"];
 
 #[derive(Serialize, Clone)]
 pub struct SyncEvent {
     pub instance: String,
     pub name: String,
-    /// "pulled" | "published" | "waiting" | "error"
+    /// "pulled" | "published" | "waiting" | "error", "review" (jars wait for an answer) or
+    /// "paused" (a new Minecraft or loader version waits for an answer)
     pub state: &'static str,
     /// Who made the change that was pulled.
     pub by: Option<String>,
+    /// For "pulled": what changed ("added Sodium, removed X"); for "error": what went wrong.
     pub message: Option<String>,
 }
 
@@ -99,9 +107,43 @@ async fn publish(client: &reqwest::Client, paths: &Paths, inst: &Instance, code:
     }
 }
 
-/// Installs the share's current pack over the instance; with `keep`, this copy's own added
-/// and removed content files (compared with the last sync) are put back on top.
-async fn pull(client: &reqwest::Client, paths: &Paths, id: &str, code: &str, keep: Option<&[String]>) -> Result<()> {
+enum Pulled {
+    /// `asking` = jars from the pack waiting for an answer; `summary` = what changed here.
+    Applied { asking: usize, summary: String },
+    /// Nothing installed: the pack wants another Minecraft or loader version.
+    Paused,
+}
+
+/// "added a.jar, b.jar, removed c.jar" from the content files before and after a pull.
+fn summary(before: &[String], after: &[String]) -> String {
+    let name = |f: &String| f.rsplit('/').next().unwrap_or(f).trim_end_matches(".disabled").to_string();
+    let list = |v: Vec<String>| {
+        let more = v.len().saturating_sub(3);
+        let mut s = v.into_iter().take(3).collect::<Vec<_>>().join(", ");
+        if more > 0 {
+            s.push_str(&format!(" and {more} more"));
+        }
+        s
+    };
+    let (b, a): (HashSet<&String>, HashSet<&String>) = (before.iter().collect(), after.iter().collect());
+    let mut added: Vec<String> = after.iter().filter(|f| !b.contains(f)).map(name).collect();
+    let mut removed: Vec<String> = before.iter().filter(|f| !a.contains(f)).map(name).collect();
+    added.sort();
+    removed.sort();
+    let mut parts = Vec::new();
+    if !added.is_empty() {
+        parts.push(format!("added {}", list(added)));
+    }
+    if !removed.is_empty() {
+        parts.push(format!("removed {}", list(removed)));
+    }
+    if parts.is_empty() { "changed settings".into() } else { parts.join(", ") }
+}
+
+/// Installs the share's current pack over the instance (what this copy accepts of it); with
+/// `keep`, this copy's own added and removed content files (compared with the last sync) are
+/// put back on top.
+async fn pull(client: &reqwest::Client, paths: &Paths, id: &str, code: &str, keep: Option<&[String]>, revision: i64, by: Option<&str>) -> Result<Pulled> {
     let game = paths.game_dir(id);
     let before = instances::get(paths, id)?;
     // this copy's changes since the last sync
@@ -110,6 +152,19 @@ async fn pull(client: &reqwest::Client, paths: &Paths, id: &str, code: &str, kee
     let now: HashSet<&str> = now_files.iter().map(String::as_str).collect();
     let added: Vec<String> = if keep.is_some() { now_files.iter().filter(|f| !base.contains(f.as_str())).cloned().collect() } else { Vec::new() };
     let removed: Vec<String> = if keep.is_some() { base.iter().filter(|f| !now.contains(*f)).map(|f| f.to_string()).collect() } else { Vec::new() };
+
+    let dl = api(client, Method::GET, &format!("/shares/{code}/download"), None, None).await?;
+    let url = dl["url"].as_str().ok_or_else(|| anyhow!("No download link"))?;
+    let bytes = client.get(url).send().await?.error_for_status()?.bytes().await?;
+    let tmp = std::env::temp_dir().join(format!("tessera-sync-{code}.tapack"));
+    std::fs::write(&tmp, &bytes)?;
+    let checked = sharetrust::prepare(client, paths, id, &tmp, revision, by).await;
+    let _ = std::fs::remove_file(&tmp);
+    let (safe, asking) = match checked? {
+        Prepared::Ready { pack, asking } => (pack, asking),
+        Prepared::Version(_) => return Ok(Pulled::Paused),
+    };
+
     let stash = std::env::temp_dir().join(format!("tessera-merge-{id}"));
     let _ = std::fs::remove_dir_all(&stash);
     for rel in &added {
@@ -117,14 +172,8 @@ async fn pull(client: &reqwest::Client, paths: &Paths, id: &str, code: &str, kee
         std::fs::create_dir_all(to.parent().unwrap_or(&stash))?;
         std::fs::copy(game.join(rel), &to)?;
     }
-
-    let dl = api(client, Method::GET, &format!("/shares/{code}/download"), None, None).await?;
-    let url = dl["url"].as_str().ok_or_else(|| anyhow!("No download link"))?;
-    let bytes = client.get(url).send().await?.error_for_status()?.bytes().await?;
-    let tmp = std::env::temp_dir().join(format!("tessera-sync-{code}.tapack"));
-    std::fs::write(&tmp, &bytes)?;
-    let result = tapack::apply_update(client, paths, id, &tmp, &|_, _, _| {}).await;
-    let _ = std::fs::remove_file(&tmp);
+    let result = tapack::apply_update(client, paths, id, &safe, &|_, _, _| {}).await;
+    let _ = std::fs::remove_file(&safe);
     let mut inst = result?;
 
     // put this copy's changes back on top
@@ -150,7 +199,8 @@ async fn pull(client: &reqwest::Client, paths: &Paths, id: &str, code: &str, kee
     inst.share_code = before.share_code;
     inst.joined = before.joined;
     instances::save(paths, &inst)?;
-    Ok(())
+    let (_, after) = local_state(paths, id);
+    Ok(Pulled::Applied { asking, summary: summary(&now_files, &after) })
 }
 
 /// One round for every shared instance. `running` = instances whose game is open;
@@ -183,7 +233,7 @@ pub async fn tick(client: &reqwest::Client, paths: &Paths, running: &HashSet<Str
             continue;
         }
         let ev = |state: &'static str, by: Option<String>, message: Option<String>| SyncEvent { instance: inst.id.clone(), name: inst.name.clone(), state, by, message };
-        let result: Result<Option<SyncEvent>> = async {
+        let result: Result<Vec<SyncEvent>> = async {
             let rev = r["revision"].as_i64().unwrap_or(0);
             // first time: whatever is here now counts as in sync, unless this copy joined
             // an older version than the share has now
@@ -193,15 +243,23 @@ pub async fn tick(client: &reqwest::Client, paths: &Paths, running: &HashSet<Str
                     let behind = inst.joined.as_ref().is_some_and(|j| j.updated_at.as_deref() != r["updated_at"].as_str());
                     if !behind {
                         mark_synced(paths, &inst.id, rev)?;
-                        return Ok(None);
+                        return Ok(Vec::new());
                     }
                     let (signature, files) = local_state(paths, &inst.id);
                     ShareSync { revision: 0, signature, files }
                 }
             };
             let remote_newer = rev > sync.revision;
+            let by = r["updated_by"].as_str().map(String::from);
+            // a new Minecraft or loader version waits for an answer: nothing syncs meanwhile,
+            // unless a newer revision came (it may change what's asked, or undo it)
+            if let Some(vc) = sharetrust::load(paths, &inst.id).version_change {
+                if rev <= vc.revision {
+                    return Ok(Vec::new());
+                }
+            }
             if running.contains(&inst.id) {
-                return Ok(remote_newer.then(|| ev("waiting", r["updated_by"].as_str().map(String::from), None)));
+                return Ok(remote_newer.then(|| ev("waiting", by.clone(), None)).into_iter().collect());
             }
             let (sig, _) = local_state(paths, &inst.id);
             let changed = sig != sync.signature;
@@ -214,36 +272,62 @@ pub async fn tick(client: &reqwest::Client, paths: &Paths, running: &HashSet<Str
             };
             if changed && can_write && settled {
                 let mut base = sync.revision;
+                let mut extra = Vec::new();
                 if remote_newer {
-                    pull(client, paths, &inst.id, &code, Some(&sync.files)).await?;
+                    match pull(client, paths, &inst.id, &code, Some(&sync.files), rev, by.as_deref()).await? {
+                        Pulled::Paused => return Ok(vec![ev("paused", by.clone(), None)]),
+                        Pulled::Applied { asking, .. } if asking > 0 => extra.push(ev("review", by.clone(), None)),
+                        Pulled::Applied { .. } => {}
+                    }
                     base = rev;
                 }
                 let fresh = instances::get(paths, &inst.id)?;
                 match publish(client, paths, &fresh, &code, base).await? {
                     Some(new_rev) => {
                         mark_synced(paths, &inst.id, new_rev)?;
-                        Ok(Some(ev("published", None, None)))
+                        extra.insert(0, ev("published", None, None));
+                        Ok(extra)
                     }
                     // someone published in between: merge next round
-                    None => Ok(None),
+                    None => Ok(extra),
                 }
             } else if remote_newer && !(changed && can_write) {
-                pull(client, paths, &inst.id, &code, None).await?;
-                mark_synced(paths, &inst.id, rev)?;
-                Ok(Some(ev("pulled", r["updated_by"].as_str().map(String::from), None)))
+                match pull(client, paths, &inst.id, &code, None, rev, by.as_deref()).await? {
+                    Pulled::Paused => Ok(vec![ev("paused", by.clone(), None)]),
+                    Pulled::Applied { asking, summary } => {
+                        mark_synced(paths, &inst.id, rev)?;
+                        let mut out = vec![ev("pulled", by.clone(), Some(summary))];
+                        if asking > 0 {
+                            out.push(ev("review", by.clone(), None));
+                        }
+                        Ok(out)
+                    }
+                }
             } else {
-                Ok(None)
+                Ok(Vec::new())
             }
         }
         .await;
         BUSY.lock().unwrap().remove(&inst.id);
         match result {
-            Ok(Some(e)) => events.push(e),
-            Ok(None) => {}
+            Ok(e) => events.extend(e),
             Err(e) => events.push(ev("error", None, Some(format!("{e:#}")))),
         }
     }
     events
+}
+
+#[cfg(test)]
+mod tests {
+    use super::summary;
+
+    #[test]
+    fn says_what_changed() {
+        let v = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(summary(&v(&["mods/a.jar", "mods/b.jar"]), &v(&["mods/b.jar", "mods/c.jar.disabled"])), "added c.jar, removed a.jar");
+        assert_eq!(summary(&v(&["mods/a.jar"]), &v(&["mods/a.jar"])), "changed settings");
+        assert_eq!(summary(&v(&[]), &v(&["mods/1.jar", "mods/2.jar", "mods/3.jar", "mods/4.jar"])), "added 1.jar, 2.jar, 3.jar and 1 more");
+    }
 }
 
 #[cfg(test)]
@@ -270,6 +354,13 @@ mod live_test {
             std::fs::write(f, text).unwrap();
         };
         let has = |p: &Paths, id: &str, rel: &str| p.game_dir(id).join(rel).exists();
+        // the dummy jars aren't on Modrinth: they wait in held/ until accepted (the popup's
+        // Accept all, share_decide_jars)
+        let held = |p: &Paths, id: &str| sharetrust::load(p, id).held.iter().map(|h| h.path.clone()).collect::<Vec<_>>();
+        let accept_all = |p: &Paths, id: &str| {
+            let shas: Vec<String> = sharetrust::load(p, id).held.iter().map(|h| h.sha512.clone()).collect();
+            sharetrust::decide_jars(p, id, &shas, &[]).unwrap();
+        };
         // a round, twice: changes are published once they held still for a round
         async fn rounds(client: &reqwest::Client, p: &Paths, running: &HashSet<String>) -> Vec<&'static str> {
             let mut states = Vec::new();
@@ -295,23 +386,33 @@ mod live_test {
         let mut b = instances::create(&p2, "Live Two", "1.21.1", Loader::Fabric, Some("0.16.9".into()), None).unwrap();
         b.joined = Some(JoinedShare { code: code.clone(), role: "editor".into(), owner: None, updated_at: None });
         instances::save(&p2, &b).unwrap();
-        assert_eq!(rounds(&client, &p2, &none).await, vec!["pulled"]);
-        assert!(has(&p2, &b.id, "mods/a.jar") && has(&p2, &b.id, "config/x.txt"));
+        assert_eq!(rounds(&client, &p2, &none).await, vec!["pulled", "review"]);
+        assert!(has(&p2, &b.id, "config/x.txt") && !has(&p2, &b.id, "mods/a.jar"), "configs come in, the unknown jar waits");
+        assert_eq!(held(&p2, &b.id), vec!["mods/a.jar"]);
+        accept_all(&p2, &b.id);
+        assert!(has(&p2, &b.id, "mods/a.jar"));
+        assert!(rounds(&client, &p2, &none).await.is_empty(), "accepting isn't a change to publish");
 
-        // one adds a mod: it goes up, and two gets it
+        // one adds a mod: it goes up, and two gets it once accepted
         write(&p1, &a.id, "mods/b.jar", "b");
         assert_eq!(rounds(&client, &p1, &none).await, vec!["published"]);
-        assert_eq!(rounds(&client, &p2, &none).await, vec!["pulled"]);
+        assert_eq!(rounds(&client, &p2, &none).await, vec!["pulled", "review"]);
+        assert!(!has(&p2, &b.id, "mods/b.jar"));
+        accept_all(&p2, &b.id);
         assert!(has(&p2, &b.id, "mods/b.jar"));
 
         // both change at once: one removes a.jar, two adds c.jar; both changes survive
+        // (two's own c.jar and the accepted b.jar don't ask again)
         std::fs::remove_file(p1.game_dir(&a.id).join("mods/a.jar")).unwrap();
         write(&p2, &b.id, "mods/c.jar", "c");
         assert_eq!(rounds(&client, &p1, &none).await, vec!["published"]);
         assert_eq!(rounds(&client, &p2, &none).await, vec!["published"]);
         assert!(!has(&p2, &b.id, "mods/a.jar") && has(&p2, &b.id, "mods/b.jar") && has(&p2, &b.id, "mods/c.jar"));
-        assert_eq!(rounds(&client, &p1, &none).await, vec!["pulled"]);
-        assert!(!has(&p1, &a.id, "mods/a.jar") && has(&p1, &a.id, "mods/c.jar"));
+        // one gets two's c.jar, which it doesn't know
+        assert_eq!(rounds(&client, &p1, &none).await, vec!["pulled", "review"]);
+        assert_eq!(held(&p1, &a.id), vec!["mods/c.jar"]);
+        accept_all(&p1, &a.id);
+        assert!(!has(&p1, &a.id, "mods/a.jar") && has(&p1, &a.id, "mods/b.jar") && has(&p1, &a.id, "mods/c.jar"));
 
         // while the game runs, updates wait
         write(&p1, &a.id, "mods/d.jar", "d");
@@ -319,8 +420,22 @@ mod live_test {
         let playing: HashSet<String> = [b.id.clone()].into();
         assert!(rounds(&client, &p2, &playing).await.iter().all(|s| *s == "waiting"));
         assert!(!has(&p2, &b.id, "mods/d.jar"));
-        assert_eq!(rounds(&client, &p2, &none).await, vec!["pulled"]);
+        assert_eq!(rounds(&client, &p2, &none).await, vec!["pulled", "review"]);
+        assert!(!has(&p2, &b.id, "mods/d.jar"));
+        accept_all(&p2, &b.id);
         assert!(has(&p2, &b.id, "mods/d.jar"));
+
+        // declined: stays out here, but two publishing doesn't take it from everyone
+        write(&p1, &a.id, "mods/e.jar", "e");
+        assert_eq!(rounds(&client, &p1, &none).await, vec!["published"]);
+        assert_eq!(rounds(&client, &p2, &none).await, vec!["pulled", "review"]);
+        let e = sharetrust::load(&p2, &b.id).held[0].sha512.clone();
+        sharetrust::decide_jars(&p2, &b.id, &[], &[e]).unwrap();
+        write(&p2, &b.id, "config/y.txt", "2");
+        assert_eq!(rounds(&client, &p2, &none).await, vec!["published"]);
+        assert!(!has(&p2, &b.id, "mods/e.jar"));
+        assert_eq!(rounds(&client, &p1, &none).await, vec!["pulled"]);
+        assert!(has(&p1, &a.id, "mods/e.jar") && has(&p1, &a.id, "config/y.txt"));
 
         share::stop(&client, &p1, &a.id).await.unwrap();
         let _ = std::fs::remove_dir_all(&base);

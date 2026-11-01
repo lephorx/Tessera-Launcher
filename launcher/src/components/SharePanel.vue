@@ -9,6 +9,8 @@ import { errorText, toast } from "@/lib/toast";
 import AppDialog from "./AppDialog.vue";
 import PlayerHead from "./PlayerHead.vue";
 import ShareDialog from "./ShareDialog.vue";
+import ShareHeld from "./ShareHeld.vue";
+import ShareUploadDialog from "./ShareUploadDialog.vue";
 
 const props = defineProps<{ instance: Instance }>();
 /** The instance changed (pulled an update, left, ownership moved): the page reloads it. */
@@ -20,6 +22,10 @@ const loading = ref(true);
 const busy = ref<"" | "create" | "update" | "stop" | "pull" | "publish" | "leave">("");
 const inviting = ref(false);
 const confirmStop = ref(false);
+/** The first share: the list of what goes up, before it does. */
+const confirmUpload = ref(false);
+/** A new Minecraft or loader version waits for an answer: nothing syncs meanwhile. */
+const paused = ref(false);
 
 async function load() {
   loading.value = true;
@@ -51,9 +57,14 @@ async function invite() {
     inviting.value = true;
     return;
   }
+  confirmUpload.value = true;
+}
+
+async function create() {
   busy.value = "create";
   try {
     share.value = await api.share.create(props.instance.id);
+    confirmUpload.value = false;
     inviting.value = true;
   } catch (e) {
     toast.error(errorText(e));
@@ -187,9 +198,9 @@ async function transfer() {
         </div>
         <template v-if="!member?.removed">
           <div class="row live-row">
-            <span class="live-dot" :class="live()?.state === 'error' ? 'bad' : live()?.state === 'waiting' ? 'wait' : ''" />
+            <span class="live-dot" :class="live()?.state === 'error' ? 'bad' : paused || live()?.state === 'waiting' ? 'wait' : ''" />
             <span class="hint" style="flex: 1">
-              <b>Live.</b>
+              <b>{{ paused ? "Paused." : "Live." }}</b>
               {{
                 (member?.role ?? instance.joined.role) === "editor"
                   ? "Changes from everyone arrive within seconds, and what you add or remove goes to everyone. Your worlds stay yours."
@@ -197,9 +208,10 @@ async function transfer() {
               }}
               <template v-if="live()?.state === 'waiting'"> New changes are applied when you close the game.</template>
               <template v-else-if="live()?.state === 'error'"> Last try failed: {{ live()?.message }}</template>
-              <template v-else-if="live()?.state === 'pulled'"> Last update {{ relative(new Date(live()!.at).toISOString()).toLowerCase() }}{{ live()?.by ? ` from ${live()?.by}` : "" }}.</template>
+              <template v-else-if="live()?.state === 'pulled'"> Last update {{ relative(new Date(live()!.at).toISOString()).toLowerCase() }}: {{ live()?.by ?? "someone" }} {{ live()?.message ?? "changed it" }}.</template>
             </span>
           </div>
+          <ShareHeld :id="instance.id" @changed="emit('changed')" @paused="paused = $event" />
           <div class="row">
             <button class="btn" :disabled="busy !== ''" @click="syncNow"><Loader2 v-if="busy === 'pull'" class="spin" /><RefreshCw v-else /> Sync now</button>
             <span class="spacer" />
@@ -256,13 +268,15 @@ async function transfer() {
           </div>
         </div>
         <div class="row live-row">
-          <span class="live-dot" :class="live()?.state === 'error' ? 'bad' : ''" />
+          <span class="live-dot" :class="live()?.state === 'error' ? 'bad' : paused ? 'wait' : ''" />
           <span class="hint" style="flex: 1">
-            <b>Live.</b> Changes you or your editors make reach everyone within seconds.
+            <b>{{ paused ? "Paused." : "Live." }}</b> Changes you or your editors make reach everyone within seconds.
             <template v-if="live()?.state === 'error'"> Last try failed: {{ live()?.message }}</template>
+            <template v-else-if="live()?.state === 'pulled'"> Last update {{ relative(new Date(live()!.at).toISOString()).toLowerCase() }}: {{ live()?.by ?? "someone" }} {{ live()?.message ?? "changed it" }}.</template>
             <template v-else-if="live()"> Last sync {{ relative(new Date(live()!.at).toISOString()).toLowerCase() }}.</template>
           </span>
         </div>
+        <ShareHeld :id="instance.id" @changed="emit('changed')" @paused="paused = $event" />
         <div class="row">
           <button class="btn" :disabled="busy !== ''" @click="syncNow"><Loader2 v-if="busy === 'pull'" class="spin" /><RefreshCw v-else /> Sync now</button>
           <span class="spacer" />
@@ -270,6 +284,8 @@ async function transfer() {
         </div>
       </div>
     </template>
+
+    <ShareUploadDialog v-if="confirmUpload" :id="instance.id" :name="instance.name" :busy="busy === 'create'" @close="confirmUpload = false" @share="create" />
 
     <ShareDialog v-if="inviting && share" :share="share" :title="instance.name" @close="inviting = false" @changed="load" />
 

@@ -19,20 +19,72 @@ pub(crate) fn query(inst: &Instance) -> String {
     format!("name={}&game_version={}&loader={}", enc(&inst.name), enc(&inst.game_version), loader)
 }
 
-/// The instance as a .tapack in memory: configs and content, never worlds, logs or screenshots.
+/// What a shared pack carries, both ways: sharing uploads only these, and an update from the
+/// share can only write these. Everything else (worlds, logs, screenshots, server lists,
+/// mods' account files) stays on each computer.
+pub const SHARED: &[&str] = &[
+    "mods",
+    "config",
+    "defaultconfigs",
+    "kubejs",
+    "scripts", // CraftTweaker
+    "resourcepacks",
+    "shaderpacks",
+    "options.txt",
+    "optionsof.txt",      // OptiFine
+    "optionsshaders.txt", // OptiFine and Iris shader settings
+];
+
+/// A path in the game folder that belongs in a shared pack.
+pub fn shared_path(rel: &str) -> bool {
+    let top = rel.split('/').next().unwrap_or("");
+    SHARED.contains(&top) && !tapack::private_file(rel)
+}
+
+/// The instance as a .tapack in memory: the shared folders, plus the share's jars this copy
+/// holds back (so not taking a jar here doesn't remove it for everyone).
 pub(crate) async fn pack_bytes(
     client: &reqwest::Client,
     paths: &Paths,
     inst: &Instance,
     progress: &(dyn Fn(&str, usize, usize) + Send + Sync),
 ) -> Result<Vec<u8>> {
-    let include: Vec<String> = tapack::entries(paths, &inst.id)?.into_iter().filter(|e| e.suggested).map(|e| e.name).collect();
+    let include: Vec<String> = tapack::entries(paths, &inst.id)?.into_iter().filter(|e| SHARED.contains(&e.name.as_str())).map(|e| e.name).collect();
     let tmp = std::env::temp_dir().join(format!("tessera-share-{}.tapack", inst.id));
     let opts = ExportOptions { name: inst.name.clone(), version: "1".into(), author: String::new(), summary: String::new(), include, format: Default::default() };
-    tapack::export(client, paths, &inst.id, &tmp, opts, progress).await?;
-    let bytes = std::fs::read(&tmp)?;
+    let made = async {
+        tapack::export(client, paths, &inst.id, &tmp, opts, progress).await?;
+        super::sharetrust::carry_held(paths, &inst.id, &tmp)?;
+        // the last server joined is this computer's business
+        super::sharetrust::strip_last_server(&tmp)?;
+        Ok::<_, anyhow::Error>(std::fs::read(&tmp)?)
+    }
+    .await;
     let _ = std::fs::remove_file(&tmp);
-    Ok(bytes)
+    made
+}
+
+/// What sharing this instance uploads, for the check before the first upload: each shared
+/// file or folder with its size and file count, and what stays on this computer.
+pub fn preview(paths: &Paths, id: &str) -> Result<Value> {
+    let game = paths.game_dir(id);
+    let mut shared = Vec::new();
+    let mut left_out = Vec::new();
+    for e in tapack::entries(paths, id)? {
+        if !SHARED.contains(&e.name.as_str()) {
+            left_out.push(e.name);
+            continue;
+        }
+        let mut files = Vec::new();
+        tapack::walk(&game, std::path::PathBuf::from(&e.name), &mut files);
+        let (kept, private): (Vec<_>, Vec<_>) = files.into_iter().partition(|f| !tapack::private_file(&tapack::rel_string(f)));
+        let size: u64 = kept.iter().filter_map(|f| std::fs::metadata(game.join(f)).ok()).map(|m| m.len()).sum();
+        if kept.is_empty() {
+            continue;
+        }
+        shared.push(json!({ "name": e.name, "is_dir": e.is_dir, "size": size, "files": kept.len(), "private": private.len() }));
+    }
+    Ok(json!({ "shared": shared, "left_out": left_out }))
 }
 
 /// The share for this instance (with friends), or null when it isn't shared.
@@ -99,11 +151,15 @@ pub async fn join(client: &reqwest::Client, paths: &Paths, link: &str, progress:
     let bytes = client.get(url).send().await?.error_for_status()?.bytes().await?;
     let tmp = std::env::temp_dir().join(format!("tessera-join-{code}.tapack"));
     std::fs::write(&tmp, &bytes)?;
-    let result = tapack::import(client, paths, &tmp, progress).await;
+    let info = api(client, Method::GET, &format!("/shares/{code}"), None, None).await.ok();
+    // who the popup names: the pack's owner (the share answer doesn't say who changed it last)
+    let owner = info.as_ref().and_then(|i| i["share"]["owner"].as_str().map(String::from));
+    // checked like any update: jars Tessera doesn't know wait for the member's answer
+    let result = super::sharetrust::install_new(client, paths, &tmp, owner.as_deref(), progress).await;
     let _ = std::fs::remove_file(&tmp);
     let mut inst = result?;
     // remember where it came from, for updates (and edits, for editors)
-    if let Ok(info) = api(client, Method::GET, &format!("/shares/{code}"), None, None).await {
+    if let Some(info) = info {
         let share = &info["share"];
         if share["role"] == "viewer" || share["role"] == "editor" {
             inst.joined = Some(JoinedShare {
@@ -176,8 +232,15 @@ pub async fn pull(client: &reqwest::Client, paths: &Paths, id: &str, progress: &
     let bytes = client.get(url).send().await?.error_for_status()?.bytes().await?;
     let tmp = std::env::temp_dir().join(format!("tessera-pull-{}.tapack", joined.code));
     std::fs::write(&tmp, &bytes)?;
-    let result = tapack::apply_update(client, paths, id, &tmp, progress).await;
+    // the same checks as live sync: unknown jars and new versions wait for an answer
+    let checked = super::sharetrust::prepare(client, paths, id, &tmp, info["share"]["revision"].as_i64().unwrap_or(0), info["share"]["updated_by"].as_str()).await;
     let _ = std::fs::remove_file(&tmp);
+    let safe = match checked? {
+        super::sharetrust::Prepared::Ready { pack, .. } => pack,
+        super::sharetrust::Prepared::Version(vc) => bail!("The pack moved to Minecraft {}. Accept the change in the Share tab first.", vc.to.minecraft),
+    };
+    let result = tapack::apply_update(client, paths, id, &safe, progress).await;
+    let _ = std::fs::remove_file(&safe);
     let mut inst = result?;
     inst.joined = Some(JoinedShare { updated_at: info["share"]["updated_at"].as_str().map(String::from), ..joined });
     instances::save(paths, &inst)?;
@@ -234,4 +297,19 @@ pub async fn transfer(client: &reqwest::Client, paths: &Paths, id: &str, user_id
     });
     instances::save(paths, &inst)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_allowlist_is_shared() {
+        for yes in ["mods/sodium.jar", "config/sodium-options.json", "kubejs/server_scripts/a.js", "scripts/recipes.zs", "defaultconfigs/x.toml", "options.txt", "shaderpacks/bsl.zip"] {
+            assert!(shared_path(yes), "{yes}");
+        }
+        for no in ["saves/World/level.dat", "logs/latest.log", "crash-reports/x.txt", "screenshots/a.png", "servers.dat", "essential/microsoft_accounts.json", "config/x/accounts.json", "journeymap/data.dat", "usercache.json", "options.txt.bak/x"] {
+            assert!(!shared_path(no), "{no}");
+        }
+    }
 }

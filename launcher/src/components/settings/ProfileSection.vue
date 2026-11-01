@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { save } from "@tauri-apps/plugin-dialog";
-import { Check, Download, KeyRound, Loader2, Plus, Trash2 } from "lucide-vue-next";
+import { Check, Download, KeyRound, Loader2, Mail, Plus, Trash2 } from "lucide-vue-next";
 import AccountCard from "../AccountCard.vue";
 import AccountSecurity from "../AccountSecurity.vue";
 import SignedInDevices from "../SignedInDevices.vue";
@@ -39,25 +39,45 @@ async function exportData() {
   }
 }
 
-// deleting takes two steps: what goes, then the username and password
+// deleting takes two steps: what goes, then the username and password (and with two-step
+// sign-in on, a code emailed for it)
 const confirmDelete = ref(false);
 const deleteStep = ref<1 | 2>(1);
 const typed = ref("");
 const password = ref("");
+const code = ref("");
+const codeSent = ref(false);
+const sendingCode = ref(false);
 const deleting = ref(false);
+const needsCode = computed(() => !!account.me?.two_factor);
+const deleteReady = computed(() => typed.value.trim() === confirmWord.value && !!password.value && (!needsCode.value || /^\d{6}$/.test(code.value.trim())));
 /** What to type to confirm: the username, or the email before one is picked. */
 const confirmWord = computed(() => account.me?.username ?? account.me?.email ?? "");
 function askDelete() {
   typed.value = "";
   password.value = "";
+  code.value = "";
+  codeSent.value = false;
   deleteStep.value = 1;
   confirmDelete.value = true;
 }
+async function sendDeleteCode() {
+  sendingCode.value = true;
+  try {
+    await api.twoFactor.send("delete_account");
+    codeSent.value = true;
+    toast.success(`We emailed a code to ${account.me?.email}`);
+  } catch (e) {
+    toast.error(errorText(e));
+  } finally {
+    sendingCode.value = false;
+  }
+}
 async function deleteAccount() {
-  if (typed.value.trim() !== confirmWord.value || !password.value) return;
+  if (!deleteReady.value) return;
   deleting.value = true;
   try {
-    await api.account.remove(password.value, typed.value);
+    await api.account.remove(password.value, typed.value, needsCode.value ? code.value.trim() : undefined);
     setMe(null);
     confirmDelete.value = false;
     toast.success("Your Tessera account is deleted");
@@ -130,7 +150,9 @@ async function deleteAccount() {
       </div>
     </form>
     <form v-else class="stack" style="gap: 14px" @submit.prevent="deleteAccount">
-      <p style="margin: 0">Last step. To make sure it's you, type your username and enter your password.</p>
+      <p style="margin: 0">
+        Last step. To make sure it's you, type your username and enter your password<template v-if="needsCode">, then the code we email you</template>.
+      </p>
       <div class="field">
         <label for="del-confirm">Type <strong>{{ confirmWord }}</strong> to confirm</label>
         <input id="del-confirm" v-model="typed" class="input" autocomplete="off" spellcheck="false" autofocus />
@@ -139,10 +161,19 @@ async function deleteAccount() {
         <label for="del-password">Password</label>
         <div class="input-icon"><KeyRound /><input id="del-password" v-model="password" class="input" type="password" autocomplete="current-password" /></div>
       </div>
+      <div v-if="needsCode" class="field">
+        <label for="del-code">Code from the email</label>
+        <div class="row" style="gap: 8px">
+          <input id="del-code" v-model="code" class="input" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000" style="flex: 1" />
+          <button type="button" class="btn" :disabled="sendingCode" @click="sendDeleteCode">
+            <Loader2 v-if="sendingCode" class="spin" /><Mail v-else /> {{ codeSent ? "Send again" : "Email me the code" }}
+          </button>
+        </div>
+      </div>
       <div class="dialog-footer" style="margin-top: 0">
         <button type="button" class="btn btn-lg" style="margin-right: auto" @click="deleteStep = 1">Back</button>
         <button type="button" class="btn btn-lg" @click="confirmDelete = false">Cancel</button>
-        <button class="btn btn-danger btn-lg" :disabled="deleting || typed.trim() !== confirmWord || !password">
+        <button class="btn btn-danger btn-lg" :disabled="deleting || !deleteReady">
           <Loader2 v-if="deleting" class="spin" /><Trash2 v-else /> Delete account
         </button>
       </div>

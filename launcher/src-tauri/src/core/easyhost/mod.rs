@@ -271,6 +271,11 @@ pub(crate) struct Installed {
 /// launcher, or Forge/NeoForge through their installer. The newest loader if none is given.
 pub(crate) async fn install(client: &reqwest::Client, paths: &Paths, data: &Path, kind: Kind, game: &str, loader_version: Option<String>, progress: Progress<'_>) -> Result<Installed> {
     progress("Getting Minecraft", 0, 0);
+    // they go into URLs and the installer's paths
+    versions::check_version(game)?;
+    if let Some(v) = &loader_version {
+        versions::check_version(v)?;
+    }
     let vanilla = versions::version_json(client, paths, game).await?;
     let component = vanilla.java_version.as_ref().map(|j| j.component.clone()).unwrap_or_else(|| "jre-legacy".into());
     let java = ensure_java(client, paths, &component, |d, t| progress("Getting Java", d, t)).await?;
@@ -312,13 +317,10 @@ pub(crate) async fn install(client: &reqwest::Client, paths: &Paths, data: &Path
                 Some(v) => v,
                 None => newest_loader(client, loader, game).await?,
             };
-            let url = if kind == Kind::Forge {
-                format!("https://maven.minecraftforge.net/net/minecraftforge/forge/{game}-{v}/forge-{game}-{v}-installer.jar")
-            } else {
-                format!("https://maven.neoforged.net/releases/net/neoforged/neoforge/{v}/neoforge-{v}-installer.jar")
-            };
+            let (_, url) = super::forge::installer_url(loader, game, &v)?;
             let installer = data.join("installer.jar");
-            fetch(client, &url, &installer, None, progress).await?;
+            let sha1 = super::forge::installer_sha1(client, &url).await?;
+            fetch(client, &url, &installer, Some(sha1), progress).await?;
             progress(if kind == Kind::Forge { "Installing Forge" } else { "Installing NeoForge" }, 0, 0);
             let out = command(&java).arg("-jar").arg(&installer).arg("--installServer").current_dir(data).output().await?;
             if !out.status.success() {

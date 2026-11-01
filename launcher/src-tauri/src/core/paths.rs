@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 /// meta/libraries/…                         maven layout, shared by all instances
 /// meta/assets/{indexes,objects}/…          sounds, languages
 /// meta/java/<component>/…                  Java runtimes from Mojang
+/// meta/modpacks/<version id>.mrpack         Modrinth modpacks, for installs and updates
 /// instances/<id>/instance.json             one folder per instance
 /// instances/<id>/game/                     the game directory (mods, saves, options)
 /// settings.json, servers.json
@@ -34,6 +35,9 @@ impl Paths {
     }
     pub fn java(&self, component: &str) -> PathBuf {
         self.meta().join("java").join(component)
+    }
+    pub fn modpacks(&self) -> PathBuf {
+        self.meta().join("modpacks")
     }
     pub fn instances(&self) -> PathBuf {
         self.root.join("instances")

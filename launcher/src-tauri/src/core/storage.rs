@@ -70,6 +70,13 @@ fn unused(paths: &Paths) -> Vec<std::path::PathBuf> {
             }
         }
     }
+    // downloaded modpacks no instance is on anymore
+    let packs: HashSet<String> = all.iter().filter_map(|i| i.pack.as_ref()?.version_id.as_ref().map(|v| format!("{v}.mrpack"))).collect();
+    for e in std::fs::read_dir(paths.modpacks()).into_iter().flatten().flatten() {
+        if !packs.contains(&*e.file_name().to_string_lossy()) {
+            out.push(e.path());
+        }
+    }
     // without the game's own version file there's no telling which runtime it needs
     let unknown = all.iter().any(|i| !versions.join(&i.game_version).join(format!("{}.json", i.game_version)).exists());
     if !unknown {

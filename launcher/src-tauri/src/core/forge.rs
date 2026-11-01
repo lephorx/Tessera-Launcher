@@ -13,7 +13,7 @@ use serde::Deserialize;
 use super::download::{download_all, Download};
 use super::loaders::{Loader, Profile};
 use super::paths::{ensure_parent, maven_path, Paths};
-use super::versions::Library;
+use super::versions::{check_version, Library};
 
 #[derive(Deserialize)]
 struct InstallProfile {
@@ -43,7 +43,9 @@ struct Processor {
     args: Vec<String>,
 }
 
-fn installer_url(loader: Loader, game: &str, version: &str) -> Result<(String, String)> {
+pub(crate) fn installer_url(loader: Loader, game: &str, version: &str) -> Result<(String, String)> {
+    check_version(game)?;
+    check_version(version)?;
     Ok(match loader {
         Loader::Forge => (
             format!("forge-{game}-{version}"),
@@ -55,6 +57,21 @@ fn installer_url(loader: Loader, game: &str, version: &str) -> Result<(String, S
         ),
         _ => bail!("not Forge or NeoForge"),
     })
+}
+
+/// The installer's SHA-1, which both mavens publish next to the jar. The installer runs as
+/// Java with our rights, so it isn't used unchecked.
+pub(crate) async fn installer_sha1(client: &reqwest::Client, url: &str) -> Result<String> {
+    let res = client.get(format!("{url}.sha1")).send().await.context("checking the installer")?;
+    if !res.status().is_success() {
+        bail!("Couldn't get the installer's checksum ({})", res.status());
+    }
+    let text = res.text().await?;
+    let sha1 = text.split_whitespace().next().unwrap_or_default().to_lowercase();
+    if sha1.len() != 40 || !sha1.bytes().all(|b| b.is_ascii_hexdigit()) {
+        bail!("The installer's checksum looks wrong");
+    }
+    Ok(sha1)
 }
 
 fn read_entry(zip: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Result<Vec<u8>> {
@@ -99,7 +116,12 @@ pub async fn install(
 
     progress("Downloading installer", 0, 0);
     let installer = dir.join("installer.jar");
-    download_all(client, vec![Download { url, path: installer.clone(), sha1: None, size: None, executable: false }], |_, _| {}).await?;
+    let sha1 = installer_sha1(client, &url).await?;
+    // a copy from an earlier try is downloaded again unless it's the right one
+    if std::fs::read(&installer).is_ok_and(|b| hex::encode(<sha1::Sha1 as sha1::Digest>::digest(&b)) != sha1) {
+        let _ = std::fs::remove_file(&installer);
+    }
+    download_all(client, vec![Download { url, path: installer.clone(), sha1: Some(sha1), size: None, executable: false }], |_, _| {}).await?;
 
     let mut zip = zip::ZipArchive::new(std::fs::File::open(&installer).context("opening the installer")?)?;
     let install: InstallProfile = serde_json::from_slice(&read_entry(&mut zip, "install_profile.json")?)?;
@@ -210,4 +232,16 @@ pub async fn install(
     std::fs::write(&marker, made.join("\n"))?;
     let _ = std::fs::remove_dir_all(&extract_dir);
     Ok(profile)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn installer_urls_need_plain_versions() {
+        assert!(installer_url(Loader::Forge, "1.20.1", "47.3.0").is_ok());
+        assert!(installer_url(Loader::Forge, "../../x", "47.3.0").is_err());
+        assert!(installer_url(Loader::NeoForge, "1.21.1", "21.1.77/../../x").is_err());
+    }
 }

@@ -1,7 +1,21 @@
 import io, json, os, re, sys, time, zipfile, requests
-env = dict(l.split("=",1) for l in open(".env.local").read().splitlines() if "=" in l and not l.startswith("#"))
+# Runs against the "e2e" Neon branch (its own database, Neon Auth and API: `neon deploy --branch e2e
+# --env .env.mail`, then `neon env pull --branch e2e --file .env.e2e`), not production.
+# E2E_ENV=.env.local runs it against production instead.
+ENV_FILE = os.environ.get("E2E_ENV", ".env.e2e")
+env = dict(l.split("=",1) for l in open(ENV_FILE).read().splitlines() if "=" in l and not l.startswith("#"))
 AUTH = env["NEON_AUTH_BASE_URL"].strip('"'); API = env["NEON_FUNCTION_API_BASE_URL"].strip('"').rstrip("/") + "/v1"
+print(f"e2e against {ENV_FILE} ({env.get('NEON_BRANCH', '?').strip(chr(34))})")
 O = {"origin": "http://localhost:1420"}
+# the secret the website signs visitor addresses with (from .env.mail; never printed)
+SITE = next((l.split("=", 1)[1].strip().strip('"') for l in open(".env.mail").read().splitlines() if l.startswith("TESSERA_SITE_SECRET=")), "")
+import hmac, hashlib, random
+def visitor(ip, secret=None):
+    ts = str(int(time.time() * 1000))
+    mac = hmac.new((SITE if secret is None else secret).encode(), f"visitor:{ts}:{ip}".encode(), hashlib.sha256).digest()
+    return {"x-tessera-visitor": ip, "x-tessera-visitor-sig": f"{ts}." + __import__("base64").urlsafe_b64encode(mac).decode().rstrip("=")}
+RUN_IP = lambda: f"198.51.100.{random.randint(1, 254)}"  # TEST-NET-2: a fresh rate-limit bucket per check
+CONSENT = {"terms_version": "2026-10-31", "age": "16+"}
 import subprocess
 DBURL = env["DATABASE_URL_UNPOOLED"].strip('"')
 psql = lambda sql: subprocess.run(["psql", DBURL, "-qtA", "-c", sql], check=True, capture_output=True, text=True).stdout.strip()
@@ -14,7 +28,7 @@ def account(tag, verified=True):
     if not verified: psql(f"""update neon_auth."user" set "emailVerified" = false where email = '{email}'""")
     jwt = s.get(f"{AUTH}/token", headers=O).json()["token"]
     return s, {"authorization": f"Bearer {jwt}"}, email
-sa, A, ea = account("alice"); sb, B, eb = account("bob")
+sa, A, ea = account("alice"); sb, B, eb = account("bob"); sc, C, ec = account("carol")
 check = lambda label, ok: print(("PASS " if ok else "FAIL ") + label) or (ok or sys.exit(1))
 check("unauthenticated is 401", requests.get(f"{API}/me").status_code == 401)
 check("forged token is 401", requests.get(f"{API}/me", headers={"authorization": "Bearer abc.def.ghi"}).status_code == 401)
@@ -23,16 +37,23 @@ ua, ub = f"alice_{int(time.time())%100000}", f"bob_{int(time.time())%100000}"
 ida0 = requests.get(f"{API}/me", headers=A).json()["user"]["id"]
 check("no invite: locked out", requests.get(f"{API}/shares/mine", headers=A).status_code == 403)
 check("no invite: /me works", requests.get(f"{API}/me", headers=A).json()["user"]["member"] is False)
-seed = [f"e2eA{int(time.time())%100000}", f"e2eB{int(time.time())%100000}"]
+seed = [f"e2eA{int(time.time())%100000}", f"e2eB{int(time.time())%100000}", f"e2eC{int(time.time())%100000}"]
 subprocess.run(["psql", DBURL, "-q", "-c", f"insert into invites (code, created_by) values ('{seed[0]}', '{ida0}'), ('{seed[1]}', '{ida0}')"], check=True)
 check("public invite check", requests.get(f"{API}/invites/{seed[0]}").json()["valid"] is True)
-check("bad username refused", requests.post(f"{API}/invites/{seed[0]}/redeem", json={"username": "a b"}, headers=A).status_code == 400)
-check("A joins with invite", requests.post(f"{API}/invites/{seed[0]}/redeem", json={"username": ua}, headers=A).status_code == 201)
-check("invite works only once", requests.post(f"{API}/invites/{seed[0]}/redeem", json={"username": ub}, headers=B).status_code == 410)
+check("bad username refused", requests.post(f"{API}/invites/{seed[0]}/redeem", json={"username": "a b", **CONSENT}, headers=A).status_code == 400)
+check("joining without age and Terms refused", requests.post(f"{API}/invites/{seed[0]}/redeem", json={"username": ua}, headers=A).json().get("error") == "consent_required")
+check("13-15 without a parent's OK refused", requests.post(f"{API}/invites/{seed[0]}/redeem", json={"username": ua, **CONSENT, "age": "13-15"}, headers=A).json().get("error") == "parental_consent_required")
+check("A joins with invite", requests.post(f"{API}/invites/{seed[0]}/redeem", json={"username": ua, **CONSENT}, headers=A).status_code == 201)
+check("invite works only once", requests.post(f"{API}/invites/{seed[0]}/redeem", json={"username": ub, **CONSENT}, headers=B).status_code == 410)
 check("used invite shows as used", requests.get(f"{API}/invites/{seed[0]}").json()["valid"] is False)
-check("username taken -> 409", requests.post(f"{API}/invites/{seed[1]}/redeem", json={"username": ua}, headers=B).status_code == 409)
-check("B joins", requests.post(f"{API}/invites/{seed[1]}/redeem", json={"username": ub}, headers=B).status_code == 201)
-check("can't join twice", requests.post(f"{API}/invites/{seed[1]}/redeem", json={"username": ub}, headers=B).status_code == 409)
+check("username taken -> 409", requests.post(f"{API}/invites/{seed[1]}/redeem", json={"username": ua, **CONSENT}, headers=B).status_code == 409)
+check("B joins", requests.post(f"{API}/invites/{seed[1]}/redeem", json={"username": ub, **CONSENT}, headers=B).status_code == 201)
+check("can't join twice", requests.post(f"{API}/invites/{seed[1]}/redeem", json={"username": ub, **CONSENT}, headers=B).status_code == 409)
+check("consent is stored", requests.get(f"{API}/me", headers=B).json()["user"]["age_declaration"] == "16+")
+idb0 = requests.get(f"{API}/me", headers=B).json()["user"]["id"]
+subprocess.run(["psql", DBURL, "-q", "-c", f"insert into invites (code, created_by) values ('{seed[2]}', '{idb0}')"], check=True)
+uc = f"carol_{int(time.time())%100000}"
+check("C joins", requests.post(f"{API}/invites/{seed[2]}/redeem", json={"username": uc, **CONSENT}, headers=C).status_code == 201)
 check("rename still works", requests.put(f"{API}/me/username", json={"username": ub}, headers=B).ok)
 inv = requests.get(f"{API}/invites", headers=A).json()
 check("members may make 3 (2 used)", inv["limit"] == 3 and inv["remaining"] == 1)
@@ -41,9 +62,23 @@ check("limit reached", requests.post(f"{API}/invites", headers=A).status_code ==
 check("B can't revoke A's invite", requests.delete(f"{API}/invites/{c3}", headers=B).status_code == 404)
 check("revoking frees a slot", requests.delete(f"{API}/invites/{c3}", headers=A).ok and requests.post(f"{API}/invites", headers=A).status_code == 201)
 check("used invites can't be revoked", requests.delete(f"{API}/invites/{seed[0]}", headers=A).status_code == 404)
+# the invite limit holds with requests at once: one slot free, eight tries in parallel, one invite
+from concurrent.futures import ThreadPoolExecutor
+newest = requests.get(f"{API}/invites", headers=A).json()["invites"][0]["code"]
+requests.delete(f"{API}/invites/{newest}", headers=A)
+with ThreadPoolExecutor(8) as pool_: made = list(pool_.map(lambda _: requests.post(f"{API}/invites", headers=A).status_code, range(8)))
+check("parallel invites can't pass the limit", made.count(201) == 1 and made.count(409) == 7)
 buf = io.BytesIO(); z = zipfile.ZipFile(buf, "w"); z.writestr("tessera.pack.json", json.dumps({"format":1,"name":"E2E","version":"1","minecraft":"1.21.1","loader":{"type":"fabric","version":"0.16.9"},"content":[]})); z.close()
 q = {"name": "E2E Pack", "game_version": "1.21.1", "loader": "fabric"}
 check("not a zip -> 400", requests.post(f"{API}/shares", params=q, data=b"hello", headers=A).status_code == 400)
+# a zip bomb: the manifest says little and inflates to 64 MB; the API stops inflating at 4 MB
+bomb = io.BytesIO(); z = zipfile.ZipFile(bomb, "w", zipfile.ZIP_DEFLATED); z.writestr("tessera.pack.json", b"{" + b" " * (64 << 20) + b"}"); z.close()
+check("zip bomb manifest refused", requests.post(f"{API}/shares", params=q, data=bomb.getvalue(), headers=A).json().get("error") == "not_a_pack")
+many = io.BytesIO(); z = zipfile.ZipFile(many, "w")
+for i in range(20_001): z.writestr(f"c/{i}", b"")
+z.writestr("tessera.pack.json", json.dumps({"format":1,"name":"E2E","version":"1","minecraft":"1.21.1","loader":{"type":"fabric","version":"0.16.9"},"content":[]})); z.close()
+check("20 001 files refused", requests.post(f"{API}/shares", params=q, data=many.getvalue(), headers=A).json().get("error") == "too_many_files")
+check("no share made by either", requests.get(f"{API}/shares/mine", headers=A).json()["shares"] == [])
 r = requests.post(f"{API}/shares", params=q, data=buf.getvalue(), headers=A); check("create share", r.status_code == 201); code = r.json()["share"]["code"]
 check("public lookup works", requests.get(f"{API}/shares/{code}").json()["share"]["owner"] == ua)
 check("B can't delete A's share", requests.delete(f"{API}/shares/{code}", headers=B).status_code == 404)
@@ -76,6 +111,15 @@ check("B sees it under received", any(s["code"] == code for s in requests.get(f"
 mine = requests.get(f"{API}/shares/mine", headers=A).json()["shares"]; check("A sees member B", mine[0]["members"][0]["username"] == ub and mine[0]["members"][0]["pending"] is False)
 dl = requests.get(f"{API}/shares/{code}/download", headers=B); check("B gets a download URL", dl.ok)
 check("download returns the pack", requests.get(dl.json()["url"]).content == buf.getvalue())
+# expiry: past expires_at friends can't download or sync it; the owner still can, and extends it
+psql(f"update shares set expires_at = now() - interval '1 minute' where code = '{code}'")
+check("expired: friend can't download", requests.get(f"{API}/shares/{code}/download", headers=B).json().get("error") == "expired")
+check("expired: not in the friend's sync", requests.get(f"{API}/shares/sync", params={"codes": code}, headers=B).json()["shares"] == [])
+check("expired: friend can't upload", requests.put(f"{API}/shares/{code}", params=q, data=buf.getvalue(), headers=B).status_code in (403, 410))
+check("expired: owner still downloads and syncs", requests.get(f"{API}/shares/{code}/download", headers=A).ok and len(requests.get(f"{API}/shares/sync", params={"codes": code}, headers=A).json()["shares"]) == 1)
+check("expired: shown as expired", requests.get(f"{API}/shares/{code}").json()["share"]["expired"] is True)
+check("expired: no new invites", requests.post(f"{API}/shares/{code}/members", json={"username": ub}, headers=A).json().get("error") == "expired")
+check("owner extends it", requests.patch(f"{API}/shares/{code}", json={"expires_in_days": 7}, headers=A).ok and requests.get(f"{API}/shares/{code}/download", headers=B).ok)
 check("set expiry never", requests.patch(f"{API}/shares/{code}", json={"expires_in_days": None}, headers=A).json()["share"]["expires_at"] is None)
 check("bad expiry -> 400", requests.patch(f"{API}/shares/{code}", json={"expires_in_days": 5}, headers=A).status_code == 400)
 check("A deletes share", requests.delete(f"{API}/shares/{code}", headers=A).ok)
@@ -109,7 +153,15 @@ check("owner can change versions", requests.put(f"{API}/shares/{code2}", params=
 check("shares/mine shows role", requests.get(f"{API}/shares/mine", headers=A).json()["shares"][0]["members"][0]["role"] == "editor")
 check("transfer needs a member", requests.post(f"{API}/shares/{code2}/transfer", json={"user_id": "00000000-0000-0000-0000-000000000000"}, headers=A).status_code == 404)
 check("B can't take the share", requests.post(f"{API}/shares/{code2}/transfer", json={"user_id": idb}, headers=B).status_code == 404)
+idc = requests.get(f"{API}/me", headers=C).json()["user"]["id"]
+check("A and C become friends", requests.post(f"{API}/friends", json={"username": uc}, headers=A).ok and requests.post(f"{API}/friends/{_ida}/accept", headers=C).ok)
+check("C on the pack", requests.post(f"{API}/shares/{code2}/members", json={"username": uc}, headers=A).status_code == 201)
+r = requests.post(f"{API}/shares/{code2}/transfer", json={"user_id": idb}, headers=A)
+check("transfer refused: C isn't B's friend", r.status_code == 409 and r.json().get("error") == "members_not_allowed" and uc in r.json()["message"])
+check("refused transfer changed nothing", requests.get(f"{API}/shares/{code2}", headers=B).json()["share"]["role"] == "editor" and requests.get(f"{API}/shares/{code2}", headers=A).json()["share"]["role"] == "owner")
+check("A takes C off", requests.delete(f"{API}/shares/{code2}/members/{idc}", headers=A).ok)
 check("A transfers to B", requests.post(f"{API}/shares/{code2}/transfer", json={"user_id": idb}, headers=A).ok)
+requests.delete(f"{API}/friends/{idc}", headers=A)
 s2 = requests.get(f"{API}/shares/{code2}", headers=B).json()["share"]
 check("B owns it now", s2["role"] == "owner" and s2["owner"] == ub)
 check("A stayed as editor", requests.get(f"{API}/shares/{code2}", headers=A).json()["share"]["role"] == "editor")
@@ -120,7 +172,11 @@ check("new owner deletes it", requests.delete(f"{API}/shares/{code2}", headers=B
 code3 = requests.post(f"{API}/shares", params=q, data=pack(), headers=A).json()["share"]["code"]
 requests.post(f"{API}/shares/{code3}/members", json={"username": ub}, headers=A)
 check("B declines an invite", requests.delete(f"{API}/shares/{code3}/members/{idb}", headers=B).ok and not requests.get(f"{API}/shares/invites", headers=B).json()["invites"])
-requests.post(f"{API}/shares/{code3}/members", json={"username": ub}, headers=A); requests.post(f"{API}/shares/{code3}/accept", headers=B)
+requests.post(f"{API}/shares/{code3}/members", json={"username": ub}, headers=A)
+psql(f"update shares set expires_at = now() - interval '1 minute' where code = '{code3}'")
+check("expired: invite can't be accepted", requests.post(f"{API}/shares/{code3}/accept", headers=B).json().get("error") == "expired")
+psql(f"update shares set expires_at = null where code = '{code3}'")
+requests.post(f"{API}/shares/{code3}/accept", headers=B)
 check("accepted after being asked again", requests.get(f"{API}/shares/{code3}", headers=B).json()["share"]["role"] == "viewer")
 check("unfriending takes B off A's packs", requests.delete(f"{API}/friends/{ida}", headers=B).ok and requests.get(f"{API}/shares/{code3}", headers=B).json()["share"]["role"] is None)
 requests.delete(f"{API}/shares/{code3}", headers=A)
@@ -196,6 +252,18 @@ seed_code(ida, "disable")
 check("turn 2fa off", requests.post(f"{API}/me/2fa/disable", json={"code": "123456"}, headers=AD2).ok)
 check("off: no device needed", requests.get(f"{API}/friends", headers=A).ok and requests.get(f"{API}/me", headers=A).json()["user"]["two_factor_required"] is False)
 check("news is public", len(requests.get(f"{API}/news").json()["news"]) > 0)
+# the website vouches for the visitor's address: each visitor gets their own public-lookup limit
+v1, v2 = RUN_IP(), RUN_IP()
+hits = [requests.get(f"{API}/invites/nope{i}", headers=visitor(v1)).status_code for i in range(400)]
+check("one visitor gets limited", 429 in hits)
+check("another visitor isn't", requests.get(f"{API}/invites/nope", headers=visitor(v2)).status_code == 200)
+check("a forged signature counts as the caller, not that visitor", requests.get(f"{API}/invites/nope", headers=visitor(v1, secret="wrong")).status_code == 200)
+site = lambda bucket, key, h=None: requests.post(f"{API}/site/limit", json={"bucket": bucket, "key": key}, headers=visitor(RUN_IP()) if h is None else h)
+check("site limits: only the website may ask", site("action", "x", {}).status_code == 401 and site("action", "x", visitor("1.2.3.4", secret="wrong")).status_code == 401)
+k = f"e2e-{time.time()}"
+check("site limits: 10 form posts a minute, shared", [site("action", k).json()["ok"] for _ in range(11)] == [True] * 10 + [False])
+check("site limits: one resend a minute", [site("resend_minute", k).json()["ok"] for _ in range(2)] == [True, False])
+check("email is set up (SMTP env deployed)", requests.get(f"{API}/me/email", headers=A).json()["email"]["available"] is True)
 # verified email: "you're verified" goes out once per address (example.com gets none, the log still counts it)
 check("verified mail logged once", psql(f"select count(*) from email_log where user_id = '{ida}' and kind = 'email_verified'") == "1")
 requests.get(f"{API}/me", headers=A)
@@ -204,20 +272,27 @@ check("not twice", psql(f"select count(*) from email_log where user_id = '{ida}'
 psql(f"""update neon_auth."user" set "emailVerified" = false where id = '{ida}'""")
 check("unverified: friends locked", requests.get(f"{API}/friends", headers=A).json().get("error") == "email_unverified")
 check("unverified: /me still works", requests.get(f"{API}/me", headers=A).json()["user"]["email_verified"] is False)
-# fixing the address of an unverified account: password-checked, public
-ch = lambda **b: requests.post(f"{API}/email/change", json=b)
-check("change: wrong password -> 401", ch(email=ea, password="nope nope", new_email="x@example.com").status_code == 401)
-check("change: unknown account -> 401", ch(email="nobody-e2e@example.com", password="correct horse battery", new_email="x@example.com").status_code == 401)
-check("change: taken address -> 409", ch(email=ea, password="correct horse battery", new_email=eb.upper()).json().get("error") == "email_taken")
-ea2 = ea.replace("@", "-new@")
-r = ch(email=ea, password="correct horse battery", new_email=ea2)
-check("change: works", r.ok and r.json()["email"] == ea2 and requests.get(f"{API}/me", headers=A).json()["user"]["email"] == ea2)
-check("change: old address can't sign in", requests.post(f"{AUTH}/sign-in/email", json={"email": ea, "password": "correct horse battery"}, headers=O).status_code == 401)
-check("change: new one asks for the code", requests.post(f"{AUTH}/sign-in/email", json={"email": ea2, "password": "correct horse battery"}, headers=O).json().get("code") == "EMAIL_NOT_VERIFIED")
+# fixing the address of an account that was never verified: password-checked, public, and the
+# same answer for a wrong password, an unknown account and one that is or was verified
+ip1 = RUN_IP()
+ch = lambda ip=ip1, **b: requests.post(f"{API}/email/change", json=b, headers=visitor(ip))
+en = f"e2enew{int(time.time())}@example.com"
+r = requests.post(f"{AUTH}/sign-up/email", json={"email": en, "password": "correct horse battery", "name": "new"}, headers=O)
+check("new account: no session before the code", r.ok and r.json().get("token") is None)
+same = lambda r: r.status_code == 401 and r.json() == {"error": "wrong_password", "message": "Wrong email or password. (An email that was verified can't be changed here.)"}
+check("change: wrong password -> 401", same(ch(email=en, password="nope nope", new_email="x@example.com")))
+check("change: unknown account, same answer", same(ch(email="nobody-e2e@example.com", password="correct horse battery", new_email="x@example.com")))
+check("change: once-verified account (unverified now), same answer", same(ch(email=ea, password="correct horse battery", new_email="x@example.com")))
+check("change: taken address -> 409", ch(email=en, password="correct horse battery", new_email=eb.upper()).json().get("error") == "email_taken")
+en2 = en.replace("@", "-new@")
+r = ch(email=en, password="correct horse battery", new_email=en2)
+check("change: works for a never-verified account", r.ok and r.json()["email"] == en2)
+check("change: old address can't sign in", requests.post(f"{AUTH}/sign-in/email", json={"email": en, "password": "correct horse battery"}, headers=O).status_code == 401)
+check("change: new one asks for the code", requests.post(f"{AUTH}/sign-in/email", json={"email": en2, "password": "correct horse battery"}, headers=O).json().get("code") == "EMAIL_NOT_VERIFIED")
 psql(f"""update neon_auth."user" set "emailVerified" = true where id = '{ida}'""")
-check("change: verified address stays", ch(email=ea2, password="correct horse battery", new_email=ea).json().get("error") == "already_verified")
+check("change: verified address, same answer", same(ch(ip=RUN_IP(), email=ea, password="correct horse battery", new_email="x@example.com")))
+check("change: 5 tries per visitor, counted in the database", ch(ip=ip1, email=en2, password="nope", new_email="x@example.com").status_code == 429)
 check("verified again: friends open", requests.get(f"{API}/friends", headers=A).ok)
-ea = ea2
 # usernames: no slurs, swearing or notorious people, nothing pretending to be staff, no odd symbols
 for bad in ["diddy_fan", "3pst3in", "xX_fuck_Xx", "BigAss", "admin", "TesseraTeam", "le__x", "_lead", "1234", "le-x"]:
     check(f"username {bad} refused", requests.put(f"{API}/me/username", json={"username": bad}, headers=B).json().get("error") == "invalid_username")
@@ -239,7 +314,17 @@ check("B can't sign out A's session", requests.delete(f"{API}/me/sessions/{ss[0]
 check("delete: nothing sent -> 400", requests.delete(f"{API}/me", headers=B).json().get("error") == "confirm_required")
 check("delete: wrong username -> 400", requests.delete(f"{API}/me", json={"password": "correct horse battery", "confirm": "someone"}, headers=B).json().get("error") == "wrong_confirm")
 check("delete: wrong password -> 401", requests.delete(f"{API}/me", json={"password": "nope nope", "confirm": ub}, headers=B).json().get("error") == "wrong_password")
-check("delete: both right", requests.delete(f"{API}/me", json={"password": "correct horse battery", "confirm": ub.upper()}, headers=B).status_code in (200, 204))
+# with two-step sign-in on, deleting also takes a code emailed for it
+seed_code(idb_, "enable")
+BD = {**B, "x-tessera-device": requests.post(f"{API}/me/2fa/enable", json={"code": "123456"}, headers=B).json()["device_token"]}
+check("delete code can be asked for", requests.post(f"{API}/me/2fa/code", json={"purpose": "delete_account"}, headers=BD).status_code in (200, 503))
+check("delete: 2fa on, no code -> 400", requests.delete(f"{API}/me", json={"password": "correct horse battery", "confirm": ub}, headers=BD).json().get("error") == "code_required")
+seed_code(idb_, "delete_account")
+check("delete: wrong code -> 400", requests.delete(f"{API}/me", json={"password": "correct horse battery", "confirm": ub, "code": "000000"}, headers=BD).json().get("error") == "wrong_code")
+seed_code(idb_, "sign_in", "222222")
+check("delete: a sign-in code doesn't do", requests.delete(f"{API}/me", json={"password": "correct horse battery", "confirm": ub, "code": "222222"}, headers=BD).json().get("error") == "wrong_code")
+check("delete: all right", requests.delete(f"{API}/me", json={"password": "correct horse battery", "confirm": ub.upper(), "code": "123456"}, headers=BD).status_code in (200, 204))
 check("deleted: B is gone", psql(f"""select count(*) from neon_auth."user" where email = '{eb}'""") == "0")
 subprocess.run(["psql", DBURL, "-q", "-c", f"delete from invites where created_by = '{ida0}'"], check=True)
-open("/tmp/neon_e2e_users", "w").write(f"{ea}\n{eb}\n")
+subprocess.run(["psql", DBURL, "-q", "-c", f"delete from invites where created_by = '{idb0}'"], check=True)
+open("/tmp/neon_e2e_users", "w").write(f"{ea}\n{eb}\n{ec}\n{en2}\n")

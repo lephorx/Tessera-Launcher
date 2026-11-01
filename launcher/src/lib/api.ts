@@ -31,7 +31,7 @@ export interface Instance {
   last_played: string | null;
   mods: InstalledMod[];
   icon: Icon | null;
-  pack: { project_id: string | null; name: string; version: string | null } | null;
+  pack: PackSource | null;
   groups: string[];
   /** Set while this instance is shared by you. */
   share_code?: string | null;
@@ -39,6 +39,17 @@ export interface Instance {
   joined?: { code: string; role: ShareRole; owner: string | null; updated_at: string | null } | null;
   /** CSCM servers made from this instance. */
   servers?: { machine_id: string; server_id: number; name: string; address: string | null }[];
+}
+
+/** Where a modpack instance came from. */
+export interface PackSource {
+  /** Modrinth project; null for a pack imported from a file (no updates then). */
+  project_id: string | null;
+  version_id: string | null;
+  name: string;
+  version: string | null;
+  /** What the pack put in the game folder, relative paths. */
+  files: string[];
 }
 
 export interface LoaderVersion {
@@ -55,6 +66,8 @@ export interface ContentFile {
   icon_url: string | null;
   project_id: string | null;
   world: string | null;
+  /** Came with the instance's modpack (false: added since). */
+  from_pack: boolean;
 }
 
 export interface World {
@@ -212,6 +225,45 @@ export interface ShareInvite extends Share {
 }
 
 export type ShareRole = "viewer" | "editor";
+
+/** A jar from a shared pack that Tessera doesn't know (not a Modrinth file), held back here. */
+export interface HeldJar {
+  path: string;
+  sha512: string;
+  size: number;
+  /** who changed the pack it came with */
+  by: string | null;
+  declined: boolean;
+}
+
+export interface PackVersions {
+  minecraft: string;
+  loader: Loader;
+  loader_version: string | null;
+}
+
+/** The share moved to another Minecraft or loader version: syncing waits for an answer. */
+export interface VersionChange {
+  revision: number;
+  from: PackVersions;
+  to: PackVersions;
+  by: string | null;
+  declined: boolean;
+}
+
+/** What a shared instance is waiting on from this computer. */
+export interface ShareReview {
+  instance: string;
+  name: string;
+  held: HeldJar[];
+  version_change: VersionChange | null;
+}
+
+/** What sharing an instance uploads (top-level files and folders), and what stays here. */
+export interface SharePreview {
+  shared: { name: string; is_dir: boolean; size: number; files: number; private: number }[];
+  left_out: string[];
+}
 
 /** A shared instance you were added to (or own no longer). */
 export interface MemberStatus {
@@ -434,6 +486,67 @@ export interface ProjectHit {
   date_modified: string | null;
 }
 
+export interface ProjectDetail {
+  id: string;
+  slug: string;
+  project_type: ProjectType;
+  title: string;
+  description: string;
+  icon_url: string | null;
+  downloads: number;
+  followers: number;
+  categories: string[];
+  loaders: string[];
+  game_versions: string[];
+  client_side: string | null;
+  server_side: string | null;
+  published: string | null;
+  updated: string | null;
+  source_url: string | null;
+  issues_url: string | null;
+  wiki_url: string | null;
+  discord_url: string | null;
+  gallery: { url: string; title: string | null; featured: boolean }[];
+  author: string | null;
+}
+
+/** One version of a project, newest first. */
+export interface ProjectVersion {
+  id: string;
+  project_id: string;
+  name: string;
+  version_number: string;
+  version_type: "release" | "beta" | "alpha";
+  game_versions: string[];
+  loaders: string[];
+  date_published: string;
+  downloads: number;
+  changelog: string | null;
+}
+
+/** What a modpack version brings. */
+export interface PackContents {
+  name: string;
+  version: string | null;
+  game_version: string;
+  loader: Loader;
+  loader_version: string | null;
+  files: {
+    path: string;
+    kind: "mod" | "resourcepack" | "shader" | "other";
+    title: string;
+    project_id: string | null;
+    version: string | null;
+    icon_url: string | null;
+    client: boolean;
+    server: boolean;
+    /** Inside the pack file rather than downloaded from Modrinth. */
+    bundled: boolean;
+  }[];
+  /** Config and other files besides `files`. */
+  other_files: number;
+}
+
 export interface SearchResult {
   hits: ProjectHit[];
   total_hits: number;
@@ -522,9 +635,18 @@ export const api = {
       limit?: number;
       offset?: number;
     }) => call<SearchResult>("search_projects", o),
-    install: (instanceId: string, projectId: string, kind: ProjectType, world: string | null = null) =>
-      call<Instance>("install_project", { instanceId, projectId, kind, world }),
-    installModpack: (projectId: string) => call<Instance>("install_modpack", { projectId }),
+    /** The newest compatible version, or `versionId` (replacing the version the instance has). */
+    install: (instanceId: string, projectId: string, kind: ProjectType, world: string | null = null, versionId: string | null = null) =>
+      call<Instance>("install_project", { instanceId, projectId, kind, world, versionId }),
+    installModpack: (projectId: string, versionId: string | null = null) => call<Instance>("install_modpack", { projectId, versionId }),
+    /** By id or slug. */
+    detail: (id: string) => call<ProjectDetail>("project_detail", { id }),
+    versions: (id: string, o: { loaders?: string[]; gameVersion?: string } = {}) =>
+      call<ProjectVersion[]>("project_versions", { id, loaders: o.loaders ?? null, gameVersion: o.gameVersion ?? null }),
+    /** What's in a modpack version (the newest when versionId is null). */
+    modpackContents: (projectId: string, versionId: string | null = null) => call<PackContents>("modpack_contents", { projectId, versionId }),
+    /** A modpack instance to another version of its pack (null: the newest); `reset` puts its own version back as installed. */
+    modpackApply: (id: string, versionId: string | null, reset = false) => call<Instance>("modpack_apply", { id, versionId, reset }),
     /** .tapack or .mrpack */
     importPack: (path: string) => call<Instance>("import_pack", { path }),
     /** "Get local pack": a new instance that can join this server. */
@@ -562,8 +684,8 @@ export const api = {
     consent: (consent: Consent) => call<Me>("account_consent", { consent }),
     /** Saves everything Tessera stores about the account as JSON. */
     exportData: (path: string) => call<void>("account_export", { path }),
-    /** Deletes the account, its shares and their packs, and signs out here. */
-    remove: (password: string, confirm: string) => call<void>("account_delete", { password, confirm }),
+    /** Deletes the account, its shares and their packs, and signs out here. With two-step sign-in on it takes the emailed code. */
+    remove: (password: string, confirm: string, code?: string) => call<void>("account_delete", { password, confirm, code: code ?? null }),
     /** Every browser and launcher signed in to the account. */
     sessions: () => call<SignedInDevice[]>("account_sessions"),
     /** Signs one device out, or (without an id) every one but this. Returns how many. */
@@ -573,7 +695,7 @@ export const api = {
   },
   /** Two-step sign-in by email. */
   twoFactor: {
-    send: (purpose: "sign_in" | "enable" | "disable") => call<void>("account_2fa_send", { purpose }),
+    send: (purpose: "sign_in" | "enable" | "disable" | "delete_account") => call<void>("account_2fa_send", { purpose }),
     /** Finishes signing in; this computer then skips the code for 30 days. */
     verify: (code: string) => call<Me>("account_2fa_verify", { code }),
     enable: (code: string) => call<Me>("account_2fa_enable", { code }),
@@ -600,6 +722,12 @@ export const api = {
     publish: (id: string) => call<void>("share_publish", { id }),
     leave: (id: string) => call<void>("share_leave", { id }),
     syncNow: (id: string) => call<void>("share_sync_now", { id }),
+    preview: (id: string) => call<SharePreview>("share_preview", { id }),
+    /** Instances with jars or a version change waiting for an answer (declined ones left out). */
+    reviews: () => call<ShareReview[]>("share_reviews"),
+    review: (id: string) => call<ShareReview>("share_review", { id }),
+    decideJars: (id: string, accept: string[], decline: string[]) => call<ShareReview>("share_decide_jars", { id, accept, decline }),
+    decideVersion: (id: string, accept: boolean) => call<void>("share_decide_version", { id, accept }),
     setExpiry: (code: string, days: number | null) => call<unknown>("share_set_expiry", { code, days }),
     received: () => call<{ shares: Share[] }>("shares_received").then((r) => r.shares),
     invites: () => call<{ invites: ShareInvite[] }>("shares_invites").then((r) => r.invites),

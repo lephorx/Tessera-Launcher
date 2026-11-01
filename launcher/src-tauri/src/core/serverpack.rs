@@ -151,8 +151,8 @@ mod tests {
         let paths = Paths::new(root.clone());
         let client = crate::core::http_client();
         let inst = instances::create(&paths, "Server Test", "1.21.1", Loader::Fabric, Some("0.16.9".into()), None).unwrap();
-        modrinth::install(&client, &paths, &inst.id, "P7dR8mSH", "mod", None).await.unwrap(); // Fabric API
-        modrinth::install(&client, &paths, &inst.id, "AANobbMI", "mod", None).await.unwrap(); // Sodium
+        modrinth::install(&client, &paths, &inst.id, "P7dR8mSH", "mod", None, None).await.unwrap(); // Fabric API
+        modrinth::install(&client, &paths, &inst.id, "AANobbMI", "mod", None, None).await.unwrap(); // Sodium
         let game = paths.game_dir(&inst.id);
         std::fs::create_dir_all(game.join("config")).unwrap();
         std::fs::write(game.join("config/server.toml"), b"x = 1").unwrap();

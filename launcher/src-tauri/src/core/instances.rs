@@ -27,6 +27,10 @@ pub struct PackSource {
     pub version_id: Option<String>,
     pub name: String,
     pub version: Option<String>,
+    /// What the pack put in the game folder (its downloads and overrides), relative with `/`:
+    /// an update replaces these and keeps everything added since.
+    #[serde(default)]
+    pub files: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -179,6 +183,11 @@ pub fn get(paths: &Paths, id: &str) -> Result<Instance> {
 }
 
 pub fn save(paths: &Paths, inst: &Instance) -> Result<()> {
+    // every way in (create, pack import and update, share join and pull) ends here
+    super::versions::check_version(&inst.game_version)?;
+    if let Some(v) = &inst.loader_version {
+        super::versions::check_version(v)?;
+    }
     let dir = paths.instance(&inst.id);
     std::fs::create_dir_all(paths.game_dir(&inst.id))?;
     let tmp = dir.join("instance.json.tmp");
@@ -256,6 +265,10 @@ mod tests {
         assert_eq!((a.id.as_str(), b.id.as_str()), ("my-pack", "my-pack-2"));
         assert_eq!(list(&paths).unwrap().len(), 2);
         assert!(get(&paths, "../etc").is_err());
+        // versions from a pack become paths: no way out of meta/versions
+        assert!(create(&paths, "Evil", "../../instances/my-pack/game/x", Loader::Vanilla, None, None).is_err());
+        assert!(create(&paths, "Evil", "1.21.1", Loader::Fabric, Some("../x".into()), None).is_err());
+        assert!(!paths.instance("evil").exists());
         delete(&paths, "my-pack").unwrap();
         assert_eq!(list(&paths).unwrap().len(), 1);
         std::fs::remove_dir_all(dir).unwrap();
@@ -306,6 +319,8 @@ pub struct ContentFile {
     pub icon_url: Option<String>,
     pub project_id: Option<String>,
     pub world: Option<String>,
+    /// Put there by the instance's modpack (false: added since, or not a modpack instance).
+    pub from_pack: bool,
 }
 
 /// Everything in mods/, resourcepacks/, shaderpacks/ and the worlds' datapacks/, including
@@ -323,6 +338,8 @@ pub fn content(paths: &Paths, inst: &Instance) -> Vec<ContentFile> {
             let enabled = !filename.ends_with(".disabled");
             let base = filename.trim_end_matches(".disabled");
             let known = inst.mods.iter().find(|m| m.filename == base && m.kind == kind);
+            let rel = format!("{}/{base}", content_dir(kind));
+            let from_pack = world.is_none() && inst.pack.as_ref().is_some_and(|p| p.files.contains(&rel));
             out.push(ContentFile {
                 kind: kind.into(),
                 filename: filename.clone(),
@@ -332,6 +349,7 @@ pub fn content(paths: &Paths, inst: &Instance) -> Vec<ContentFile> {
                 icon_url: known.and_then(|m| m.icon_url.clone()),
                 project_id: known.map(|m| m.project_id.clone()),
                 world: world.clone(),
+                from_pack,
             });
         }
     };

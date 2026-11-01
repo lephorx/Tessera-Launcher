@@ -8,7 +8,8 @@
  *   GET    /v1/me                               who am I (+ username, accepted Terms version)
  *   POST   /v1/me/consent  {terms_version, age, parental_consent?}   accept the current Terms
  *   GET    /v1/me/export                        everything stored about me, as a JSON download
- *   DELETE /v1/me                               delete my account, my shares and their packs
+ *   DELETE /v1/me        {password, confirm, code?}   delete my account, my shares and their packs
+ *                                               (code: emailed for purpose delete_account, with two-step sign-in on)
  *   PUT    /v1/me/username        {username}    pick the name friends add you by
  *   POST   /v1/shares             .tapack body  share an instance (?name=&game_version=&loader=)
  *   PUT    /v1/shares/:code       .tapack body  upload a newer version (owner, or an editor: same
@@ -18,6 +19,8 @@
  *   GET    /v1/shares/invites                   packs friends invited me to, not answered yet
  *   POST   /v1/shares/:code/accept              take the invite: the pack is mine to install now
  *   PATCH  /v1/shares/:code       {expires_in_days: 1|7|30|null}
+ *                                               after expires_at friends can't download, sync or accept
+ *                                               it any more; the owner still can, and extends it here
  *   DELETE /v1/shares/:code
  *   POST   /v1/shares/:code/members   {username, role?}   invite a friend (at most 10 per pack); they
  *                                               accept first, declining is DELETE …/members/<me>
@@ -45,7 +48,8 @@
  *   POST   /v1/webhooks/neon-authNeon Auth's send.otp webhook (signed): we email its codes ourselves
  *   POST   /v1/email/change      {email, password, new_email}
  *                                               public, password-checked: fixes the address of an
- *                                               account that isn't verified yet (a typo, a throwaway)
+ *                                               account whose email never was verified (a typo, a throwaway)
+ *   POST   /v1/site/limit        {bucket, key}  the website's own rate limits (signed by the website)
  *
  * Until the email is verified, an account only gets the calls that are open to non-members too
  * (who am I, export, delete, Terms, joining); the rest answer 403 email_unverified. The first
@@ -53,7 +57,7 @@
  *
  * Two-step sign-in by email. With it on, only GET /v1/me and the two sign-in calls work until
  * this device sends `X-Tessera-Device: <token>` from /me/2fa/verify (or /enable):
- *   POST   /v1/me/2fa/code       {purpose: sign_in|enable|disable}   email me a code
+ *   POST   /v1/me/2fa/code       {purpose: sign_in|enable|disable|delete_account}   email me a code
  *   POST   /v1/me/2fa/verify     {code, label?}   sign-in step → {device_token}, good for 30 days
  *   POST   /v1/me/2fa/enable     {code, label?}   turn it on → {device_token} for this device
  *   POST   /v1/me/2fa/disable    {code}           turn it off (forgets every trusted device)
@@ -71,15 +75,15 @@
  * Closed beta: only accounts with a profile can use the API, and a profile is only made by
  * redeeming an invite (each works once):
  *   GET    /v1/invites/:code                    public: is this invite still good?
- *   POST   /v1/invites/:code/redeem  {username, terms_version?, age?, parental_consent?}
+ *   POST   /v1/invites/:code/redeem  {username, terms_version, age, parental_consent?}
  *                                               join with an invite (right after sign-up)
  *   GET    /v1/invites                          mine, and how many I may still make
  *   POST   /v1/invites                          make one (3 for members, any number for admins)
  *   DELETE /v1/invites/:code                    revoke an unused one
  */
-import { createHash, createPublicKey, randomBytes, randomInt, scrypt, timingSafeEqual, verify } from "node:crypto";
+import { createHash, createHmac, createPublicKey, randomBytes, randomInt, scrypt, timingSafeEqual, verify } from "node:crypto";
 import { attachDatabasePool } from "@neon/functions";
-import { unzipSync, strFromU8 } from "fflate";
+import { Inflate, strFromU8 } from "fflate";
 import { Files } from "files-sdk";
 import { neon } from "files-sdk/neon";
 import { Hono, type Context } from "hono";
@@ -100,7 +104,10 @@ const MAX_SHARES_PER_USER = 20;
 /** Friends per shared pack: each one's launcher checks the pack for changes while it's open. */
 const MAX_SHARE_MEMBERS = 10;
 
-// ── rate limits (per isolate, in memory) ─────────────────────────────────
+// ── rate limits ──────────────────────────────────────────────────────────
+
+// Per isolate, in memory: fine for throughput limits. Anything that guards a password or a code
+// uses `dbLimit` instead, which every instance shares.
 
 class RateLimiter {
   private hits = new Map<string, { count: number; resetAt: number }>();
@@ -123,6 +130,23 @@ const perUser = new RateLimiter(120, 60_000);
 const uploads = new RateLimiter(240, 60 * 60_000);
 const publicLookups = new RateLimiter(60, 60_000);
 
+/**
+ * Fixed-window limit kept in Postgres (rate_limits): shared by every instance and kept across
+ * restarts. Keys are stored hashed (they hold addresses). True while under `limit`.
+ */
+async function dbLimit(key: string, limit: number, windowMs: number): Promise<boolean> {
+  const { rows } = await pool.query(
+    `insert into rate_limits (key, hits, reset_at) values ($1, 1, now() + make_interval(secs => $2))
+     on conflict (key) do update set
+       hits = case when rate_limits.reset_at <= now() then 1 else rate_limits.hits + 1 end,
+       reset_at = case when rate_limits.reset_at <= now() then excluded.reset_at else rate_limits.reset_at end
+     returning hits`,
+    [sha256(key), windowMs / 1000],
+  );
+  if (Math.random() < 0.02) pool.query(`delete from rate_limits where reset_at < now()`).catch(() => {});
+  return rows[0].hits <= limit;
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────
 
 type Env = { Variables: { userId: string; isAdmin: boolean; twoFactorPending: boolean; deviceId: string | null } };
@@ -142,8 +166,34 @@ function answersInvites(c: Context): boolean {
   return major > 0 || minor > 6 || (minor === 6 && patch >= 22);
 }
 
+/**
+ * The caller's address. Neon's function gateway replaces X-Forwarded-For with the address that
+ * connected (one entry; checked 2026-11-01), so the last entry is the one to trust if a proxy
+ * ever appends instead. X-Real-IP comes from the client unchanged: never used. Calls from the
+ * website carry the visitor's address, signed (`siteVisitor`).
+ */
 function clientIp(c: Context): string {
-  return c.req.header("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+  return siteVisitor(c) ?? (c.req.header("x-forwarded-for")?.split(",").pop()?.trim() || "unknown");
+}
+
+/** Shared with the website (TESSERA_SITE_SECRET): signs the visitor's address and the website's own calls. */
+const SITE_SECRET = process.env.TESSERA_SITE_SECRET ?? "";
+
+/**
+ * The visitor's address the website vouches for. Its pages look up invites and shares from
+ * Vercel's servers, so without this every visitor would share Vercel's limit. The headers are
+ * `X-Tessera-Visitor: <ip>` and `X-Tessera-Visitor-Sig: <unix ms>.<HMAC-SHA256 of "visitor:<ms>:<ip>">`,
+ * good for two minutes.
+ */
+function siteVisitor(c: Context): string | null {
+  if (!SITE_SECRET) return null;
+  const ip = c.req.header("x-tessera-visitor") ?? "";
+  const [ts, mac] = (c.req.header("x-tessera-visitor-sig") ?? "").split(".");
+  if (!ip || ip.length > 64 || !ts || !/^\d{10,16}$/.test(ts) || !mac) return null;
+  if (Math.abs(Date.now() - Number(ts)) > 2 * 60_000) return null;
+  const want = Buffer.from(createHmac("sha256", SITE_SECRET).update(`visitor:${ts}:${ip}`).digest("base64url"));
+  const got = Buffer.from(mac);
+  return want.length === got.length && timingSafeEqual(want, got) ? ip : null;
 }
 
 // No 0/O, 1/I/L: easy to read out loud.
@@ -170,12 +220,82 @@ async function readPack(c: Context): Promise<Uint8Array | Response> {
   return body;
 }
 
-/** Minecraft and loader versions from the pack's tessera.pack.json: what the share really is. */
-function packVersions(body: Uint8Array): { game_version: string; loader: string; loader_version: string | null } | null {
+/** More files than any real pack has (configs and all); packs link their mods instead of carrying them. */
+const MAX_PACK_ENTRIES = 20_000;
+const MAX_MANIFEST_BYTES = 4 * 1024 * 1024;
+
+/**
+ * tessera.pack.json out of a .tapack, read from the zip's central directory. The sizes a zip
+ * states aren't trusted: a zip bomb states a small one and inflates to gigabytes, so inflating
+ * stops once the real output passes 4 MB. "too_many" for more than 20 000 entries, null for
+ * anything that isn't a plain zip with the manifest in it.
+ */
+function packManifest(zip: Uint8Array): Uint8Array | "too_many" | null {
+  const v = new DataView(zip.buffer, zip.byteOffset, zip.byteLength);
+  // the end-of-central-directory record: the last 22 bytes, or before a comment of up to 64 KB
+  let end = -1;
+  for (let i = zip.length - 22; i >= Math.max(0, zip.length - 22 - 0xffff); i--) {
+    if (v.getUint32(i, true) === 0x06054b50) {
+      end = i;
+      break;
+    }
+  }
+  if (end < 0) return null;
+  const entries = v.getUint16(end + 10, true);
+  const dirStart = v.getUint32(end + 16, true);
+  // 0xffff / 0xffffffff mean Zip64: only for 65 535+ entries or 4 GB, neither of which a pack has
+  if (entries === 0xffff || entries > MAX_PACK_ENTRIES) return "too_many";
+  if (dirStart === 0xffffffff || dirStart > end) return null;
+  let p = dirStart;
+  for (let n = 0; n < entries; n++) {
+    if (p + 46 > end || v.getUint32(p, true) !== 0x02014b50) return null;
+    const flags = v.getUint16(p + 8, true);
+    const method = v.getUint16(p + 10, true);
+    const compressed = v.getUint32(p + 20, true);
+    const nameLen = v.getUint16(p + 28, true);
+    const local = v.getUint32(p + 42, true);
+    const name = strFromU8(zip.subarray(p + 46, p + 46 + nameLen));
+    p += 46 + nameLen + v.getUint16(p + 30, true) + v.getUint16(p + 32, true);
+    if (name !== "tessera.pack.json") continue;
+    if (flags & 1 || local + 30 > zip.length || v.getUint32(local, true) !== 0x04034b50) return null; // encrypted, or no file there
+    const start = local + 30 + v.getUint16(local + 26, true) + v.getUint16(local + 28, true);
+    if (start + compressed > zip.length) return null;
+    const data = zip.subarray(start, start + compressed);
+    if (method === 0) return data.length <= MAX_MANIFEST_BYTES ? data : null;
+    return method === 8 && data.length ? inflateCapped(data, MAX_MANIFEST_BYTES) : null;
+  }
+  return null;
+}
+
+/** Inflates raw deflate data in small steps, giving up (null) once the output passes `max` bytes. */
+function inflateCapped(data: Uint8Array, max: number): Uint8Array | null {
+  const parts: Uint8Array[] = [];
+  let size = 0;
+  // 4 KB in inflates to 4 MB out at most (deflate tops out near 1:1032), so one step can't run away
+  const inflate = new Inflate((chunk) => {
+    size += chunk.length;
+    if (size <= max) parts.push(chunk.slice());
+  });
   try {
-    const files = unzipSync(body, { filter: (f) => f.name === "tessera.pack.json" });
-    const raw = files["tessera.pack.json"];
-    if (!raw) return null;
+    for (let i = 0; i < data.length && size <= max; i += 4096) inflate.push(data.subarray(i, i + 4096), i + 4096 >= data.length);
+  } catch {
+    return null;
+  }
+  if (size > max) return null;
+  const out = new Uint8Array(size);
+  let at = 0;
+  for (const part of parts) {
+    out.set(part, at);
+    at += part.length;
+  }
+  return out;
+}
+
+/** Minecraft and loader versions from the pack's tessera.pack.json: what the share really is. */
+function packVersions(body: Uint8Array): { game_version: string; loader: string; loader_version: string | null } | "too_many" | null {
+  try {
+    const raw = packManifest(body);
+    if (!raw || raw === "too_many") return raw;
     const m = JSON.parse(strFromU8(raw));
     const loader = z.enum(["vanilla", "fabric", "quilt", "forge", "neoforge"]).safeParse(m?.loader?.type);
     if (typeof m?.minecraft !== "string" || !loader.success) return null;
@@ -211,7 +331,41 @@ function checkConsent(c: Context, raw: unknown): { terms_version: string; age: "
   return { terms_version: body.data.terms_version, age: body.data.age };
 }
 
-const SHARE_COLUMNS = `s.code, s.name, s.game_version, s.loader, s.size_bytes, s.created_at, s.updated_at, s.expires_at, s.revision, p.username as owner`;
+const SHARE_COLUMNS = `s.code, s.name, s.game_version, s.loader, s.size_bytes, s.created_at, s.updated_at, s.expires_at,
+  coalesce(s.expires_at <= now(), false) as expired, s.revision, p.username as owner`;
+
+/** A share past its expires_at: only its owner can still get at it (and extend it). */
+const NOT_EXPIRED = `(s.expires_at is null or s.expires_at > now())`;
+const EXPIRED_MESSAGE = "This pack expired. Ask its owner to extend it in the launcher.";
+
+/**
+ * Runs `f` in a transaction holding advisory locks on `keys` ("shares:<user>", "members:<code>",
+ * "invites:<user>"), so a limit counted inside it holds when requests come in at once. Always
+ * take "members:" before "shares:" so two calls never wait on each other. Returning an error
+ * Response (a refusal) rolls back whatever `f` did.
+ */
+async function locked<T>(keys: string[], f: (db: pg.PoolClient) => Promise<T>): Promise<T> {
+  const db = await pool.connect();
+  try {
+    await db.query("begin");
+    for (const key of keys) await db.query(`select pg_advisory_xact_lock(hashtextextended($1, 0))`, [key]);
+    const result = await f(db);
+    await db.query(result instanceof Response && !result.ok ? "rollback" : "commit");
+    return result;
+  } catch (e) {
+    await db.query("rollback").catch(() => {});
+    throw e;
+  } finally {
+    db.release();
+  }
+}
+
+/** The answer when a .tapack's manifest can't be read. */
+function packRefused(c: Context, versions: "too_many" | null) {
+  return versions === "too_many"
+    ? err(c, 413, "too_many_files", "That pack has too many files in it. Leave worlds and caches out of the pack.")
+    : err(c, 400, "not_a_pack", "That isn't a .tapack file.");
+}
 
 // ── app ──────────────────────────────────────────────────────────────────
 
@@ -428,12 +582,16 @@ app.post("/webhooks/neon-auth", async (c) => {
   return c.json({ ok: true });
 });
 
-// Public, but it needs the account's password: fixes the address of an account that isn't
-// verified yet, so a typo or a throwaway address doesn't lock anyone out (Neon Auth won't sign
-// an unverified account in, and only emails the address on file). Verified addresses stay put:
-// whoever knows the password would otherwise take the account. The caller then asks Neon Auth
-// for a code to the new address.
-const emailChanges = new RateLimiter(5, 15 * 60_000);
+// Public, but it needs the account's password: fixes the address of an account whose email was
+// never verified, so a typo or a throwaway address doesn't lock anyone out (Neon Auth won't sign
+// an unverified account in, so there is no session to ask for, and it only emails the address on
+// file). An address that is or ever was verified stays put: whoever knows the password would
+// otherwise take the account. Wrong password, unknown account and verified account all get the
+// same answer, after the same scrypt work, so the call doesn't tell which one it was. The caller
+// then asks Neon Auth for a code to the new address.
+const EMAIL_CHANGE_MESSAGE = "Wrong email or password. (An email that was verified can't be changed here.)";
+/** Checked when there's no account, so an unknown address takes as long as a wrong password. */
+const DUMMY_PASSWORD_HASH = `${randomBytes(16).toString("hex")}:${randomBytes(64).toString("hex")}`;
 
 /** Checks a password against Neon Auth's hash (Better Auth: scrypt N=16384 r=16 p=1, "salt:key" hex). */
 function passwordMatches(password: string, stored: string): Promise<boolean> {
@@ -454,15 +612,17 @@ app.post("/email/change", async (c) => {
   if (!body.success) return err(c, 400, "invalid_email", "That email address doesn't look right.");
   const email = body.data.email.toLowerCase();
   const next = body.data.new_email.toLowerCase();
-  if (!emailChanges.take(clientIp(c)) || !emailChanges.take(email)) return err(c, 429, "rate_limited", "Too many attempts. Wait a few minutes.");
+  const [byIp, byEmail] = [await dbLimit(`email-change:ip:${clientIp(c)}`, 5, 15 * 60_000), await dbLimit(`email-change:${email}`, 5, 15 * 60_000)];
+  if (!byIp || !byEmail) return err(c, 429, "rate_limited", "Too many attempts. Wait a few minutes.");
   const { rows } = await pool.query(
-    `select u.id, u."emailVerified" as verified, a.password from neon_auth."user" u
+    `select u.id, u."emailVerified" or exists (select 1 from verified_users v where v.user_id = u.id) as ever_verified, a.password
+     from neon_auth."user" u
      join neon_auth.account a on a."userId" = u.id and a."providerId" = 'credential' where lower(u.email) = $1`,
     [email],
   );
   const user = rows[0];
-  if (!user?.password || !(await passwordMatches(body.data.password, user.password))) return err(c, 401, "wrong_password", "Wrong email or password.");
-  if (user.verified) return err(c, 409, "already_verified", "That email is already verified.");
+  const matches = await passwordMatches(body.data.password, user?.password || DUMMY_PASSWORD_HASH);
+  if (!user?.password || !matches || user.ever_verified) return err(c, 401, "wrong_password", EMAIL_CHANGE_MESSAGE);
   if (next === email) return c.json({ ok: true, email: next });
   const taken = await pool.query(`select 1 from neon_auth."user" where lower(email) = $1`, [next]);
   if (taken.rows[0]) return err(c, 409, "email_taken", "There is already an account with that email.");
@@ -475,12 +635,28 @@ app.post("/email/change", async (c) => {
 /** sha256 hex, for codes and device tokens: only hashes are stored. */
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 
+// The website's own limits, kept here in Postgres so every Vercel instance counts together: form
+// posts (sign-in tries) per visitor, and "send a new code" per address. Only the website can ask
+// (it signs the call with the visitor's address); the limits themselves are set here.
+const SITE_LIMITS = { action: [10, 60_000], resend_minute: [1, 60_000], resend_hour: [5, 60 * 60_000] } as const;
+
+app.post("/site/limit", async (c) => {
+  if (!siteVisitor(c)) return err(c, 401, "bad_signature");
+  const body = z
+    .object({ bucket: z.enum(["action", "resend_minute", "resend_hour"]), key: z.string().min(1).max(300) })
+    .safeParse(await c.req.json().catch(() => null));
+  if (!body.success) return err(c, 400, "invalid_limit");
+  const [limit, windowMs] = SITE_LIMITS[body.data.bucket];
+  return c.json({ ok: await dbLimit(`site:${body.data.bucket}:${body.data.key.toLowerCase()}`, limit, windowMs) });
+});
+
 // Everything else needs a signed-in user.
 app.use("*", async (c, next) => {
   const auth = c.req.header("authorization");
   if (!auth?.toLowerCase().startsWith("bearer ")) return err(c, 401, "unauthenticated");
   try {
-    const { payload } = await jwtVerify(auth.slice(7), jwks, { issuer });
+    // Neon Auth signs with Ed25519 and sets aud to its own origin (checked 2026-11-01)
+    const { payload } = await jwtVerify(auth.slice(7), jwks, { issuer, audience: issuer, algorithms: ["EdDSA"] });
     if (!payload.sub) return err(c, 401, "unauthenticated");
     c.set("userId", payload.sub);
   } catch {
@@ -526,7 +702,10 @@ app.get("/me", async (c) => {
     [c.var.userId],
   );
   if (!rows[0]) return err(c, 401, "unauthenticated");
-  if (rows[0].email_verified) verifiedMail(c.var.userId, rows[0].email);
+  if (rows[0].email_verified) {
+    verifiedMail(c.var.userId, rows[0].email);
+    rememberVerified(c.var.userId);
+  }
   // waiting for the emailed code: nothing but who it is
   const user = c.var.twoFactorPending
     ? { id: rows[0].id, email: rows[0].email, name: rows[0].name, username: rows[0].username, member: rows[0].member, two_factor: true }
@@ -596,14 +775,17 @@ app.get("/me/export", async (c) => {
 // Neon Auth user; profiles, shares, memberships, friendships, invites I made and blocks go with
 // it by foreign-key cascade (invites I used and shares I last updated keep a null in my place).
 // Deleting takes the password and the username (or the email, without one) typed out: a
-// signed-in computer someone else sits at can't do it in one click.
+// signed-in computer someone else sits at can't do it in one click. With two-step sign-in on it
+// also takes a code emailed for it (POST /me/2fa/code {purpose: "delete_account"}).
 app.delete("/me", async (c) => {
   const id = c.var.userId;
-  const body = z.object({ password: z.string().min(1).max(200), confirm: z.string().trim() }).safeParse(await c.req.json().catch(() => null));
+  const body = z
+    .object({ password: z.string().min(1).max(200), confirm: z.string().trim(), code: z.string().trim().optional() })
+    .safeParse(await c.req.json().catch(() => null));
   if (!body.success) return err(c, 400, "confirm_required", "Enter your password and type your username to delete the account.");
-  if (!emailChanges.take(`delete:${id}`)) return err(c, 429, "rate_limited", "Too many attempts. Wait a few minutes.");
   const { rows: who } = await pool.query(
-    `select u.email, p.username, a.password from neon_auth."user" u left join profiles p on p.user_id = u.id
+    `select u.email, p.username, a.password, coalesce(p.two_factor_email, false) as two_factor
+     from neon_auth."user" u left join profiles p on p.user_id = u.id
      left join neon_auth.account a on a."userId" = u.id and a."providerId" = 'credential' where u.id = $1`,
     [id],
   );
@@ -612,7 +794,15 @@ app.delete("/me", async (c) => {
   if (body.data.confirm.toLowerCase() !== String(me.username ?? me.email).toLowerCase()) {
     return err(c, 400, "wrong_confirm", `Type ${me.username ?? me.email} exactly to confirm.`);
   }
+  // counted from here: password and code guesses, not typos in the username
+  if (!(await dbLimit(`delete:${id}`, 5, 15 * 60_000))) return err(c, 429, "rate_limited", "Too many attempts. Wait a few minutes.");
   if (!me.password || !(await passwordMatches(body.data.password, me.password))) return err(c, 401, "wrong_password", "That password isn't right.");
+  if (me.two_factor) {
+    const code = body.data.code ?? "";
+    if (!/^\d{6}$/.test(code)) return err(c, 400, "code_required", "Two-step sign-in is on: enter the code we emailed you for deleting the account.");
+    const ok = await takeCode(id, "delete_account", code);
+    if (ok !== true) return codeError(c, ok);
+  }
   const { rows: mine } = await pool.query(`select object_key from shares where owner_id = $1`, [id]);
   await Promise.all(mine.map((s) => files.delete(s.object_key).catch((e) => console.error("delete pack", s.object_key, e))));
   const db = await pool.connect();
@@ -668,17 +858,27 @@ app.post("/shares", async (c) => {
   const body = await readPack(c);
   if (body instanceof Response) return body;
   const versions = packVersions(body);
-  if (!versions) return err(c, 400, "not_a_pack", "That isn't a .tapack file.");
+  if (!versions || versions === "too_many") return packRefused(c, versions);
 
   const code = newCode();
   const key = `shares/${code}.tapack`;
   await files.upload(key, body, { contentType: "application/zip" });
-  const { rows } = await pool.query(
-    `insert into shares (code, owner_id, name, game_version, loader, loader_version, size_bytes, object_key, expires_at)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, now() + interval '7 days') returning code, expires_at, revision`,
-    [code, c.var.userId, meta.data.name, versions.game_version, versions.loader, versions.loader_version, body.length, key],
-  );
-  return c.json({ share: rows[0] }, 201);
+  // counted again under the lock: parallel uploads can't pass the limit together
+  const share = await locked([`shares:${c.var.userId}`], async (db) => {
+    const { rows: mine } = await db.query(`select count(*)::int as n from shares where owner_id = $1`, [c.var.userId]);
+    if (mine[0].n >= MAX_SHARES_PER_USER) return null;
+    const { rows } = await db.query(
+      `insert into shares (code, owner_id, name, game_version, loader, loader_version, size_bytes, object_key, expires_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, now() + interval '7 days') returning code, expires_at, revision`,
+      [code, c.var.userId, meta.data.name, versions.game_version, versions.loader, versions.loader_version, body.length, key],
+    );
+    return rows[0];
+  });
+  if (!share) {
+    await files.delete(key).catch(() => {});
+    return err(c, 409, "too_many_shares", "You share 20 packs already. Stop sharing one first.");
+  }
+  return c.json({ share }, 201);
 });
 
 /** The share if the caller owns it. */
@@ -690,7 +890,7 @@ async function owned(c: Context<Env>) {
 /** The share and the caller's role in it: owner, editor, viewer, or null. */
 async function access(c: Context<Env>) {
   const { rows } = await pool.query(
-    `select s.*, case when s.owner_id = $2 then 'owner' else m.role end as role
+    `select s.*, case when s.owner_id = $2 then 'owner' else m.role end as role, not ${NOT_EXPIRED} as expired
      from shares s left join share_members m on m.code = s.code and m.user_id = $2 and m.accepted_at is not null where s.code = $1`,
     [c.req.param("code"), c.var.userId],
   );
@@ -702,12 +902,13 @@ app.put("/shares/:code", async (c) => {
   const share = await access(c);
   if (!share || !share.role) return err(c, 404, "not_found");
   if (share.role === "viewer") return err(c, 403, "read_only", "You can install this pack but not change it. Ask the owner to make you an editor.");
+  if (share.expired && share.role !== "owner") return err(c, 410, "expired", EXPIRED_MESSAGE);
   const meta = packMeta.safeParse(c.req.query());
   if (!meta.success) return err(c, 400, "invalid_pack");
   const body = await readPack(c);
   if (body instanceof Response) return body;
   const versions = packVersions(body);
-  if (!versions) return err(c, 400, "not_a_pack", "That isn't a .tapack file.");
+  if (!versions || versions === "too_many") return packRefused(c, versions);
   if (
     share.role === "editor" &&
     (versions.game_version !== share.game_version || versions.loader !== share.loader || (share.loader_version && versions.loader_version !== share.loader_version))
@@ -741,7 +942,7 @@ app.get("/shares/sync", async (c) => {
      from shares s
      left join share_members m on m.code = s.code and m.user_id = $2 and m.accepted_at is not null
      left join profiles up on up.user_id = s.updated_by
-     where s.code = any($1) and (s.owner_id = $2 or m.user_id is not null)`,
+     where s.code = any($1) and (s.owner_id = $2 or (m.user_id is not null and ${NOT_EXPIRED}))`,
     [codes, c.var.userId],
   );
   return c.json({ shares: rows });
@@ -779,10 +980,13 @@ app.get("/shares/invites", async (c) => {
 
 app.post("/shares/:code/accept", async (c) => {
   const { rows } = await pool.query(
-    `update share_members set accepted_at = coalesce(accepted_at, now()) where code = $1 and user_id = $2 returning role`,
+    `update share_members m set accepted_at = coalesce(m.accepted_at, now()) from shares s
+     where s.code = m.code and m.code = $1 and m.user_id = $2 and ${NOT_EXPIRED} returning m.role`,
     [c.req.param("code"), c.var.userId],
   );
-  return rows[0] ? c.json({ ok: true, role: rows[0].role }) : err(c, 404, "not_found", "That invite is gone. Its owner may have taken it back.");
+  if (rows[0]) return c.json({ ok: true, role: rows[0].role });
+  const { rowCount } = await pool.query(`select 1 from share_members where code = $1 and user_id = $2`, [c.req.param("code"), c.var.userId]);
+  return rowCount ? err(c, 410, "expired", EXPIRED_MESSAGE) : err(c, 404, "not_found", "That invite is gone. Its owner may have taken it back.");
 });
 
 app.get("/shares/:code", async (c) => {
@@ -818,6 +1022,7 @@ app.delete("/shares/:code", async (c) => {
 app.post("/shares/:code/members", async (c) => {
   const share = await owned(c);
   if (!share) return err(c, 404, "not_found");
+  if (share.expires_at && new Date(share.expires_at) <= new Date()) return err(c, 410, "expired", "This pack expired. Extend it first, then invite friends.");
   const body = z.object({ username: z.string().max(24), role: z.enum(["viewer", "editor"]).default("viewer") }).safeParse(await c.req.json().catch(() => null));
   if (!body.success) return err(c, 400, "invalid_username");
   const { rows } = await pool.query(`select user_id, username from profiles where username = $1`, [body.data.username.trim()]);
@@ -830,12 +1035,16 @@ app.post("/shares/:code/members", async (c) => {
     [c.var.userId, friend.user_id],
   );
   if (!friends) return err(c, 403, "not_friends", `You can only share with friends. Add ${friend.username} as a friend first.`);
-  const { rows: count } = await pool.query(`select count(*)::int as n from share_members where code = $1 and user_id <> $2`, [share.code, friend.user_id]);
-  if (count[0].n >= MAX_SHARE_MEMBERS) return err(c, 409, "too_many_members", `A pack can be shared with ${MAX_SHARE_MEMBERS} friends.`);
   if (!(await mayInviteToShare(c.var.userId, friend.user_id))) {
     return err(c, 403, "not_accepting", `${friend.username} doesn't accept shared packs from you.`);
   }
-  const added = await pool.query(`insert into share_members (code, user_id, role) values ($1, $2, $3) on conflict do nothing`, [share.code, friend.user_id, body.data.role]);
+  // count and add under the share's lock: parallel invites can't pass the limit together
+  const added = await locked([`members:${share.code}`], async (db) => {
+    const { rows: count } = await db.query(`select count(*)::int as n from share_members where code = $1 and user_id <> $2`, [share.code, friend.user_id]);
+    if (count[0].n >= MAX_SHARE_MEMBERS) return null;
+    return db.query(`insert into share_members (code, user_id, role) values ($1, $2, $3) on conflict do nothing`, [share.code, friend.user_id, body.data.role]);
+  });
+  if (!added) return err(c, 409, "too_many_members", `A pack can be shared with ${MAX_SHARE_MEMBERS} friends.`);
   if (added.rowCount) notify(friend.user_id, { kind: "share_added", from: await usernameOf(c.var.userId), code: share.code, pack: share.name });
   return c.json({ member: { ...friend, role: body.data.role } }, 201);
 });
@@ -863,48 +1072,61 @@ app.patch("/shares/:code/members/:userId", async (c) => {
   return rowCount ? c.json({ ok: true, role: body.data.role }) : err(c, 404, "not_found", "That friend isn't on this share.");
 });
 
-// The new owner must already be on the share; the old owner stays on it as an editor.
+// The new owner must already be on the share; the old owner stays on it as an editor. Everyone
+// left on it has to be someone the new owner could add: friends with them, nobody blocked either
+// way, and not closed to shared packs, the same rules as inviting a friend.
 app.post("/shares/:code/transfer", async (c) => {
   const share = await owned(c);
   if (!share) return err(c, 404, "not_found");
   const body = z.object({ user_id: z.string().regex(UUID_RE) }).safeParse(await c.req.json().catch(() => null));
   if (!body.success) return err(c, 400, "invalid_user");
-  const db = await pool.connect();
-  try {
-    await db.query("begin");
-    const { rowCount } = await db.query(`delete from share_members where code = $1 and user_id = $2 and accepted_at is not null`, [share.code, body.data.user_id]);
-    if (!rowCount) {
-      await db.query("rollback");
-      return err(c, 404, "not_member", "They have to accept the invite first, then you can make them the owner.");
+  const to = body.data.user_id;
+  return locked([`members:${share.code}`, `shares:${to}`], async (db) => {
+    const { rowCount: still } = await db.query(`select 1 from shares where code = $1 and owner_id = $2 for update`, [share.code, c.var.userId]);
+    if (!still) return err(c, 404, "not_found");
+    const { rowCount } = await db.query(`delete from share_members where code = $1 and user_id = $2 and accepted_at is not null`, [share.code, to]);
+    if (!rowCount) return err(c, 404, "not_member", "They have to accept the invite first, then you can make them the owner.");
+    const { rows: count } = await db.query(`select count(*)::int as n from shares where owner_id = $1`, [to]);
+    if (count[0].n >= MAX_SHARES_PER_USER) return err(c, 409, "too_many_shares", "They already own 20 shares.");
+    const { rows: refused } = await db.query(
+      `with people as (
+         select user_id, false as old_owner from share_members where code = $1
+         union all select $3::uuid, true
+       )
+       select p.username from people x join profiles p on p.user_id = x.user_id
+       where not exists (select 1 from friendships f where f.status = 'accepted'
+                           and ((f.requester_id = $2 and f.addressee_id = x.user_id) or (f.requester_id = x.user_id and f.addressee_id = $2)))
+          or exists (select 1 from blocks b where (b.blocker_id = $2 and b.blocked_id = x.user_id) or (b.blocker_id = x.user_id and b.blocked_id = $2))
+          or (not x.old_owner and p.share_invites = 'no_one')
+       order by p.username`,
+      [share.code, to, c.var.userId],
+    );
+    if (refused.length) {
+      const names = refused.map((r) => r.username).join(", ");
+      return err(c, 409, "members_not_allowed", `Everyone on the pack has to be friends with the new owner, and nobody blocked. Not so for: ${names}. Take them off the pack first.`);
     }
-    const { rows: count } = await db.query(`select count(*)::int as n from shares where owner_id = $1`, [body.data.user_id]);
-    if (count[0].n >= MAX_SHARES_PER_USER) {
-      await db.query("rollback");
-      return err(c, 409, "too_many_shares", "They already own 20 shares.");
-    }
-    await db.query(`update shares set owner_id = $2, updated_at = updated_at where code = $1`, [share.code, body.data.user_id]);
+    await db.query(`update shares set owner_id = $2, updated_at = updated_at where code = $1`, [share.code, to]);
     await db.query(
       `insert into share_members (code, user_id, role, accepted_at) values ($1, $2, 'editor', now())
        on conflict (code, user_id) do update set role = 'editor', accepted_at = coalesce(share_members.accepted_at, now())`,
       [share.code, c.var.userId],
     );
-    await db.query("commit");
-  } catch (e) {
-    await db.query("rollback").catch(() => {});
-    throw e;
-  } finally {
-    db.release();
-  }
-  return c.json({ ok: true });
+    return c.json({ ok: true });
+  });
 });
 
 app.get("/shares/:code/download", async (c) => {
   // an older launcher installing a pack it was invited to: that's its accept
   if (!answersInvites(c)) {
-    await pool.query(`update share_members set accepted_at = now() where code = $1 and user_id = $2 and accepted_at is null`, [c.req.param("code"), c.var.userId]);
+    await pool.query(
+      `update share_members m set accepted_at = now() from shares s
+       where s.code = m.code and m.code = $1 and m.user_id = $2 and m.accepted_at is null and ${NOT_EXPIRED}`,
+      [c.req.param("code"), c.var.userId],
+    );
   }
   const { rows } = await pool.query(
-    `select s.*, (s.owner_id = $2 or exists (select 1 from share_members m where m.code = s.code and m.user_id = $2 and m.accepted_at is not null)) as invited
+    `select s.*, (s.owner_id = $2 or exists (select 1 from share_members m where m.code = s.code and m.user_id = $2 and m.accepted_at is not null)) as invited,
+       s.owner_id = $2 as mine, not ${NOT_EXPIRED} as expired
      from shares s where s.code = $1`,
     [c.req.param("code"), c.var.userId],
   );
@@ -912,6 +1134,7 @@ app.get("/shares/:code/download", async (c) => {
   if (!share) return err(c, 404, "not_found", "That shared pack doesn't exist.");
   // shared packs are for the owner's friends they added: a link alone doesn't open it
   if (!share.invited) return err(c, 403, "friends_only", "This pack is shared with friends only. Ask its owner to invite you, then accept the invite.");
+  if (share.expired && !share.mine) return err(c, 410, "expired", EXPIRED_MESSAGE);
   const url = await files.url(share.object_key, { expiresIn: 600 });
   return c.json({ url, size_bytes: share.size_bytes });
 });
@@ -933,9 +1156,10 @@ app.post("/invites/:code/redeem", async (c) => {
   if (!body.success) return err(c, 400, "invalid_username", "Usernames are 3–24 letters, digits or underscores.");
   const problem = usernameProblem(body.data.username);
   if (problem) return err(c, 400, "invalid_username", problem);
-  // launchers from before the Terms send no consent; they're asked via /me/consent afterwards
-  const sent = raw && typeof raw === "object" && ["terms_version", "age", "parental_consent"].some((k) => k in raw);
-  const consent = sent ? checkConsent(c, raw) : null;
+  // joining needs the age and the Terms (launchers from before the Terms sent none: they update first)
+  const sent = raw && typeof raw === "object" && ["terms_version", "age"].some((k) => k in raw);
+  if (!sent) return err(c, 400, "consent_required", "Update Tessera Launcher, then join again: it asks for your age and the Terms first.");
+  const consent = checkConsent(c, raw);
   if (consent instanceof Response) return consent;
   const db = await pool.connect();
   try {
@@ -957,9 +1181,8 @@ app.post("/invites/:code/redeem", async (c) => {
       await db.query(
         // friend requests from anyone, except for members under 16: friends of friends
         `insert into profiles (user_id, username, terms_version, terms_accepted_at, age_declaration, friend_requests)
-         values ($1, $2, $3, case when $3::text is null then null else now() end, $4,
-                 case when $4::text = '13-15' then 'friends_of_friends' else 'everyone' end)`,
-        [c.var.userId, body.data.username, consent?.terms_version ?? null, consent?.age ?? null],
+         values ($1, $2, $3, now(), $4, case when $4::text = '13-15' then 'friends_of_friends' else 'everyone' end)`,
+        [c.var.userId, body.data.username, consent.terms_version, consent.age],
       );
     } catch (e) {
       await db.query("rollback");
@@ -993,13 +1216,16 @@ app.get("/invites", async (c) => {
 });
 
 app.post("/invites", async (c) => {
-  if (!c.var.isAdmin) {
-    const { rows } = await pool.query(`select count(*)::int as n from invites where created_by = $1 and revoked_at is null`, [c.var.userId]);
-    if (rows[0].n >= MEMBER_INVITES) return err(c, 409, "invite_limit", "You've made your 3 invites. Revoke an unused one to make another.");
-  }
   const code = newInviteCode();
-  await pool.query(`insert into invites (code, created_by) values ($1, $2)`, [code, c.var.userId]);
-  return c.json({ invite: { code, link: INVITE_LINK + code } }, 201);
+  // counted and made under the member's lock: parallel requests can't make a fourth
+  return locked([`invites:${c.var.userId}`], async (db) => {
+    if (!c.var.isAdmin) {
+      const { rows } = await db.query(`select count(*)::int as n from invites where created_by = $1 and revoked_at is null`, [c.var.userId]);
+      if (rows[0].n >= MEMBER_INVITES) return err(c, 409, "invite_limit", "You've made your 3 invites. Revoke an unused one to make another.");
+    }
+    await db.query(`insert into invites (code, created_by) values ($1, $2)`, [code, c.var.userId]);
+    return c.json({ invite: { code, link: INVITE_LINK + code } }, 201);
+  });
 });
 
 app.delete("/invites/:code", async (c) => {
@@ -1055,6 +1281,18 @@ function notify(to: string, n: Notice) {
   })().catch((e) => console.error("notify", n.kind, e));
 }
 
+/** Accounts already written to verified_users by this instance. */
+const knownVerified = new Set<string>();
+
+/** Notes that this account's email was verified (once is enough): /email/change won't touch it again. */
+function rememberVerified(userId: string) {
+  if (knownVerified.has(userId)) return;
+  pool
+    .query(`insert into verified_users (user_id) values ($1) on conflict do nothing`, [userId])
+    .then(() => knownVerified.size < 100_000 && knownVerified.add(userId))
+    .catch((e) => console.error("rememberVerified", e));
+}
+
 /** "You're verified": once per address, the first time /me sees it verified. Runs in the background. */
 function verifiedMail(userId: string, email: string) {
   if (!mailReady) return;
@@ -1107,8 +1345,7 @@ const CODE_MINUTES = 10;
 const CODE_ATTEMPTS = 5;
 const DEVICE_DAYS = 30;
 const MAX_DEVICES = 20;
-const codeMails = new RateLimiter(5, 60 * 60_000);
-const codePurpose = z.enum(["sign_in", "enable", "disable"]);
+const codePurpose = z.enum(["sign_in", "enable", "disable", "delete_account"]);
 type CodePurpose = z.infer<typeof codePurpose>;
 const codeHash = (userId: string, purpose: CodePurpose, code: string) => sha256(`${userId}:${purpose}:${code}`);
 
@@ -1116,6 +1353,11 @@ const CODE_MAIL: Record<CodePurpose, { subject: string; title: string; line: str
   sign_in: { subject: "Your Tessera sign-in code", title: "Finish signing in", line: "Someone (hopefully you) is signing in to your Tessera account. Enter this code to finish:" },
   enable: { subject: "Turn on two-step sign-in", title: "Turn on two-step sign-in", line: "Enter this code in Tessera to turn on two-step sign-in by email:" },
   disable: { subject: "Turn off two-step sign-in", title: "Turn off two-step sign-in", line: "Enter this code in Tessera to turn off two-step sign-in:" },
+  delete_account: {
+    subject: "Delete your Tessera account",
+    title: "Delete your account",
+    line: "Someone (hopefully you) is deleting your Tessera account, with its shared packs, friends and invites. Enter this code to confirm:",
+  },
 };
 
 app.post("/me/2fa/code", async (c) => {
@@ -1134,7 +1376,7 @@ app.post("/me/2fa/code", async (c) => {
   if (!me) return err(c, 403, "invite_required", "Join with an invite first.");
   if (purpose === "enable" && me.on) return err(c, 409, "already_on", "Two-step sign-in is already on.");
   if (purpose !== "enable" && !me.on) return err(c, 409, "not_on", "Two-step sign-in is off.");
-  if (me.recent || !codeMails.take(c.var.userId)) return err(c, 429, "rate_limited", "We just sent you a code. Wait a minute before asking for another.");
+  if (me.recent || !(await dbLimit(`codes:${c.var.userId}`, 5, 60 * 60_000))) return err(c, 429, "rate_limited", "We just sent you a code. Wait a minute before asking for another.");
   const code = String(randomInt(1_000_000)).padStart(6, "0");
   await pool.query(
     `insert into email_codes (user_id, purpose, code_hash, expires_at)

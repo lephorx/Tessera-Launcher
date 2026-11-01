@@ -11,7 +11,8 @@
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
     "fake-agent": "tsx test/fake-agent.ts",
-    "neon:schema": "psql \"$(grep -h ^DATABASE_URL_UNPOOLED= .env.local | cut -d= -f2- | tr -d \\\")\" -q -v ON_ERROR_STOP=1 -f functions/api/schema.sql"
+    "neon:schema": "psql \"$(grep -h ^DATABASE_URL_UNPOOLED= .env.local | cut -d= -f2- | tr -d \\\")\" -q -v ON_ERROR_STOP=1 -f functions/api/schema.sql",
+    "neon:schema:e2e": "psql \"$(grep -h ^DATABASE_URL_UNPOOLED= .env.e2e | cut -d= -f2- | tr -d \\\")\" -q -v ON_ERROR_STOP=1 -f functions/api/schema.sql"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1159.0",

@@ -141,7 +141,13 @@ pub async fn install_docker(client: &reqwest::Client, log: &(dyn Fn(&str) + Send
         bail!("Install Docker Engine for your Linux distribution (docs.docker.com/engine/install), then press Install again.");
     };
     let file = std::env::temp_dir().join(if cfg!(windows) { "DockerDesktopInstaller.exe" } else { "Docker.dmg" });
-    download(client, url, &file, log).await.context("downloading Docker Desktop")?;
+    // it runs with admin rights: the hash Docker publishes next to it, then Docker's signature
+    let expected = published_sha256(client, url).await.context("checking the Docker Desktop download")?;
+    let got = download(client, url, &file, log).await.context("downloading Docker Desktop")?;
+    if got != expected {
+        let _ = std::fs::remove_file(&file);
+        bail!("The Docker Desktop download doesn't match Docker's checksum (it may have just been updated). Press Install to try again.");
+    }
 
     if cfg!(target_os = "macos") {
         log("Installing Docker Desktop into Applications…");
@@ -151,12 +157,19 @@ pub async fn install_docker(client: &reqwest::Client, log: &(dyn Fn(&str) + Send
         if !ok {
             bail!("Couldn't open the Docker Desktop download");
         }
+        if !signed_by_docker_mac(&mount.join("Docker.app")).await {
+            let _ = command("hdiutil").arg("detach").arg(&mount).arg("-quiet").status().await;
+            bail!("The Docker Desktop download isn't signed by Docker. Install Docker Desktop yourself from docker.com, then press Install again.");
+        }
         let copied = command("ditto").arg(mount.join("Docker.app")).arg("/Applications/Docker.app").status().await;
         let _ = command("hdiutil").arg("detach").arg(&mount).arg("-quiet").status().await;
         if !copied.is_ok_and(|s| s.success()) {
             bail!("Couldn't copy Docker into Applications. Install Docker Desktop yourself from docker.com, then press Install again.");
         }
     } else {
+        if !signed_by_docker_windows(&file).await {
+            bail!("The Docker Desktop download isn't signed by Docker. Install Docker Desktop yourself from docker.com, then press Install again.");
+        }
         log("Installing Docker Desktop. Windows asks once for permission; choose Yes.");
         let ps = format!(
             "$p = Start-Process -FilePath '{}' -ArgumentList 'install','--quiet','--accept-license','--backend=wsl-2' -Verb RunAs -Wait -PassThru; exit $p.ExitCode",
@@ -178,10 +191,49 @@ pub async fn install_docker(client: &reqwest::Client, log: &(dyn Fn(&str) + Send
     })
 }
 
-/// Streams a big download to a file, logging progress every 50 MB.
-async fn download(client: &reqwest::Client, url: &str, to: &Path, log: &(dyn Fn(&str) + Send + Sync)) -> Result<()> {
+/// Docker's team at Apple (the one that signs Docker.app).
+const DOCKER_TEAM_ID: &str = "9BNSXJN65R";
+
+/// The SHA-256 from the `checksums.txt` Docker publishes in each download folder
+/// ("<sha256> *Docker.dmg").
+async fn published_sha256(client: &reqwest::Client, url: &str) -> Result<String> {
+    let (dir, name) = url.rsplit_once('/').ok_or_else(|| anyhow!("odd download address"))?;
+    let name = name.replace("%20", " ");
+    let text = client.get(format!("{dir}/checksums.txt")).send().await?.error_for_status()?.text().await?;
+    checksum_for(&text, &name).ok_or_else(|| anyhow!("Docker didn't publish a checksum for {name}"))
+}
+
+fn checksum_for(text: &str, name: &str) -> Option<String> {
+    text.lines().find_map(|l| {
+        let (hash, file) = l.trim().split_once(char::is_whitespace)?;
+        let ok = file.trim().trim_start_matches('*') == name && hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit());
+        ok.then(|| hash.to_lowercase())
+    })
+}
+
+/// A valid signature from Docker's Apple developer team.
+async fn signed_by_docker_mac(app: &Path) -> bool {
+    let valid = command("codesign").args(["--verify", "--deep", "--strict"]).arg(app).status().await.is_ok_and(|s| s.success());
+    let info = command("codesign").arg("-dv").arg(app).output().await;
+    // codesign -dv writes to stderr
+    valid && info.is_ok_and(|o| String::from_utf8_lossy(&o.stderr).lines().any(|l| l.trim() == format!("TeamIdentifier={DOCKER_TEAM_ID}")))
+}
+
+/// A valid Authenticode signature from Docker Inc.
+async fn signed_by_docker_windows(file: &Path) -> bool {
+    let ps = format!(
+        "$s = Get-AuthenticodeSignature -LiteralPath '{}'; if ($s.Status -eq 'Valid' -and $s.SignerCertificate.Subject -like '*O=Docker Inc*') {{ exit 0 }} else {{ exit 1 }}",
+        file.display().to_string().replace('\'', "''")
+    );
+    command("powershell").args(["-NoProfile", "-NonInteractive", "-Command", &ps]).status().await.is_ok_and(|s| s.success())
+}
+
+/// Streams a big download to a file, logging progress every 50 MB. Returns its SHA-256.
+async fn download(client: &reqwest::Client, url: &str, to: &Path, log: &(dyn Fn(&str) + Send + Sync)) -> Result<String> {
     use futures::StreamExt;
+    use sha2::{Digest, Sha256};
     use tokio::io::AsyncWriteExt;
+    let mut hasher = Sha256::new();
     let res = client.get(url).timeout(std::time::Duration::from_secs(3600)).send().await?.error_for_status()?;
     let total = res.content_length().unwrap_or(0);
     let mut file = tokio::fs::File::create(to).await?;
@@ -189,6 +241,7 @@ async fn download(client: &reqwest::Client, url: &str, to: &Path, log: &(dyn Fn(
     let (mut done, mut next) = (0u64, 0u64);
     while let Some(chunk) = stream.next().await {
         let chunk = chunk?;
+        hasher.update(&chunk);
         file.write_all(&chunk).await?;
         done += chunk.len() as u64;
         if done >= next {
@@ -197,7 +250,7 @@ async fn download(client: &reqwest::Client, url: &str, to: &Path, log: &(dyn Fn(
         }
     }
     file.flush().await?;
-    Ok(())
+    Ok(hex::encode(hasher.finalize()))
 }
 
 /// The first free port from 3000 on, for the dashboard.
@@ -361,6 +414,14 @@ mod tests {
         assert_eq!(daemon_path(p), "/Users/ramon/tessera-server-data/servers");
         #[cfg(windows)]
         assert_eq!(daemon_path(Path::new(r"C:\Users\Ramon\tessera-server-data\servers")), "/run/desktop/mnt/host/c/Users/Ramon/tessera-server-data/servers");
+    }
+
+    #[test]
+    fn reads_dockers_checksums() {
+        let text = "2668273f82b342a058a28f9ab53ea7bddde10bb6d51307ce2ec54c2d36459744 *Docker Desktop Installer.exe\n";
+        assert_eq!(checksum_for(text, "Docker Desktop Installer.exe").as_deref(), Some("2668273f82b342a058a28f9ab53ea7bddde10bb6d51307ce2ec54c2d36459744"));
+        assert_eq!(checksum_for(text, "Docker.dmg"), None);
+        assert_eq!(checksum_for("xyz *Docker.dmg", "Docker.dmg"), None);
     }
 
     #[test]

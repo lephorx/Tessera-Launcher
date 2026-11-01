@@ -27,7 +27,9 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://cdn.modrinth.com https://mc-heads.net https://minecraft.wiki https://tesseralauncher.com https://*.tesseralauncher.com https://raw.githubusercontent.com https://*.githubusercontent.com https://github.com; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; media-src 'self'; worker-src 'self' blob:; object-src 'none'; frame-src 'none'; base-uri 'self'; form-action 'none'",
+      "devCsp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://cdn.modrinth.com https://mc-heads.net https://minecraft.wiki https://tesseralauncher.com https://*.tesseralauncher.com https://raw.githubusercontent.com https://*.githubusercontent.com https://github.com; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost ws://localhost:1420; media-src 'self'; worker-src 'self' blob:; object-src 'none'; frame-src 'none'; base-uri 'self'; form-action 'none'",
+      "dangerousDisableAssetCspModification": ["style-src"]
     }
   },
   "bundle": {

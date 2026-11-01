@@ -1,7 +1,12 @@
+<script lang="ts">
+/** Search state per Discover (and per "Add content" instance), so coming back from a project keeps it. */
+const remembered = new Map<string, { type: string; query: string; sort: string; limit: number; page: number; gameVersion: string; scroll: number }>();
+</script>
+
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { RouterLink, useRoute, useRouter } from "vue-router";
-import { ArrowLeft, Boxes, Check, ChevronLeft, ChevronRight, Database, Download, Globe, Heart, History, Image, Loader2, Monitor, Package, Plus, Puzzle, Search, Server, Sun } from "lucide-vue-next";
+import { ArrowLeft, Boxes, Check, ChevronLeft, ChevronRight, Database, Download, Globe, Heart, History, Image, Layers, Loader2, Monitor, Package, Plus, Puzzle, Search, Server, Sun } from "lucide-vue-next";
 import InstanceIcon from "@/components/InstanceIcon.vue";
 import InstallDialog from "@/components/InstallDialog.vue";
 import VersionPicker from "@/components/VersionPicker.vue";
@@ -30,17 +35,20 @@ const SORTS = [
   { id: "updated", label: "Updated" },
 ];
 
-const type = ref<ProjectType>((route.query.type as ProjectType) || "modpack");
-const query = ref((route.query.q as string) || "");
-const sort = ref("relevance");
-const limit = ref(20);
-const page = ref(1);
+const memoryKey = props.instanceId ?? "";
+// a link with ?type= or ?q= starts fresh
+const saved = route.query.type || route.query.q ? undefined : remembered.get(memoryKey);
+const type = ref<ProjectType>((saved?.type as ProjectType) || (route.query.type as ProjectType) || "modpack");
+const query = ref(saved?.query ?? ((route.query.q as string) || ""));
+const sort = ref(saved?.sort ?? "relevance");
+const limit = ref(saved?.limit ?? 20);
+const page = ref(saved?.page ?? 1);
 const hits = ref<ProjectHit[]>([]);
 const total = ref(0);
 const loading = ref(false);
 const installing = ref<ProjectHit | null>(null);
 /** Game version filter when browsing without an instance ("" = any). */
-const gameVersion = ref("");
+const gameVersion = ref(saved?.gameVersion ?? "");
 const gameVersions = ref<GameVersion[]>([]);
 const packBusy = ref<string | null>(null);
 
@@ -112,12 +120,33 @@ onMounted(async () => {
       return;
     }
   }
-  void search();
+  await search();
+  if (saved?.scroll) {
+    await nextTick();
+    document.querySelector("main.content")?.scrollTo({ top: saved.scroll });
+  }
   api.versions
     .game()
     .then((r) => (gameVersions.value = r.versions))
     .catch(() => {});
 });
+
+onBeforeUnmount(() => {
+  remembered.set(memoryKey, {
+    type: type.value,
+    query: query.value,
+    sort: sort.value,
+    limit: limit.value,
+    page: page.value,
+    gameVersion: gameVersion.value,
+    scroll: document.querySelector("main.content")?.scrollTop ?? 0,
+  });
+});
+
+/** The project's page: versions, and for a modpack the mods in it. */
+function openProject(h: ProjectHit) {
+  router.push({ path: `/project/${h.project_id}`, query: props.instanceId ? { instance: props.instanceId } : {} });
+}
 
 let timer: ReturnType<typeof setTimeout> | undefined;
 watch(query, () => {
@@ -266,7 +295,17 @@ function pageList(): (number | "…")[] {
     </div>
 
     <div class="stack">
-      <div v-for="h in hits" :key="h.project_id" class="card row" style="gap: 16px; align-items: flex-start">
+      <div
+        v-for="h in hits"
+        :key="h.project_id"
+        class="card card-hover row hit"
+        style="gap: 16px; align-items: flex-start"
+        role="link"
+        tabindex="0"
+        :aria-label="`${h.title}: versions and details`"
+        @click="openProject(h)"
+        @keydown.enter.self="openProject(h)"
+      >
         <img v-if="h.icon_url" :src="h.icon_url" alt="" width="88" height="88" style="border-radius: 18px; flex-shrink: 0; object-fit: cover" />
         <span v-else class="tile" style="--type: #a2a9b4; width: 88px; height: 88px"><Package /></span>
         <div style="flex: 1; min-width: 0">
@@ -286,11 +325,14 @@ function pageList(): (number | "…")[] {
             <span v-if="tags(h).more > 0" class="chip">+{{ tags(h).more }}</span>
           </div>
         </div>
-        <div class="stack" style="align-items: flex-end; gap: 8px; flex-shrink: 0">
+        <div class="stack" style="align-items: flex-end; gap: 8px; flex-shrink: 0" @click.stop>
           <button v-if="instance && installed.has(h.project_id)" class="btn btn-installed" disabled><Check /> Installed</button>
           <button v-else-if="instance && pending.has(h.project_id)" class="btn btn-primary" disabled><Loader2 class="spin" /> Installing</button>
           <button v-else class="btn btn-primary" :disabled="packBusy !== null" @click="install(h)">
             <Loader2 v-if="packBusy === h.project_id" class="spin" /><Plus v-else /> Install
+          </button>
+          <button class="btn btn-sm btn-ghost" @click="openProject(h)">
+            <component :is="h.project_type === 'modpack' ? Layers : History" />{{ h.project_type === "modpack" ? "Mods & versions" : "Versions" }}
           </button>
           <span class="hint row num" style="gap: 10px">
             <span class="row" style="gap: 4px"><Download :size="13" />{{ compact(h.downloads) }}</span>
@@ -313,3 +355,9 @@ function pageList(): (number | "…")[] {
     />
   </div>
 </template>
+
+<style scoped>
+.hit {
+  cursor: pointer;
+}
+</style>
