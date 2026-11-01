@@ -302,6 +302,26 @@ onUnmounted(() => {
       <button v-for="v in versionFilter" :key="v" class="chip lib-active num" @click="versionFilter = toggleIn(versionFilter, v)">{{ v }} <X :size="13" /></button>
     </div>
 
+    <section v-if="invites.length" style="margin-bottom: 26px">
+      <h2 class="section-title" style="margin-top: 0">Invites</h2>
+      <div class="grid">
+        <div v-for="s in invites" :key="s.code" class="card stack">
+          <div style="font-weight: 700; font-size: 16px">{{ s.name }}</div>
+          <div class="row" style="flex-wrap: wrap">
+            <span class="chip" :style="{ color: LOADERS[s.loader].color }">{{ LOADERS[s.loader].label }}</span>
+            <span class="chip num">{{ s.game_version }}</span>
+            <span class="hint">{{ s.owner ?? "A friend" }} invited you{{ s.role === "editor" ? " to add content" : "" }}</span>
+          </div>
+          <div class="row" style="gap: 8px">
+            <button class="btn btn-primary" :disabled="answering !== null || joining !== null" @click="answer(s, true)">
+              <Loader2 v-if="answering === s.code" class="spin" /><Check v-else /> Accept and install
+            </button>
+            <button class="btn" :disabled="answering !== null" @click="answer(s, false)"><X /> Decline</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <div v-if="instances && !instances.length" class="card empty">
       <Blocks />
       <h3>Nothing here yet</h3>
@@ -333,26 +353,6 @@ onUnmounted(() => {
         </div>
         <p v-else class="hint">Empty. Select instances and choose <b>Add to group</b>.</p>
       </section>
-    </template>
-
-    <template v-if="invites.length">
-      <h2 class="section-title">Invites</h2>
-      <div class="grid">
-        <div v-for="s in invites" :key="s.code" class="card stack">
-          <div style="font-weight: 700; font-size: 16px">{{ s.name }}</div>
-          <div class="row" style="flex-wrap: wrap">
-            <span class="chip" :style="{ color: LOADERS[s.loader].color }">{{ LOADERS[s.loader].label }}</span>
-            <span class="chip num">{{ s.game_version }}</span>
-            <span class="hint">{{ s.owner ?? "A friend" }} invited you{{ s.role === "editor" ? " to add content" : "" }}</span>
-          </div>
-          <div class="row" style="gap: 8px">
-            <button class="btn btn-primary" :disabled="answering !== null || joining !== null" @click="answer(s, true)">
-              <Loader2 v-if="answering === s.code" class="spin" /><Check v-else /> Accept and install
-            </button>
-            <button class="btn" :disabled="answering !== null" @click="answer(s, false)"><X /> Decline</button>
-          </div>
-        </div>
-      </div>
     </template>
 
     <template v-if="received.length">
