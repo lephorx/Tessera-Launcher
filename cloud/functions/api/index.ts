@@ -40,6 +40,13 @@
  *   PUT    /v1/me/email          {friends?, shares?}
  *   GET    /v1/email/unsubscribe?u=&k=&t=      public: the link in notice emails (POST turns them off)
  *   POST   /v1/webhooks/neon-authNeon Auth's send.otp webhook (signed): we email its codes ourselves
+ *   POST   /v1/email/change      {email, password, new_email}
+ *                                               public, password-checked: fixes the address of an
+ *                                               account that isn't verified yet (a typo, a throwaway)
+ *
+ * Until the email is verified, an account only gets the calls that are open to non-members too
+ * (who am I, export, delete, Terms, joining); the rest answer 403 email_unverified. The first
+ * GET /v1/me after verifying emails "you're verified", once per address.
  *
  * Two-step sign-in by email. With it on, only GET /v1/me and the two sign-in calls work until
  * this device sends `X-Tessera-Device: <token>` from /me/2fa/verify (or /enable):
@@ -61,7 +68,7 @@
  *   POST   /v1/invites                          make one (3 for members, any number for admins)
  *   DELETE /v1/invites/:code                    revoke an unused one
  */
-import { createHash, createPublicKey, randomBytes, randomInt, verify } from "node:crypto";
+import { createHash, createPublicKey, randomBytes, randomInt, scrypt, timingSafeEqual, verify } from "node:crypto";
 import { attachDatabasePool } from "@neon/functions";
 import { unzipSync, strFromU8 } from "fflate";
 import { Files } from "files-sdk";
@@ -379,6 +386,50 @@ app.post("/webhooks/neon-auth", async (c) => {
   return c.json({ ok: true });
 });
 
+// Public, but it needs the account's password: fixes the address of an account that isn't
+// verified yet, so a typo or a throwaway address doesn't lock anyone out (Neon Auth won't sign
+// an unverified account in, and only emails the address on file). Verified addresses stay put:
+// whoever knows the password would otherwise take the account. The caller then asks Neon Auth
+// for a code to the new address.
+const emailChanges = new RateLimiter(5, 15 * 60_000);
+
+/** Checks a password against Neon Auth's hash (Better Auth: scrypt N=16384 r=16 p=1, "salt:key" hex). */
+function passwordMatches(password: string, stored: string): Promise<boolean> {
+  const [salt, key] = stored.split(":");
+  if (!salt || !key) return Promise.resolve(false);
+  return new Promise((resolve) =>
+    scrypt(password.normalize("NFKC"), salt, 64, { N: 16384, r: 16, p: 1, maxmem: 64 * 1024 * 1024 }, (e, derived) => {
+      const want = Buffer.from(key, "hex");
+      resolve(!e && want.length === derived.length && timingSafeEqual(want, derived));
+    }),
+  );
+}
+
+app.post("/email/change", async (c) => {
+  const body = z
+    .object({ email: z.string().trim().email().max(254), password: z.string().min(1).max(200), new_email: z.string().trim().email().max(254) })
+    .safeParse(await c.req.json().catch(() => null));
+  if (!body.success) return err(c, 400, "invalid_email", "That email address doesn't look right.");
+  const email = body.data.email.toLowerCase();
+  const next = body.data.new_email.toLowerCase();
+  if (!emailChanges.take(clientIp(c)) || !emailChanges.take(email)) return err(c, 429, "rate_limited", "Too many attempts. Wait a few minutes.");
+  const { rows } = await pool.query(
+    `select u.id, u."emailVerified" as verified, a.password from neon_auth."user" u
+     join neon_auth.account a on a."userId" = u.id and a."providerId" = 'credential' where lower(u.email) = $1`,
+    [email],
+  );
+  const user = rows[0];
+  if (!user?.password || !(await passwordMatches(body.data.password, user.password))) return err(c, 401, "wrong_password", "Wrong email or password.");
+  if (user.verified) return err(c, 409, "already_verified", "That email is already verified.");
+  if (next === email) return c.json({ ok: true, email: next });
+  const taken = await pool.query(`select 1 from neon_auth."user" where lower(email) = $1`, [next]);
+  if (taken.rows[0]) return err(c, 409, "email_taken", "There is already an account with that email.");
+  await pool.query(`update neon_auth."user" set email = $2, "emailVerified" = false, "updatedAt" = now() where id = $1`, [user.id, next]);
+  // codes sent to the old address stop working
+  await pool.query(`delete from neon_auth.verification where right(identifier, length($1) + 1) = '-' || $1`, [email]);
+  return c.json({ ok: true, email: next });
+});
+
 /** sha256 hex, for codes and device tokens: only hashes are stored. */
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 
@@ -397,9 +448,9 @@ app.use("*", async (c, next) => {
   const path = new URL(c.req.url).pathname.replace(/^\/v1/, "");
   const device = c.req.header("x-tessera-device")?.slice(0, 200);
   const { rows } = await pool.query(
-    `select p.is_admin, p.two_factor_email,
+    `select p.is_admin, p.two_factor_email, u."emailVerified" as verified,
        (select d.id from trusted_devices d where d.user_id = p.user_id and d.token_hash = $2 and d.expires_at > now()) as device_id
-     from profiles p where p.user_id = $1`,
+     from profiles p join neon_auth."user" u on u.id = p.user_id where p.user_id = $1`,
     [c.var.userId, device ? sha256(device) : ""],
   );
   const profile = rows[0];
@@ -417,6 +468,7 @@ app.use("*", async (c, next) => {
     (c.req.method === "DELETE" && path === "/me") ||
     (c.req.method === "POST" && (path === "/me/consent" || /^\/invites\/[^/]+\/redeem$/.test(path)));
   if (!open && !profile) return err(c, 403, "invite_required", "Tessera is invite-only for now. Join with an invite link from a friend.");
+  if (!open && !profile.verified) return err(c, 403, "email_unverified", "Verify your email first.");
   c.set("isAdmin", !!profile?.is_admin);
   await next();
 });
@@ -430,6 +482,7 @@ app.get("/me", async (c) => {
     [c.var.userId],
   );
   if (!rows[0]) return err(c, 401, "unauthenticated");
+  if (rows[0].email_verified) verifiedMail(c.var.userId, rows[0].email);
   // waiting for the emailed code: nothing but who it is
   const user = c.var.twoFactorPending
     ? { id: rows[0].id, email: rows[0].email, name: rows[0].name, username: rows[0].username, member: rows[0].member, two_factor: true }
@@ -911,6 +964,32 @@ function notify(to: string, n: Notice) {
           : { subject: `${n.from} shared "${n.pack}" with you`, title: `${n.from} shared a pack with you`, lines: [`${n.from} added you to their pack "${n.pack}" on Tessera.`, "Open the launcher to install it. It stays in sync when they change it."] };
     await sendMail({ to: rows[0].email, ...mail, action: { label: "Open Tessera", url: `${SITE}/account` }, unsubscribe });
   })().catch((e) => console.error("notify", n.kind, e));
+}
+
+/** "You're verified": once per address, the first time /me sees it verified. Runs in the background. */
+function verifiedMail(userId: string, email: string) {
+  if (!mailReady) return;
+  void (async () => {
+    const { rowCount } = await pool.query(
+      `insert into email_log (user_id, kind, ref) values ($1, 'email_verified', $2) on conflict do nothing`,
+      [userId, email.toLowerCase()],
+    );
+    if (!rowCount) return;
+    const { rows } = await pool.query(`select two_factor_email as on from profiles where user_id = $1`, [userId]);
+    await sendMail({
+      to: email,
+      subject: "Your Tessera email is verified",
+      title: "You're verified",
+      lines: [
+        `${email} is now the verified email of your Tessera account.`,
+        rows[0]?.on
+          ? "Two-step sign-in is on: when you sign in on a new computer, we email you a code here first."
+          : "Sign-in codes and password resets come to this address.",
+      ],
+      action: { label: "Open Tessera", url: `${SITE}/account` },
+      after: ["If you didn't make a Tessera account, write to privacy@tesseralauncher.com and we'll look into it."],
+    });
+  })().catch((e) => console.error("verifiedMail", e));
 }
 
 app.get("/me/email", async (c) => {

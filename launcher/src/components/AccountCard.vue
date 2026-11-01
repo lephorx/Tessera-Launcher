@@ -4,6 +4,7 @@ import { AtSign, KeyRound, Link2, Loader2, LogOut, Mail } from "lucide-vue-next"
 import { api, type Me } from "@/lib/api";
 import { account, loadAccount, setMe, signOut } from "@/lib/account";
 import { consentOf, type AgeBand } from "@/lib/legal";
+import ChangeEmailForm from "./ChangeEmailForm.vue";
 import CodeForm from "./CodeForm.vue";
 import ConsentFields from "./ConsentFields.vue";
 import { errorText, toast } from "@/lib/toast";
@@ -24,6 +25,8 @@ const busy = ref(false);
 const error = ref("");
 // the address to verify before signing in (Neon Auth emailed a code to it)
 const verifying = ref<string | null>(null);
+// fixing that address (a typo, a throwaway one) before verifying it
+const changing = ref(false);
 // age and Terms, for joining with an invite
 const age = ref<AgeBand | null>(null);
 const parental = ref(false);
@@ -134,11 +137,17 @@ async function saveUsername() {
       <p class="hint" style="margin: 0">Two-step sign-in is on for this account. This computer then skips the code for 30 days.</p>
     </template>
 
+    <template v-else-if="verifying && changing">
+      <p style="margin: 0">Enter the right email for your account. We email a code there.</p>
+      <ChangeEmailForm :email="verifying" :password="password" @changed="(e) => ((verifying = email = e), (changing = false))" @cancel="changing = false" />
+    </template>
+
     <template v-else-if="verifying">
       <p style="margin: 0">Your email isn't verified yet. We emailed a code to <strong>{{ verifying }}</strong>.</p>
-      <CodeForm kind="email-verification" sent :send="sendVerification" :verify="verifyEmail" submit-label="Verify and sign in">
+      <CodeForm :key="verifying" kind="email-verification" sent :send="sendVerification" :verify="verifyEmail" submit-label="Verify and sign in">
         <button type="button" class="btn btn-ghost" @click="verifying = null">Back</button>
       </CodeForm>
+      <button type="button" class="btn btn-ghost" style="align-self: flex-start" @click="changing = true">Wrong email? Change it</button>
     </template>
 
     <form v-else class="stack" @submit.prevent="submit">

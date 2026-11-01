@@ -2,9 +2,16 @@ import io, json, os, re, sys, time, zipfile, requests
 env = dict(l.split("=",1) for l in open(".env.local").read().splitlines() if "=" in l and not l.startswith("#"))
 AUTH = env["NEON_AUTH_BASE_URL"].strip('"'); API = env["NEON_FUNCTION_API_BASE_URL"].strip('"').rstrip("/") + "/v1"
 O = {"origin": "http://localhost:1420"}
-def account(tag):
+import subprocess
+DBURL = env["DATABASE_URL_UNPOOLED"].strip('"')
+psql = lambda sql: subprocess.run(["psql", DBURL, "-qtA", "-c", sql], check=True, capture_output=True, text=True).stdout.strip()
+def account(tag, verified=True):
+    # sign-in needs a verified email; example.com never gets the code, so the test verifies it itself
     s = requests.Session(); email = f"e2e{tag}{int(time.time())}@example.com"
     r = s.post(f"{AUTH}/sign-up/email", json={"email": email, "password": "correct horse battery", "name": tag}, headers=O); assert r.ok, r.text
+    psql(f"""update neon_auth."user" set "emailVerified" = true where email = '{email}'""")
+    r = s.post(f"{AUTH}/sign-in/email", json={"email": email, "password": "correct horse battery"}, headers=O); assert r.ok, r.text
+    if not verified: psql(f"""update neon_auth."user" set "emailVerified" = false where email = '{email}'""")
     jwt = s.get(f"{AUTH}/token", headers=O).json()["token"]
     return s, {"authorization": f"Bearer {jwt}"}, email
 sa, A, ea = account("alice"); sb, B, eb = account("bob")
@@ -13,8 +20,6 @@ check("unauthenticated is 401", requests.get(f"{API}/me").status_code == 401)
 check("forged token is 401", requests.get(f"{API}/me", headers={"authorization": "Bearer abc.def.ghi"}).status_code == 401)
 ua, ub = f"alice_{int(time.time())%100000}", f"bob_{int(time.time())%100000}"
 # closed beta: seed two invites in the database (as if an admin made them), then join
-import subprocess
-DBURL = env["DATABASE_URL_UNPOOLED"].strip('"')
 ida0 = requests.get(f"{API}/me", headers=A).json()["user"]["id"]
 check("no invite: locked out", requests.get(f"{API}/shares/mine", headers=A).status_code == 403)
 check("no invite: /me works", requests.get(f"{API}/me", headers=A).json()["user"]["member"] is False)
@@ -176,5 +181,27 @@ seed_code(ida, "disable")
 check("turn 2fa off", requests.post(f"{API}/me/2fa/disable", json={"code": "123456"}, headers=AD2).ok)
 check("off: no device needed", requests.get(f"{API}/friends", headers=A).ok and requests.get(f"{API}/me", headers=A).json()["user"]["two_factor_required"] is False)
 check("news is public", len(requests.get(f"{API}/news").json()["news"]) > 0)
+# verified email: "you're verified" goes out once per address (example.com gets none, the log still counts it)
+check("verified mail logged once", psql(f"select count(*) from email_log where user_id = '{ida}' and kind = 'email_verified'") == "1")
+requests.get(f"{API}/me", headers=A)
+check("not twice", psql(f"select count(*) from email_log where user_id = '{ida}' and kind = 'email_verified'") == "1")
+# an unverified member only gets the open calls
+psql(f"""update neon_auth."user" set "emailVerified" = false where id = '{ida}'""")
+check("unverified: friends locked", requests.get(f"{API}/friends", headers=A).json().get("error") == "email_unverified")
+check("unverified: /me still works", requests.get(f"{API}/me", headers=A).json()["user"]["email_verified"] is False)
+# fixing the address of an unverified account: password-checked, public
+ch = lambda **b: requests.post(f"{API}/email/change", json=b)
+check("change: wrong password -> 401", ch(email=ea, password="nope nope", new_email="x@example.com").status_code == 401)
+check("change: unknown account -> 401", ch(email="nobody-e2e@example.com", password="correct horse battery", new_email="x@example.com").status_code == 401)
+check("change: taken address -> 409", ch(email=ea, password="correct horse battery", new_email=eb.upper()).json().get("error") == "email_taken")
+ea2 = ea.replace("@", "-new@")
+r = ch(email=ea, password="correct horse battery", new_email=ea2)
+check("change: works", r.ok and r.json()["email"] == ea2 and requests.get(f"{API}/me", headers=A).json()["user"]["email"] == ea2)
+check("change: old address can't sign in", requests.post(f"{AUTH}/sign-in/email", json={"email": ea, "password": "correct horse battery"}, headers=O).status_code == 401)
+check("change: new one asks for the code", requests.post(f"{AUTH}/sign-in/email", json={"email": ea2, "password": "correct horse battery"}, headers=O).json().get("code") == "EMAIL_NOT_VERIFIED")
+psql(f"""update neon_auth."user" set "emailVerified" = true where id = '{ida}'""")
+check("change: verified address stays", ch(email=ea2, password="correct horse battery", new_email=ea).json().get("error") == "already_verified")
+check("verified again: friends open", requests.get(f"{API}/friends", headers=A).ok)
+ea = ea2
 subprocess.run(["psql", DBURL, "-q", "-c", f"delete from invites where created_by = '{ida0}'"], check=True)
 open("/tmp/neon_e2e_users", "w").write(f"{ea}\n{eb}\n")

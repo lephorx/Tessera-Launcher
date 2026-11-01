@@ -904,6 +904,12 @@ async fn account_verify_email(state: State<'_, AppState>, email: String, code: S
     account::verify_email(&state.client, &email, &code).await.map_err(err)
 }
 
+/// Fixes the address of an unverified account; a code goes to the new one. Returns it.
+#[tauri::command]
+async fn account_change_email(state: State<'_, AppState>, email: String, password: String, new_email: String) -> CmdResult<String> {
+    account::change_email(&state.client, &email, &password, &new_email).await.map_err(err)
+}
+
 // ── two-step sign-in by email ──
 
 /// Emails a code for "sign_in", "enable" or "disable".
@@ -1898,6 +1904,7 @@ pub fn run() {
             account_sign_in,
             account_send_verification,
             account_verify_email,
+            account_change_email,
             account_2fa_send,
             account_2fa_verify,
             account_2fa_enable,

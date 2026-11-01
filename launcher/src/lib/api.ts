@@ -536,6 +536,8 @@ export const api = {
     sendVerification: (email: string) => call<void>("account_send_verification", { email }),
     /** Verifies the address with the code; it also signs in. */
     verifyEmail: (email: string, code: string) => call<Me>("account_verify_email", { email, code }),
+    /** Fixes the address of an unverified account (password needed); a code goes to the new one. */
+    changeEmail: (email: string, password: string, newEmail: string) => call<string>("account_change_email", { email, password, newEmail }),
     redeem: (invite: string, username: string, consent: Consent) => call<Me>("account_redeem", { invite, username, consent }),
     /** Accepts the current Terms (accounts from before them, or when they change). */
     consent: (consent: Consent) => call<Me>("account_consent", { consent }),

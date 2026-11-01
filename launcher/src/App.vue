@@ -11,6 +11,7 @@ import Toast from "./components/AppToast.vue";
 import AppDialog from "./components/AppDialog.vue";
 import AccountCard from "./components/AccountCard.vue";
 import ConsentDialog from "./components/ConsentDialog.vue";
+import VerifyEmailDialog from "./components/VerifyEmailDialog.vue";
 import HomeSidebar from "./components/HomeSidebar.vue";
 import NotificationBell from "./components/NotificationBell.vue";
 import SettingsDialog from "./components/SettingsDialog.vue";
@@ -186,8 +187,10 @@ const nav = [
     <AppDialog v-if="account.dialog" title="Tessera account" :width="440" @close="account.dialog = false">
       <AccountCard bare @signed-in="account.dialog = false" />
     </AppDialog>
+    <!-- an unverified email comes first: verify it, fix it or sign out -->
+    <VerifyEmailDialog v-if="account.me && account.me.email_verified === false" />
     <!-- members from before the current Terms agree once (or sign out) -->
-    <ConsentDialog v-if="account.me?.member && account.me.terms_version !== TERMS_VERSION && !account.consentUnsupported" />
+    <ConsentDialog v-else-if="account.me?.member && account.me.terms_version !== TERMS_VERSION && !account.consentUnsupported" />
     <div v-if="packProgress.stage" class="pack-progress stack" style="gap: 8px" role="status">
       <div class="row"><span style="font-weight: 600">{{ packProgress.stage }}</span><span class="spacer" /><span class="hint num">{{ packProgress.total ? `${packProgress.done} / ${packProgress.total}` : "" }}</span></div>
       <div class="progress"><div :style="{ width: packProgress.total ? `${(packProgress.done / packProgress.total) * 100}%` : '8%' }" /></div>

@@ -260,6 +260,29 @@ pub async fn send_verification(client: &reqwest::Client, email: &str) -> Result<
     Ok(())
 }
 
+/// Fixes the address of an account that isn't verified yet (a typo, a throwaway address):
+/// the API checks the password, then Neon Auth emails a code to the new address. Returns it.
+pub async fn change_email(client: &reqwest::Client, email: &str, password: &str, new_email: &str) -> Result<String> {
+    if !super::limits::login_allowed("tessera-account") {
+        bail!("Too many attempts. Wait a minute and try again.");
+    }
+    let res = client
+        .post(format!("{API_URL}/email/change"))
+        .json(&serde_json::json!({ "email": email.trim(), "password": password, "new_email": new_email.trim() }))
+        .send()
+        .await
+        .map_err(|e| anyhow!("Can't reach Tessera: {}", e.without_url()))?;
+    let status = res.status();
+    let body: Value = res.json().await.unwrap_or(Value::Null);
+    if !status.is_success() {
+        bail!("{}", body["message"].as_str().unwrap_or("Changing the email didn't work"));
+    }
+    let next = body["email"].as_str().unwrap_or(new_email.trim()).to_string();
+    *TOKEN.lock().unwrap() = None;
+    send_verification(client, &next).await?;
+    Ok(next)
+}
+
 /// Verifies the address with the emailed code. Neon Auth signs in with it, so a new
 /// session cookie replaces the old one when it sends one.
 pub async fn verify_email(client: &reqwest::Client, email: &str, code: &str) -> Result<Me> {
