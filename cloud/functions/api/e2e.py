@@ -7,6 +7,19 @@ env = dict(l.split("=",1) for l in open(ENV_FILE).read().splitlines() if "=" in 
 AUTH = env["NEON_AUTH_BASE_URL"].strip('"'); API = env["NEON_FUNCTION_API_BASE_URL"].strip('"').rstrip("/") + "/v1"
 print(f"e2e against {ENV_FILE} ({env.get('NEON_BRANCH', '?').strip(chr(34))})")
 O = {"origin": "http://localhost:1420"}
+# a dropped connection (Neon Auth resets one now and then) is tried again instead of failing the run;
+# the module-level calls keep no cookies, as before
+import http.cookiejar
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+def retrying(sess):
+    # and nothing waits forever on a stalled connection
+    _request = sess.request; sess.request = lambda *a, **k: _request(*a, **{"timeout": 60, **k})
+    sess.mount("https://", HTTPAdapter(max_retries=Retry(total=3, connect=3, read=2, status=0, other=0, allowed_methods=None, backoff_factor=0.5, raise_on_status=False)))
+    return sess
+_plain = retrying(requests.Session()); _plain.cookies.set_policy(http.cookiejar.DefaultCookiePolicy(allowed_domains=[]))
+for _m in ("get", "post", "put", "patch", "delete"): setattr(requests, _m, getattr(_plain, _m))
+_Session = requests.Session; requests.Session = lambda: retrying(_Session())
 # the secret the website signs visitor addresses with (from .env.mail; never printed)
 SITE = next((l.split("=", 1)[1].strip().strip('"') for l in open(".env.mail").read().splitlines() if l.startswith("TESSERA_SITE_SECRET=")), "")
 import hmac, hashlib, random
@@ -254,8 +267,8 @@ check("off: no device needed", requests.get(f"{API}/friends", headers=A).ok and 
 check("news is public", len(requests.get(f"{API}/news").json()["news"]) > 0)
 # the website vouches for the visitor's address: each visitor gets their own public-lookup limit
 v1, v2 = RUN_IP(), RUN_IP()
-hits = [requests.get(f"{API}/invites/nope{i}", headers=visitor(v1)).status_code for i in range(400)]
-check("one visitor gets limited", 429 in hits)
+limited = next((i for i in range(400) if requests.get(f"{API}/invites/nope{i}", headers=visitor(v1)).status_code == 429), None)
+check("one visitor gets limited", limited is not None)
 check("another visitor isn't", requests.get(f"{API}/invites/nope", headers=visitor(v2)).status_code == 200)
 check("a forged signature counts as the caller, not that visitor", requests.get(f"{API}/invites/nope", headers=visitor(v1, secret="wrong")).status_code == 200)
 site = lambda bucket, key, h=None: requests.post(f"{API}/site/limit", json={"bucket": bucket, "key": key}, headers=visitor(RUN_IP()) if h is None else h)
