@@ -173,8 +173,12 @@ function answersInvites(c: Context): boolean {
  * website carry the visitor's address, signed (`siteVisitor`).
  */
 function clientIp(c: Context): string {
-  return siteVisitor(c) ?? (c.req.header("x-forwarded-for")?.split(",").pop()?.trim() || "unknown");
+  return siteVisitor(c) ?? ((BEHIND_CLOUDFLARE && c.req.header("cf-connecting-ip")) || c.req.header("x-forwarded-for")?.split(",").pop()?.trim() || "unknown");
 }
+
+/** On the home server the API only listens on localhost and Cloudflare Tunnel is the one way in,
+ * so Cloudflare's CF-Connecting-IP is the visitor (see server.ts). */
+const BEHIND_CLOUDFLARE = process.env.BEHIND_CLOUDFLARE === "1";
 
 /** Shared with the website (TESSERA_SITE_SECRET): signs the visitor's address and the website's own calls. */
 const SITE_SECRET = process.env.TESSERA_SITE_SECRET ?? "";
