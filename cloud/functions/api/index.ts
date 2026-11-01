@@ -1238,8 +1238,6 @@ app.delete("/invites/:code", async (c) => {
 
 // ── email notices ────────────────────────────────────────────────────────
 
-/** Where the unsubscribe links in notices point (this API's public address). */
-const PUBLIC_API_URL = (process.env.PUBLIC_API_URL || "https://br-rapid-thunder-b9spxx3v-api.compute.c-7.eu-central-1.aws.neon.tech").replace(/\/$/, "");
 const SITE = "https://tesseralauncher.com";
 
 type Notice =
@@ -1270,7 +1268,7 @@ function notify(to: string, n: Notice) {
       [to, n.kind, ref],
     );
     if (!rowCount) return;
-    const unsubscribe = unsubscribeUrl(PUBLIC_API_URL, to, setting);
+    const unsubscribe = unsubscribeUrl(to, setting);
     const mail =
       n.kind === "friend_request"
         ? { subject: `${n.from} wants to be friends on Tessera`, title: `${n.from} wants to be friends`, lines: [`${n.from} sent you a friend request on Tessera.`, "Open the launcher to accept or decline it. Friends can share modpacks with each other."] }

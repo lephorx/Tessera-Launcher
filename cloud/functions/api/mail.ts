@@ -27,6 +27,8 @@ const transport = mailReady
       secure: Number(process.env.SMTP_PORT || 587) === 465,
       requireTLS: true,
       auth: { user, pass },
+      // the EHLO name lands in the Received header; the container's hostname looks like a botnet
+      name: "tesseralauncher.com",
       connectionTimeout: 10_000,
       greetingTimeout: 10_000,
       socketTimeout: 20_000,
@@ -134,9 +136,11 @@ function sign(userId: string, kind: NoticeKind): string {
   return createHmac("sha256", secret ?? "").update(`unsubscribe:${userId}:${kind}`).digest("base64url");
 }
 
-export function unsubscribeUrl(apiBase: string, userId: string, kind: NoticeKind): string {
+/** On tesseralauncher.com (the website relays it to the API): spam filters distrust mail whose
+ * links point at a different domain than the sender, and the API's neon.tech address is one. */
+export function unsubscribeUrl(userId: string, kind: NoticeKind): string {
   const q = new URLSearchParams({ u: userId, k: kind, t: sign(userId, kind) });
-  return `${apiBase}/v1/email/unsubscribe?${q}`;
+  return `${SITE}/email/unsubscribe?${q}`;
 }
 
 export function checkUnsubscribe(userId: string, kind: string, token: string): kind is NoticeKind {
