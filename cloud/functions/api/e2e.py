@@ -218,11 +218,10 @@ psql(f"""update neon_auth."user" set "emailVerified" = true where id = '{ida}'""
 check("change: verified address stays", ch(email=ea2, password="correct horse battery", new_email=ea).json().get("error") == "already_verified")
 check("verified again: friends open", requests.get(f"{API}/friends", headers=A).ok)
 ea = ea2
-# names: no slurs, swearing or notorious people, nothing pretending to be staff, no odd symbols
+# usernames: no slurs, swearing or notorious people, nothing pretending to be staff, no odd symbols
 for bad in ["diddy_fan", "3pst3in", "xX_fuck_Xx", "BigAss", "admin", "TesseraTeam", "le__x", "_lead", "1234", "le-x"]:
     check(f"username {bad} refused", requests.put(f"{API}/me/username", json={"username": bad}, headers=B).json().get("error") == "invalid_username")
 check("a fine username still works", requests.put(f"{API}/me/username", json={"username": ub}, headers=B).ok)
-check("pack name with Epstein refused", requests.post(f"{API}/shares", params={**q, "name": "Epstein Island"}, data=pack(), headers=A).json().get("error") == "invalid_name")
 # signed-in devices: the caller says which session is its own (sha256 of the token)
 import hashlib, urllib.parse
 def shash(sess): return hashlib.sha256(urllib.parse.unquote(next(c.value for c in sess.cookies if c.name.endswith("session_token"))).split(".")[0].encode()).hexdigest()

@@ -84,8 +84,3 @@ export function usernameProblem(name: string): string | null {
   if (offensive(name)) return "That username isn't allowed. Pick another one.";
   return null;
 }
-
-/** Why a shared pack's name can't be used, or null. */
-export function packNameProblem(name: string): string | null {
-  return offensive(name) ? "That pack name isn't allowed. Rename the instance and share it again." : null;
-}

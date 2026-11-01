@@ -87,7 +87,7 @@ import { createRemoteJWKSet, jwtVerify } from "jose";
 import pg from "pg";
 import { z } from "zod";
 import { checkUnsubscribe, deliverable, mailReady, sendMail, unsubscribeUrl, type NoticeKind } from "./mail.js";
-import { packNameProblem, usernameProblem } from "./names.js";
+import { usernameProblem } from "./names.js";
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 5 });
 attachDatabasePool(pool);
@@ -129,6 +129,17 @@ type Env = { Variables: { userId: string; isAdmin: boolean; twoFactorPending: bo
 
 function err(c: Context, status: 400 | 401 | 403 | 404 | 409 | 410 | 413 | 429 | 503, error: string, message?: string) {
   return c.json({ error, ...(message ? { message } : {}) }, status, status === 429 ? { "retry-after": "60" } : undefined);
+}
+
+/**
+ * Launchers before 0.6.22 can't answer pack invites (no Accept button, and "Shared with me" hid them):
+ * for them an invite works like it used to, listed as shared and taken when they install it.
+ */
+function answersInvites(c: Context): boolean {
+  const v = /^tessera-launcher\/(\d+)\.(\d+)\.(\d+)/.exec(c.req.header("user-agent") ?? "");
+  if (!v) return true;
+  const [major, minor, patch] = [Number(v[1]), Number(v[2]), Number(v[3])];
+  return major > 0 || minor > 6 || (minor === 6 && patch >= 22);
 }
 
 function clientIp(c: Context): string {
@@ -652,8 +663,6 @@ app.post("/shares", async (c) => {
   if (!uploads.take(c.var.userId)) return err(c, 429, "rate_limited", "That's a lot of uploads. Try again in an hour.");
   const meta = packMeta.safeParse(c.req.query());
   if (!meta.success) return err(c, 400, "invalid_pack", "Missing pack name, game version or loader.");
-  const nameProblem = packNameProblem(meta.data.name);
-  if (nameProblem) return err(c, 400, "invalid_name", nameProblem);
   const { rows: count } = await pool.query(`select count(*)::int as n from shares where owner_id = $1`, [c.var.userId]);
   if (count[0].n >= MAX_SHARES_PER_USER) return err(c, 409, "too_many_shares", "You share 20 packs already. Stop sharing one first.");
   const body = await readPack(c);
@@ -712,7 +721,7 @@ app.put("/shares/:code", async (c) => {
   }
   await files.upload(share.object_key, body, { contentType: "application/zip" });
   // only the owner renames the pack
-  const name = share.role === "owner" && !packNameProblem(meta.data.name) ? meta.data.name : share.name;
+  const name = share.role === "owner" ? meta.data.name : share.name;
   const { rows } = await pool.query(
     `update shares set name = $2, game_version = $3, loader = $4, loader_version = $5, size_bytes = $6, updated_at = now(),
        revision = revision + 1, updated_by = $8
@@ -753,8 +762,8 @@ app.get("/shares/mine", async (c) => {
 app.get("/shares/received", async (c) => {
   const { rows } = await pool.query(
     `select ${SHARE_COLUMNS}, m.role from share_members m join shares s on s.code = m.code
-     left join profiles p on p.user_id = s.owner_id where m.user_id = $1 and m.accepted_at is not null order by s.updated_at desc`,
-    [c.var.userId],
+     left join profiles p on p.user_id = s.owner_id where m.user_id = $1 and (m.accepted_at is not null or not $2) order by s.updated_at desc`,
+    [c.var.userId, answersInvites(c)],
   );
   return c.json({ shares: rows });
 });
@@ -890,6 +899,10 @@ app.post("/shares/:code/transfer", async (c) => {
 });
 
 app.get("/shares/:code/download", async (c) => {
+  // an older launcher installing a pack it was invited to: that's its accept
+  if (!answersInvites(c)) {
+    await pool.query(`update share_members set accepted_at = now() where code = $1 and user_id = $2 and accepted_at is null`, [c.req.param("code"), c.var.userId]);
+  }
   const { rows } = await pool.query(
     `select s.*, (s.owner_id = $2 or exists (select 1 from share_members m where m.code = s.code and m.user_id = $2 and m.accepted_at is not null)) as invited
      from shares s where s.code = $1`,
@@ -1391,11 +1404,11 @@ app.get("/notifications", async (c) => {
          from friendships f join profiles p on p.user_id = f.addressee_id
          where f.requester_id = $1 and f.status = 'accepted' and f.accepted_at > now() - interval '14 days'
          union all
-         select 'share_invite', s.owner_id, p.username, s.code, s.name, m.added_at
+         select case when $2 then 'share_invite' else 'share_added' end, s.owner_id, p.username, s.code, s.name, m.added_at
          from share_members m join shares s on s.code = m.code join profiles p on p.user_id = s.owner_id
          where m.user_id = $1 and m.accepted_at is null
        ) n order by at desc limit 30`,
-      [c.var.userId],
+      [c.var.userId, answersInvites(c)],
     ),
     pool.query(`select notifications_seen_at from profiles where user_id = $1`, [c.var.userId]),
   ]);
