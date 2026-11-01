@@ -194,6 +194,17 @@ export interface Share {
   members?: { user_id: string; username: string; role: ShareRole; pending?: boolean }[];
 }
 
+/** A browser or launcher signed in to the Tessera account. */
+export interface SignedInDevice {
+  id: string;
+  /** "Tessera Launcher 0.6.22 on Windows", "Chrome on macOS (tesseralauncher.com)" */
+  device: string;
+  created_at: string;
+  last_active_at: string;
+  expires_at: string;
+  current: boolean;
+}
+
 /** A pack a friend invited me to: accept to install it, or decline. */
 export interface ShareInvite extends Share {
   role: ShareRole;
@@ -552,7 +563,11 @@ export const api = {
     /** Saves everything Tessera stores about the account as JSON. */
     exportData: (path: string) => call<void>("account_export", { path }),
     /** Deletes the account, its shares and their packs, and signs out here. */
-    remove: () => call<void>("account_delete"),
+    remove: (password: string, confirm: string) => call<void>("account_delete", { password, confirm }),
+    /** Every browser and launcher signed in to the account. */
+    sessions: () => call<SignedInDevice[]>("account_sessions"),
+    /** Signs one device out, or (without an id) every one but this. Returns how many. */
+    endSession: (id?: string) => call<number>("account_session_end", { id: id ?? null }),
     signOut: () => call<void>("account_sign_out"),
     setUsername: (username: string) => call<void>("account_set_username", { username }),
   },

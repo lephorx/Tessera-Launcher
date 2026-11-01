@@ -218,5 +218,29 @@ psql(f"""update neon_auth."user" set "emailVerified" = true where id = '{ida}'""
 check("change: verified address stays", ch(email=ea2, password="correct horse battery", new_email=ea).json().get("error") == "already_verified")
 check("verified again: friends open", requests.get(f"{API}/friends", headers=A).ok)
 ea = ea2
+# names: no slurs, swearing or notorious people, nothing pretending to be staff, no odd symbols
+for bad in ["diddy_fan", "3pst3in", "xX_fuck_Xx", "BigAss", "admin", "TesseraTeam", "le__x", "_lead", "1234", "le-x"]:
+    check(f"username {bad} refused", requests.put(f"{API}/me/username", json={"username": bad}, headers=B).json().get("error") == "invalid_username")
+check("a fine username still works", requests.put(f"{API}/me/username", json={"username": ub}, headers=B).ok)
+check("pack name with Epstein refused", requests.post(f"{API}/shares", params={**q, "name": "Epstein Island"}, data=pack(), headers=A).json().get("error") == "invalid_name")
+# signed-in devices: the caller says which session is its own (sha256 of the token)
+import hashlib, urllib.parse
+def shash(sess): return hashlib.sha256(urllib.parse.unquote(next(c.value for c in sess.cookies if c.name.endswith("session_token"))).split(".")[0].encode()).hexdigest()
+A2s = requests.Session(); A2s.post(f"{AUTH}/sign-in/email", json={"email": ea, "password": "correct horse battery"}, headers={**O, "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0 Safari/537.36"})
+AS = {**A, "x-tessera-session": shash(sa)}
+ss = requests.get(f"{API}/me/sessions", headers=AS).json()["sessions"]
+check("sessions: both listed, this one marked", len(ss) >= 2 and sum(x["current"] for x in ss) == 1)
+check("sessions: browser named", any(x["device"] == "Chrome on Windows (tesseralauncher.com)" for x in ss))
+check("sign out everywhere else needs to know which is mine", requests.delete(f"{API}/me/sessions", headers=A).status_code == 400)
+check("sign out everywhere else", requests.delete(f"{API}/me/sessions", headers=AS).json()["removed"] >= 1)
+check("the other one is signed out", A2s.get(f"{AUTH}/token", headers=O).status_code == 401)
+check("this one still works", requests.get(f"{API}/me/sessions", headers=AS).json()["sessions"][0]["current"] is True)
+check("B can't sign out A's session", requests.delete(f"{API}/me/sessions/{ss[0]['id']}", headers=B).status_code == 404)
+# deleting the account takes the password and the username typed out
+check("delete: nothing sent -> 400", requests.delete(f"{API}/me", headers=B).json().get("error") == "confirm_required")
+check("delete: wrong username -> 400", requests.delete(f"{API}/me", json={"password": "correct horse battery", "confirm": "someone"}, headers=B).json().get("error") == "wrong_confirm")
+check("delete: wrong password -> 401", requests.delete(f"{API}/me", json={"password": "nope nope", "confirm": ub}, headers=B).json().get("error") == "wrong_password")
+check("delete: both right", requests.delete(f"{API}/me", json={"password": "correct horse battery", "confirm": ub.upper()}, headers=B).status_code in (200, 204))
+check("deleted: B is gone", psql(f"""select count(*) from neon_auth."user" where email = '{eb}'""") == "0")
 subprocess.run(["psql", DBURL, "-q", "-c", f"delete from invites where created_by = '{ida0}'"], check=True)
 open("/tmp/neon_e2e_users", "w").write(f"{ea}\n{eb}\n")

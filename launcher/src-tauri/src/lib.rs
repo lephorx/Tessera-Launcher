@@ -934,6 +934,29 @@ async fn account_2fa_disable(state: State<'_, AppState>, code: String) -> CmdRes
 }
 
 /// The computers that skip the code (this one is marked `current`).
+/// Every browser and launcher signed in to the account; `current` is this one.
+#[tauri::command]
+async fn account_sessions(state: State<'_, AppState>) -> CmdResult<Value> {
+    let v = account::api(&state.client, reqwest::Method::GET, "/me/sessions", None, None).await.map_err(err)?;
+    Ok(v["sessions"].clone())
+}
+
+/// Signs one device out; `None` signs out every one but this.
+#[tauri::command]
+async fn account_session_end(state: State<'_, AppState>, id: Option<String>) -> CmdResult<u64> {
+    match id {
+        Some(id) if id.len() == 36 && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') => {
+            account::api(&state.client, reqwest::Method::DELETE, &format!("/me/sessions/{id}"), None, None).await.map_err(err)?;
+            Ok(1)
+        }
+        Some(_) => Err("Unknown device".into()),
+        None => {
+            let v = account::api(&state.client, reqwest::Method::DELETE, "/me/sessions", None, None).await.map_err(err)?;
+            Ok(v["removed"].as_u64().unwrap_or(0))
+        }
+    }
+}
+
 #[tauri::command]
 async fn account_2fa_devices(state: State<'_, AppState>) -> CmdResult<Value> {
     let v = account::api(&state.client, reqwest::Method::GET, "/me/2fa/devices", None, None).await.map_err(err)?;
@@ -989,8 +1012,8 @@ async fn account_export(state: State<'_, AppState>, path: String) -> CmdResult<(
 }
 
 #[tauri::command]
-async fn account_delete(state: State<'_, AppState>) -> CmdResult<()> {
-    account::delete(&state.client).await.map_err(err)
+async fn account_delete(state: State<'_, AppState>, password: String, confirm: String) -> CmdResult<()> {
+    account::delete(&state.client, &password, &confirm).await.map_err(err)
 }
 
 #[tauri::command]
@@ -1928,6 +1951,8 @@ pub fn run() {
             account_send_verification,
             account_verify_email,
             account_change_email,
+            account_sessions,
+            account_session_end,
             account_2fa_send,
             account_2fa_verify,
             account_2fa_enable,

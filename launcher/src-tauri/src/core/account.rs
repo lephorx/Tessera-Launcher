@@ -81,6 +81,45 @@ fn session() -> Option<String> {
     stored().map(|s| s.cookie).filter(|c| !c.is_empty())
 }
 
+/// sha256 hex of this sign-in's session token, so the API can tell which signed-in device is
+/// this one. The cookie holds "<token>.<signature>", URL-encoded.
+fn session_hash() -> Option<String> {
+    use sha2::Digest;
+    let cookie = session()?;
+    let value = cookie.split(';').map(str::trim).find_map(|c| c.split_once('=').filter(|(k, _)| k.ends_with("session_token")).map(|(_, v)| v.to_string()))?;
+    let token = percent_decode(&value).split('.').next()?.to_string();
+    Some(hex::encode(sha2::Sha256::digest(token.as_bytes())))
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() && s.is_char_boundary(i + 3) {
+            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Sign-in requests say which OS this is, for the list of signed-in devices.
+fn auth_user_agent() -> String {
+    let os = match std::env::consts::OS {
+        "macos" => "macOS",
+        "windows" => "Windows",
+        "linux" => "Linux",
+        other => other,
+    };
+    format!("tessera-launcher/{} ({os}; github.com/lephorx/Tessera-Launcher)", env!("CARGO_PKG_VERSION"))
+}
+
 fn device() -> Option<String> {
     stored()?.device.filter(|d| !d.is_empty())
 }
@@ -228,6 +267,7 @@ pub async fn sign_in(client: &reqwest::Client, email: &str, password: &str) -> R
     let res = client
         .post(format!("{AUTH_URL}/sign-in/email"))
         .header("origin", ORIGIN)
+        .header("user-agent", auth_user_agent())
         .json(&serde_json::json!({ "email": email.trim(), "password": password }))
         .send()
         .await
@@ -289,6 +329,7 @@ pub async fn verify_email(client: &reqwest::Client, email: &str, code: &str) -> 
     let mut req = client
         .post(format!("{AUTH_URL}/email-otp/verify-email"))
         .header("origin", ORIGIN)
+        .header("user-agent", auth_user_agent())
         .json(&serde_json::json!({ "email": email.trim(), "otp": code.trim() }));
     if let Some(cookie) = session() {
         req = req.header("cookie", cookie);
@@ -436,9 +477,10 @@ pub async fn export(client: &reqwest::Client) -> Result<Value> {
     api(client, reqwest::Method::GET, "/me/export", None, None).await
 }
 
-/// Deletes the account with its shares and their packs, then forgets the sign-in here.
-pub async fn delete(client: &reqwest::Client) -> Result<()> {
-    api(client, reqwest::Method::DELETE, "/me", None, None).await?;
+/// Deletes the account with its shares and their packs, then forgets the sign-in here. Takes
+/// the password and the username (or email) typed out; the API checks both.
+pub async fn delete(client: &reqwest::Client, password: &str, confirm: &str) -> Result<()> {
+    api(client, reqwest::Method::DELETE, "/me", Some(serde_json::json!({ "password": password, "confirm": confirm.trim() })), None).await?;
     forget_session();
     Ok(())
 }
@@ -492,6 +534,9 @@ pub async fn api(client: &reqwest::Client, method: reqwest::Method, path: &str, 
     let mut req = client.request(method, format!("{API_URL}{path}")).bearer_auth(jwt).timeout(Duration::from_secs(120));
     if let Some(d) = device() {
         req = req.header("x-tessera-device", d);
+    }
+    if let Some(h) = session_hash() {
+        req = req.header("x-tessera-session", h);
     }
     if let Some(j) = json {
         req = req.json(&j);
@@ -555,6 +600,10 @@ mod tests {
         store_session("a=2").unwrap();
         assert_eq!(session().as_deref(), Some("a=2"));
         assert_eq!(device().as_deref(), Some("dev"));
+        // the API is told which session this is: the hash of the token before the signature
+        store_session("other=1; __Secure-neon-auth.session_token=abc%2Bdef.sig%3D%3D").unwrap();
+        use sha2::Digest;
+        assert_eq!(session_hash().unwrap(), hex::encode(sha2::Sha256::digest(b"abc+def")));
         forget_session();
         assert!(session().is_none() && device().is_none());
     }

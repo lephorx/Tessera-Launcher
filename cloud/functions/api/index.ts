@@ -60,6 +60,12 @@
  *   POST   /v1/me/2fa/auto       {label?}         after verifying the email: turns it on unless
  *                                          you chose before → {device_token} for this device
  *   GET    /v1/me/2fa/devices                     trusted devices
+ *
+ * Where the account is signed in (Neon Auth sessions). The caller says which one is its own
+ * with `X-Tessera-Session: <sha256 hex of its session token>`:
+ *   GET    /v1/me/sessions                        every signed-in browser and launcher
+ *   DELETE /v1/me/sessions/:id                    sign that one out
+ *   DELETE /v1/me/sessions                        sign out everywhere but here
  *   DELETE /v1/me/2fa/devices                     forget every device but this one
  *
  * Closed beta: only accounts with a profile can use the API, and a profile is only made by
@@ -81,6 +87,7 @@ import { createRemoteJWKSet, jwtVerify } from "jose";
 import pg from "pg";
 import { z } from "zod";
 import { checkUnsubscribe, deliverable, mailReady, sendMail, unsubscribeUrl, type NoticeKind } from "./mail.js";
+import { packNameProblem, usernameProblem } from "./names.js";
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 5 });
 attachDatabasePool(pool);
@@ -490,6 +497,8 @@ app.use("*", async (c, next) => {
   const open =
     (c.req.method === "GET" && (path === "/me" || path === "/me/export")) ||
     (c.req.method === "DELETE" && path === "/me") ||
+    // seeing and ending your sign-ins works before joining and before verifying too
+    path === "/me/sessions" || path.startsWith("/me/sessions/") ||
     (c.req.method === "POST" && (path === "/me/consent" || /^\/invites\/[^/]+\/redeem$/.test(path)));
   if (!open && !profile) return err(c, 403, "invite_required", "Tessera is invite-only for now. Join with an invite link from a friend.");
   if (!open && !profile.verified) return err(c, 403, "email_unverified", "Verify your email first.");
@@ -575,8 +584,24 @@ app.get("/me/export", async (c) => {
 // Deletes the account (GDPR art. 17): the packs of every share I own from the bucket, then the
 // Neon Auth user; profiles, shares, memberships, friendships, invites I made and blocks go with
 // it by foreign-key cascade (invites I used and shares I last updated keep a null in my place).
+// Deleting takes the password and the username (or the email, without one) typed out: a
+// signed-in computer someone else sits at can't do it in one click.
 app.delete("/me", async (c) => {
   const id = c.var.userId;
+  const body = z.object({ password: z.string().min(1).max(200), confirm: z.string().trim() }).safeParse(await c.req.json().catch(() => null));
+  if (!body.success) return err(c, 400, "confirm_required", "Enter your password and type your username to delete the account.");
+  if (!emailChanges.take(`delete:${id}`)) return err(c, 429, "rate_limited", "Too many attempts. Wait a few minutes.");
+  const { rows: who } = await pool.query(
+    `select u.email, p.username, a.password from neon_auth."user" u left join profiles p on p.user_id = u.id
+     left join neon_auth.account a on a."userId" = u.id and a."providerId" = 'credential' where u.id = $1`,
+    [id],
+  );
+  const me = who[0];
+  if (!me) return err(c, 401, "unauthenticated");
+  if (body.data.confirm.toLowerCase() !== String(me.username ?? me.email).toLowerCase()) {
+    return err(c, 400, "wrong_confirm", `Type ${me.username ?? me.email} exactly to confirm.`);
+  }
+  if (!me.password || !(await passwordMatches(body.data.password, me.password))) return err(c, 401, "wrong_password", "That password isn't right.");
   const { rows: mine } = await pool.query(`select object_key from shares where owner_id = $1`, [id]);
   await Promise.all(mine.map((s) => files.delete(s.object_key).catch((e) => console.error("delete pack", s.object_key, e))));
   const db = await pool.connect();
@@ -610,8 +635,10 @@ app.delete("/me", async (c) => {
 });
 
 app.put("/me/username", async (c) => {
-  const body = z.object({ username: z.string().regex(/^[A-Za-z0-9_]{3,24}$/) }).safeParse(await c.req.json().catch(() => null));
+  const body = z.object({ username: z.string().trim() }).safeParse(await c.req.json().catch(() => null));
   if (!body.success) return err(c, 400, "invalid_username", "3–24 letters, digits or underscores.");
+  const problem = usernameProblem(body.data.username);
+  if (problem) return err(c, 400, "invalid_username", problem);
   try {
     await pool.query(`update profiles set username = $2 where user_id = $1`, [c.var.userId, body.data.username]);
   } catch (e) {
@@ -625,6 +652,8 @@ app.post("/shares", async (c) => {
   if (!uploads.take(c.var.userId)) return err(c, 429, "rate_limited", "That's a lot of uploads. Try again in an hour.");
   const meta = packMeta.safeParse(c.req.query());
   if (!meta.success) return err(c, 400, "invalid_pack", "Missing pack name, game version or loader.");
+  const nameProblem = packNameProblem(meta.data.name);
+  if (nameProblem) return err(c, 400, "invalid_name", nameProblem);
   const { rows: count } = await pool.query(`select count(*)::int as n from shares where owner_id = $1`, [c.var.userId]);
   if (count[0].n >= MAX_SHARES_PER_USER) return err(c, 409, "too_many_shares", "You share 20 packs already. Stop sharing one first.");
   const body = await readPack(c);
@@ -683,7 +712,7 @@ app.put("/shares/:code", async (c) => {
   }
   await files.upload(share.object_key, body, { contentType: "application/zip" });
   // only the owner renames the pack
-  const name = share.role === "owner" ? meta.data.name : share.name;
+  const name = share.role === "owner" && !packNameProblem(meta.data.name) ? meta.data.name : share.name;
   const { rows } = await pool.query(
     `update shares set name = $2, game_version = $3, loader = $4, loader_version = $5, size_bytes = $6, updated_at = now(),
        revision = revision + 1, updated_by = $8
@@ -887,8 +916,10 @@ function newInviteCode(): string {
 
 app.post("/invites/:code/redeem", async (c) => {
   const raw = await c.req.json().catch(() => null);
-  const body = z.object({ username: z.string().regex(/^[A-Za-z0-9_]{3,24}$/) }).safeParse(raw);
+  const body = z.object({ username: z.string().trim() }).safeParse(raw);
   if (!body.success) return err(c, 400, "invalid_username", "Usernames are 3–24 letters, digits or underscores.");
+  const problem = usernameProblem(body.data.username);
+  if (problem) return err(c, 400, "invalid_username", problem);
   // launchers from before the Terms send no consent; they're asked via /me/consent afterwards
   const sent = raw && typeof raw === "object" && ["terms_version", "age", "parental_consent"].some((k) => k in raw);
   const consent = sent ? checkConsent(c, raw) : null;
@@ -1195,6 +1226,51 @@ app.post("/me/2fa/auto", async (c) => {
   if (!rows[0]) return c.json({ ok: true, turned_on: false });
   const token = await trustDevice(c.var.userId, body.success ? body.data.label : undefined);
   return c.json({ ok: true, turned_on: true, device_token: token, expires_in_days: DEVICE_DAYS });
+});
+
+/** "Tessera Launcher 0.6.22 on Windows", "Chrome on macOS", "tesseralauncher.com". */
+function deviceName(ua: string | null): string {
+  if (!ua) return "Unknown device";
+  const launcher = ua.match(/^tessera-launcher\/([\w.-]+)(?: \((macOS|Windows|Linux)[;)])?/);
+  if (launcher) return `Tessera Launcher ${launcher[1]}${launcher[2] ? ` on ${launcher[2]}` : ""}`;
+  if (/^node$|undici|^tessera-website/i.test(ua)) return "tesseralauncher.com";
+  const os = /Windows/.test(ua) ? "Windows" : /iPhone|iPad/.test(ua) ? "iOS" : /Mac OS X|Macintosh/.test(ua) ? "macOS" : /Android/.test(ua) ? "Android" : /Linux/.test(ua) ? "Linux" : null;
+  const browser = /Edg\//.test(ua) ? "Edge" : /OPR\//.test(ua) ? "Opera" : /Firefox\//.test(ua) ? "Firefox" : /Chrome\//.test(ua) ? "Chrome" : /Safari\//.test(ua) ? "Safari" : null;
+  if (browser) return `${browser}${os ? ` on ${os}` : ""} (tesseralauncher.com)`;
+  return ua.slice(0, 60);
+}
+
+/** The caller's own session, from X-Tessera-Session (sha256 hex of the session token). */
+const sessionHash = (c: Context) => (c.req.header("x-tessera-session") ?? "").toLowerCase().replace(/[^0-9a-f]/g, "").slice(0, 64);
+
+app.get("/me/sessions", async (c) => {
+  const { rows } = await pool.query(
+    `select id, "userAgent" as ua, "createdAt" as created_at, "updatedAt" as last_active_at, "expiresAt" as expires_at,
+       encode(sha256(convert_to(token, 'UTF8')), 'hex') = $2 as current
+     from neon_auth.session where "userId" = $1 and "expiresAt" > now() order by "updatedAt" desc`,
+    [c.var.userId, sessionHash(c)],
+  );
+  return c.json({
+    sessions: rows.map(({ ua, ...s }) => ({ ...s, device: deviceName(ua) })),
+  });
+});
+
+app.delete("/me/sessions/:id", async (c) => {
+  const id = c.req.param("id");
+  if (!UUID_RE.test(id)) return err(c, 404, "not_found");
+  const { rowCount } = await pool.query(`delete from neon_auth.session where id = $1 and "userId" = $2`, [id, c.var.userId]);
+  return rowCount ? c.json({ ok: true }) : err(c, 404, "not_found", "That device is already signed out.");
+});
+
+app.delete("/me/sessions", async (c) => {
+  const mine = sessionHash(c);
+  // without knowing which one is the caller's, this would sign it out too
+  if (mine.length !== 64) return err(c, 400, "session_unknown", "Update Tessera to sign out other devices.");
+  const { rowCount } = await pool.query(
+    `delete from neon_auth.session where "userId" = $1 and encode(sha256(convert_to(token, 'UTF8')), 'hex') <> $2`,
+    [c.var.userId, mine],
+  );
+  return c.json({ ok: true, removed: rowCount ?? 0 });
 });
 
 app.get("/me/2fa/devices", async (c) => {
