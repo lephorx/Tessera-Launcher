@@ -219,11 +219,32 @@ app.get("/shares/:code", async (c, next) => {
 const RELEASES_URL = "https://api.github.com/repos/lephorx/Tessera-Launcher/releases?per_page=5";
 let releasesCache: { at: number; items: unknown[] } = { at: 0, items: [] };
 
-/** The first paragraph of a release's notes, without Markdown marks. */
+/**
+ * A release's notes as one short paragraph: the text without its title line ("Tessera Launcher
+ * 0.6.20", older tags start with it), pictures and Markdown marks. Lists keep only their bold
+ * lead-ins ("Verify your email · Two-step sign-in"); cut at a word near 280 characters.
+ */
 function summary(markdown: string): string {
-  const para = markdown.split(/\r?\n\s*\r?\n/).map((p) => p.trim()).find((p) => p && !p.startsWith("#")) ?? "";
-  return para.replace(/[#*_`>]/g, "").replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").replace(/^\s*-\s+/gm, "• ").slice(0, 280);
+  const plain = (s: string) => s.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").replace(/[#*`>]/g, "").replace(/\s+/g, " ").trim();
+  const parts = markdown
+    .split(/\r?\n\s*\r?\n/)
+    .map((p) => p.trim())
+    .filter((p) => p && !p.startsWith("#") && !/^!\[[^\]]*\]\([^)]+\)$/.test(p) && !/^Tessera Launcher v?\d[\w.-]*$/i.test(p))
+    .map((p) =>
+      /^\s*[-*]\s/.test(p)
+        ? p.split(/\r?\n/).map((l) => (l.match(/^\s*[-*]\s+\*\*(.+?)\*\*/)?.[1] ?? plain(l.replace(/^\s*[-*]\s+/, ""))).replace(/[.:]$/, "")).join(" · ")
+        : plain(p),
+    );
+  let text = "";
+  for (const p of parts) {
+    text = text ? `${text} ${p}` : p;
+    if (text.length >= 120) break;
+  }
+  return text.length > 280 ? `${text.slice(0, 280).replace(/\s+\S*$/, "")}…` : text;
 }
+
+/** The first picture in a release's notes, for the news card. */
+const firstImage = (markdown: string) => markdown.match(/!\[[^\]]*\]\((https:\/\/[^)\s]+)\)/)?.[1] ?? null;
 
 async function releases(): Promise<unknown[]> {
   if (Date.now() - releasesCache.at < 10 * 60_000) return releasesCache.items;
@@ -240,7 +261,7 @@ async function releases(): Promise<unknown[]> {
             title: `Tessera Launcher ${r.tag_name.replace(/^v/, "")}${r.prerelease ? " (beta)" : ""}`,
             body: summary(r.body ?? "") || "A new version of the launcher is out.",
             url: r.html_url,
-            image_url: null,
+            image_url: firstImage(r.body ?? ""),
             published_at: r.published_at,
             release: r.tag_name,
           })),

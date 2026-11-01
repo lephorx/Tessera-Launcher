@@ -24,7 +24,8 @@ jobs:
       - name: Release notes from the tag
         run: |
           git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}" || true
-          git for-each-ref --format='%(contents)' "refs/tags/${GITHUB_REF_NAME}" > notes.md
+          # without a first line that only repeats the release name ("Tessera Launcher 0.6.21")
+          git for-each-ref --format='%(contents)' "refs/tags/${GITHUB_REF_NAME}" | sed '1{/^Tessera Launcher v\{0,1\}[0-9][0-9A-Za-z.-]*$/d;}' | sed '/./,$!d' > notes.md
       - id: create
         uses: actions/github-script@v7
         with:
