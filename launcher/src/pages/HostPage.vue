@@ -4,6 +4,7 @@ import { RouterLink } from "vue-router";
 import { ArrowLeft, CreditCard, Laptop, Network, PlugZap, Sparkles, Wrench } from "lucide-vue-next";
 import AddMachineForm from "@/components/AddMachineForm.vue";
 import HostLocal from "@/components/HostLocal.vue";
+import LinuxInstall from "@/components/LinuxInstall.vue";
 
 type Path = null | "diy" | "here" | "other" | "existing";
 const step = ref<Path>(null);
@@ -71,8 +72,11 @@ const step = ref<Path>(null);
     <div v-else-if="step === 'other'" class="card stack">
       <h2 style="font-size: 17px; font-weight: 700">Set up another machine</h2>
       <ol class="muted" style="margin: 0; padding-left: 18px; line-height: 1.7">
-        <li>On that machine, install Tessera: <span class="mono selectable">curl -fsSL https://lephor.com/cscm/install.sh | sh</span></li>
-        <li>Open its dashboard once and create your account (with an authenticator app).</li>
+        <li>On that machine, install Tessera with the commands for its system. The package installs Docker too and shows a setup code.</li>
+      </ol>
+      <LinuxInstall />
+      <ol class="muted" start="2" style="margin: 0; padding-left: 18px; line-height: 1.7">
+        <li>Open its dashboard once and create your account with the setup code and an authenticator app.</li>
         <li>Not on the same network? Install <b>Tailscale</b> on both computers and sign in to the same account.</li>
         <li>Enter its address below: the LAN IP or the Tailscale name, with port 3000.</li>
       </ol>
