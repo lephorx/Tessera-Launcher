@@ -52,17 +52,6 @@ const statusText = (s: LinkedServer) => {
   return "Offline";
 };
 const syncOf = (s: LinkedServer) => serverSync[`${props.instance.id}:${s.server_id}`];
-const syncing = ref(false);
-
-async function syncNow() {
-  syncing.value = true;
-  try {
-    await api.instances.syncServers(props.instance.id);
-  } finally {
-    syncing.value = false;
-  }
-}
-
 const restarting = ref<number | null>(null);
 
 /** Restarts the server so it installs the mods it got (it's never restarted for you: players may be on). */
@@ -80,6 +69,23 @@ async function restart(s: LinkedServer) {
   } finally {
     restarting.value = null;
   }
+}
+
+const syncingTo = ref<number | null>(null);
+
+/** Sends all of this instance's server-side mods to the server, changed or not, then restarts it if it's running. */
+async function syncAndRestart(s: LinkedServer) {
+  syncingTo.value = s.server_id;
+  try {
+    await api.instances.syncServer(props.instance.id, s.server_id);
+  } catch (e) {
+    // a failed send already said why (the server-sync event)
+    if (syncOf(s)?.state !== "failed") toast.error(errorText(e));
+    return;
+  } finally {
+    syncingTo.value = null;
+  }
+  if (running(s)) await restart(s);
 }
 
 async function join(address: string) {
@@ -158,8 +164,14 @@ const size = (n: number) => (n > 1e9 ? `${(n / 1e9).toFixed(1)} GB` : n > 1e6 ? 
           </span>
           <span v-else class="hint">Gets this instance's server-side mods when you change them; a running server installs them when you restart it.</span>
         </div>
-        <button class="btn btn-ghost btn-icon" title="Send the mods to the server now" aria-label="Send the mods to the server now" :disabled="syncing || syncOf(s)?.state === 'syncing'" @click="syncNow">
-          <RefreshCw :class="{ spin: syncing }" />
+        <button
+          class="btn"
+          :title="running(s) ? `Send all the mods to ${s.name} and restart it to install them` : `Send all the mods to ${s.name}: it installs them when it starts`"
+          :disabled="syncingTo !== null || restarting === s.server_id || syncOf(s)?.state === 'syncing' || s.runtime_status === null"
+          @click="syncAndRestart(s)"
+        >
+          <Loader2 v-if="syncingTo === s.server_id || restarting === s.server_id" class="spin" /><RefreshCw v-else />
+          {{ running(s) ? "Sync and restart" : "Sync mods" }}
         </button>
         <button
           class="btn btn-play"

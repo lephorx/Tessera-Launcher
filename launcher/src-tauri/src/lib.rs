@@ -1652,17 +1652,20 @@ fn schedule_server_sync(app: &AppHandle, id: &str) {
         if SYNC_GENERATION.lock().unwrap().get(&id) != Some(&generation) {
             return; // a newer change will sync
         }
-        sync_servers(&app, &id, false).await;
+        sync_servers(&app, &id, false, None).await;
     });
 }
 
 /// Builds the server pack and sends it to each linked server that doesn't have it yet
-/// (or to all of them with `force`).
-async fn sync_servers(app: &AppHandle, id: &str, force: bool) {
+/// (or to all of them with `force`; with `only`, just that server). Returns, per server it
+/// sent to, whether it's running and still needs a restart, or why sending failed.
+async fn sync_servers(app: &AppHandle, id: &str, force: bool, only: Option<i64>) -> Vec<(i64, Result<bool, String>)> {
     let state = app.state::<AppState>();
-    let Ok(inst) = instances::get(&state.paths, id) else { return };
+    let mut results = Vec::new();
+    let Ok(mut inst) = instances::get(&state.paths, id) else { return results };
+    inst.servers.retain(|s| only.is_none_or(|o| s.server_id == o));
     if inst.servers.is_empty() {
-        return;
+        return results;
     }
     let emit = |server_id: i64, st: &str, message: Option<String>| {
         let _ = app.emit("server-sync", ServerSyncEvent { instance: id, server_id, state: st, message, needs_restart: false });
@@ -1672,8 +1675,9 @@ async fn sync_servers(app: &AppHandle, id: &str, force: bool) {
         Err(e) => {
             for s in &inst.servers {
                 emit(s.server_id, "failed", Some(format!("{e:#}")));
+                results.push((s.server_id, Err(format!("{e:#}"))));
             }
-            return;
+            return results;
         }
     };
     let hash = serverpack::fingerprint(&built.bytes).ok();
@@ -1702,16 +1706,31 @@ async fn sync_servers(app: &AppHandle, id: &str, force: bool) {
                     "server-sync",
                     ServerSyncEvent { instance: id, server_id: linked.server_id, state: "synced", message: Some(format!("{} got the new mods. {note}", linked.name)), needs_restart: sent.needs_restart },
                 );
+                results.push((linked.server_id, Ok(sent.needs_restart)));
             }
-            Err(e) => emit(linked.server_id, "failed", Some(format!("{e:#}"))),
+            Err(e) => {
+                emit(linked.server_id, "failed", Some(format!("{e:#}")));
+                results.push((linked.server_id, Err(format!("{e:#}"))));
+            }
         }
     }
+    results
 }
 
 #[tauri::command]
 async fn sync_instance_servers(app: AppHandle, id: String) -> CmdResult<()> {
-    sync_servers(&app, &id, true).await;
+    sync_servers(&app, &id, true, None).await;
     Ok(())
+}
+
+/// Sends all of the instance's server-side mods to one linked server, changed or not.
+/// Ok(true): it's running and installs them once restarted.
+#[tauri::command]
+async fn sync_instance_server(app: AppHandle, id: String, server_id: i64) -> CmdResult<bool> {
+    match sync_servers(&app, &id, true, Some(server_id)).await.pop() {
+        Some((_, result)) => result,
+        None => Err("That server isn't linked to this instance anymore".into()),
+    }
 }
 
 #[derive(Serialize)]
@@ -2168,6 +2187,7 @@ pub fn run() {
             friend_remove,
             news,
             sync_instance_servers,
+            sync_instance_server,
             skins_list,
             skins_add,
             skins_update,

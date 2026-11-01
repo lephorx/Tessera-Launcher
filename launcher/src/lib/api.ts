@@ -616,6 +616,8 @@ export const api = {
     /** The game's multiplayer server list. */
     serverList: (id: string) => call<ServerEntry[]>("server_list", { id }),
     syncServers: (id: string) => call<void>("sync_instance_servers", { id }),
+    /** All the server-side mods to one linked server; true: it's running and needs a restart to install them. */
+    syncServer: (id: string, serverId: number) => call<boolean>("sync_instance_server", { id, serverId }),
     stop: (id: string) => call<void>("stop_instance", { id }),
   },
   groups: {
