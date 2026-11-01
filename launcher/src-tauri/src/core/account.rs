@@ -23,8 +23,26 @@ pub const AUTH_URL: &str = match option_env!("TESSERA_AUTH_URL") {
 };
 pub const API_URL: &str = match option_env!("TESSERA_API_URL") {
     Some(u) => u,
-    None => "https://br-rapid-thunder-b9spxx3v-api.compute.c-7.eu-central-1.aws.neon.tech/v1",
+    None => "https://api.tesseralauncher.com/v1",
 };
+/// The same API as a Neon Function, same database: used when the home server behind
+/// api.tesseralauncher.com can't be reached.
+const FALLBACK_API_URL: &str = "https://br-rapid-thunder-b9spxx3v-api.compute.c-7.eu-central-1.aws.neon.tech/v1";
+
+/// Sends a request built for `API_URL`, and again for the fallback when the home server is
+/// down: no connection, or Cloudflare saying the tunnel is gone (502/503/530). Not after a
+/// timeout or a 504: the server may have done it already, and a share upload mustn't run twice.
+pub async fn send(build: impl Fn(&str) -> reqwest::RequestBuilder) -> Result<reqwest::Response> {
+    let down = |r: &reqwest::Result<reqwest::Response>| match r {
+        Ok(res) => matches!(res.status().as_u16(), 502 | 503 | 530),
+        Err(e) => e.is_connect(),
+    };
+    let mut res = build(API_URL).send().await;
+    if API_URL != FALLBACK_API_URL && option_env!("TESSERA_API_URL").is_none() && down(&res) {
+        res = build(FALLBACK_API_URL).send().await;
+    }
+    res.map_err(|e| anyhow!("Can't reach Tessera: {}", e.without_url()))
+}
 /// Neon Auth only accepts requests from trusted origins; local origins are trusted by default.
 const ORIGIN: &str = "http://localhost";
 
@@ -306,12 +324,12 @@ pub async fn change_email(client: &reqwest::Client, email: &str, password: &str,
     if !super::limits::login_allowed("tessera-account") {
         bail!("Too many attempts. Wait a minute and try again.");
     }
-    let res = client
-        .post(format!("{API_URL}/email/change"))
-        .json(&serde_json::json!({ "email": email.trim(), "password": password, "new_email": new_email.trim() }))
-        .send()
-        .await
-        .map_err(|e| anyhow!("Can't reach Tessera: {}", e.without_url()))?;
+    let res = send(|base| {
+        client
+            .post(format!("{base}/email/change"))
+            .json(&serde_json::json!({ "email": email.trim(), "password": password, "new_email": new_email.trim() }))
+    })
+    .await?;
     let status = res.status();
     let body: Value = res.json().await.unwrap_or(Value::Null);
     if !status.is_success() {
@@ -426,11 +444,8 @@ pub async fn sign_up(client: &reqwest::Client, email: &str, invite: &str, userna
         bail!("A parent or guardian has to agree to your account.");
     }
     let code = invite_code(invite)?;
-    let check: Value = client
-        .get(format!("{API_URL}/invites/{code}"))
-        .send()
-        .await
-        .map_err(|e| anyhow!("Can't reach Tessera: {}", e.without_url()))?
+    let check: Value = send(|base| client.get(format!("{base}/invites/{code}")))
+        .await?
         .json()
         .await
         .unwrap_or(Value::Null);
@@ -539,19 +554,23 @@ pub async fn api(client: &reqwest::Client, method: reqwest::Method, path: &str, 
         bail!("That isn't a valid link or code");
     }
     let jwt = token(client).await?;
-    let mut req = client.request(method, format!("{API_URL}{path}")).bearer_auth(jwt).timeout(Duration::from_secs(120));
-    if let Some(d) = device() {
-        req = req.header("x-tessera-device", d);
-    }
-    if let Some(h) = session_hash() {
-        req = req.header("x-tessera-session", h);
-    }
-    if let Some(j) = json {
-        req = req.json(&j);
-    } else if let Some(b) = bytes {
-        req = req.header("content-type", "application/zip").body(b);
-    }
-    let res = req.send().await.map_err(|e| anyhow!("Can't reach Tessera: {}", e.without_url()))?;
+    let (device, session) = (device(), session_hash());
+    let res = send(|base| {
+        let mut req = client.request(method.clone(), format!("{base}{path}")).bearer_auth(&jwt).timeout(Duration::from_secs(120));
+        if let Some(d) = &device {
+            req = req.header("x-tessera-device", d);
+        }
+        if let Some(h) = &session {
+            req = req.header("x-tessera-session", h);
+        }
+        if let Some(j) = &json {
+            req = req.json(j);
+        } else if let Some(b) = &bytes {
+            req = req.header("content-type", "application/zip").body(b.clone());
+        }
+        req
+    })
+    .await?;
     let status = res.status();
     let body: Value = res.json().await.unwrap_or(Value::Null);
     if !status.is_success() {

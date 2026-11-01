@@ -1391,13 +1391,9 @@ async fn export_debug(state: State<'_, AppState>, path: String) -> CmdResult<()>
 /// Launcher news; public, no sign-in needed.
 #[tauri::command]
 async fn news(state: State<'_, AppState>) -> CmdResult<Value> {
-    let res = state
-        .client
-        .get(format!("{}/news", account::API_URL))
-        .timeout(std::time::Duration::from_secs(15))
-        .send()
+    let res = account::send(|base| state.client.get(format!("{base}/news")).timeout(std::time::Duration::from_secs(15)))
         .await
-        .map_err(|e| format!("Can't reach Tessera: {}", e.without_url()))?;
+        .map_err(err)?;
     if !res.status().is_success() {
         return Err("Couldn't load the news".into());
     }
