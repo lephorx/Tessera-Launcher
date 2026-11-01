@@ -35,6 +35,15 @@ create table if not exists share_members (
 );
 create index if not exists share_members_user_idx on share_members (user_id);
 
+-- Shared packs are invites (2026-11-01): a friend added to a pack gets it once they accept.
+-- Everyone on a pack before then had it already, so they count as accepted.
+do $$ begin
+  if not exists (select 1 from information_schema.columns where table_name = 'share_members' and column_name = 'accepted_at') then
+    alter table share_members add column accepted_at timestamptz;
+    update share_members set accepted_at = added_at;
+  end if;
+end $$;
+
 -- Friend requests and friendships. One row per pair and direction asked; accepted = friends.
 create table if not exists friendships (
   requester_id uuid not null references neon_auth."user"(id) on delete cascade,

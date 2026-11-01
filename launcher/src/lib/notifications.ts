@@ -29,7 +29,7 @@ export async function refreshNotices() {
     for (const n of fresh.slice(0, 3)) {
       if (n.kind === "friend_request") toast.info(`${n.username} sent you a friend request`);
       else if (n.kind === "friend_accepted") toast.success(`${n.username} accepted your friend request`);
-      else toast.info(`${n.username} shared ${n.name} with you`);
+      else toast.info(`${n.username} invited you to ${n.name}`);
     }
     const changed = !known || known.size !== keys.size || fresh.length > 0;
     known = keys;

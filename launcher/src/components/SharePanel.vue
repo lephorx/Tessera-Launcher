@@ -233,6 +233,7 @@ async function transfer() {
           <div v-for="m in share.members ?? []" :key="m.user_id" class="row member">
             <PlayerHead :name="m.username" :size="28" />
             <span style="flex: 1; font-weight: 600" class="ellipsis">{{ m.username }}</span>
+            <span v-if="m.pending" class="hint" title="They haven't accepted the invite yet">Invited</span>
             <select
               class="select role"
               :value="m.role ?? 'viewer'"
@@ -242,7 +243,15 @@ async function transfer() {
               <option value="viewer">Can play</option>
               <option value="editor">Can add content</option>
             </select>
-            <button class="btn btn-ghost btn-icon btn-sm" :title="`Make ${m.username} the owner`" :aria-label="`Make ${m.username} the owner`" @click="transferTo = m"><Crown /></button>
+            <button
+              class="btn btn-ghost btn-icon btn-sm"
+              :disabled="m.pending"
+              :title="m.pending ? `${m.username} has to accept the invite first` : `Make ${m.username} the owner`"
+              :aria-label="`Make ${m.username} the owner`"
+              @click="transferTo = m"
+            >
+              <Crown />
+            </button>
             <button class="btn btn-ghost btn-icon btn-sm" :title="`Remove ${m.username}`" :aria-label="`Remove ${m.username}`" @click="removing = m"><X /></button>
           </div>
         </div>

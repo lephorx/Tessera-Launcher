@@ -1,15 +1,16 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRouter } from "vue-router";
-import { ArrowDownUp, Blocks, Download, Filter, FolderPlus, LayoutGrid, Loader2, Plus, Search, Trash2, X } from "lucide-vue-next";
+import { ArrowDownUp, Blocks, Check, Download, Filter, FolderPlus, LayoutGrid, Loader2, Plus, Search, Trash2, X } from "lucide-vue-next";
 import AppDialog from "@/components/AppDialog.vue";
 import CreateInstanceDialog from "@/components/CreateInstanceDialog.vue";
 import LibraryTile from "@/components/LibraryTile.vue";
-import { api, type Instance, type Loader, type Share } from "@/lib/api";
+import { api, type Instance, type Loader, type Share, type ShareInvite } from "@/lib/api";
 import { account, loadAccount } from "@/lib/account";
 import { LOADERS, LOADER_ORDER } from "@/lib/format";
 import { errorText, toast } from "@/lib/toast";
 import { FRIENDS_CHANGED } from "@/lib/notifications";
+import { acceptInvite, declineInvite } from "@/lib/shareInvites";
 
 const router = useRouter();
 const instances = ref<Instance[] | null>(null);
@@ -184,6 +185,20 @@ async function deleteSelected() {
 // ── shared with me ──
 const received = ref<Share[]>([]);
 const joining = ref<string | null>(null);
+// packs friends invited me to: nothing is installed until I accept
+const invites = ref<ShareInvite[]>([]);
+const answering = ref<string | null>(null);
+
+async function answer(s: ShareInvite, accept: boolean) {
+  answering.value = s.code;
+  try {
+    if (accept) await acceptInvite(router, s.code, s.name);
+    else await declineInvite(s.code, s.name);
+    await loadReceived();
+  } finally {
+    answering.value = null;
+  }
+}
 
 async function join(s: Share) {
   joining.value = s.code;
@@ -207,12 +222,17 @@ onMounted(async () => {
   window.addEventListener("keydown", onKey);
   document.addEventListener("mousedown", closeMenus);
   if (!account.loaded) await loadAccount();
-  if (account.me) received.value = await api.share.received().catch(() => []);
+  await loadReceived();
   // a friend shared a pack: it shows up without reopening the Library
   window.addEventListener(FRIENDS_CHANGED, loadReceived);
 });
 async function loadReceived() {
-  if (account.me) received.value = await api.share.received().catch(() => received.value);
+  if (!account.me) return;
+  [received.value, invites.value] = await Promise.all([
+    api.share.received().catch(() => received.value),
+    // older APIs have no invites: then there's nothing to answer
+    api.share.invites().catch(() => invites.value),
+  ]);
 }
 onUnmounted(() => {
   window.removeEventListener(FRIENDS_CHANGED, loadReceived);
@@ -313,6 +333,26 @@ onUnmounted(() => {
         </div>
         <p v-else class="hint">Empty. Select instances and choose <b>Add to group</b>.</p>
       </section>
+    </template>
+
+    <template v-if="invites.length">
+      <h2 class="section-title">Invites</h2>
+      <div class="grid">
+        <div v-for="s in invites" :key="s.code" class="card stack">
+          <div style="font-weight: 700; font-size: 16px">{{ s.name }}</div>
+          <div class="row" style="flex-wrap: wrap">
+            <span class="chip" :style="{ color: LOADERS[s.loader].color }">{{ LOADERS[s.loader].label }}</span>
+            <span class="chip num">{{ s.game_version }}</span>
+            <span class="hint">{{ s.owner ?? "A friend" }} invited you{{ s.role === "editor" ? " to add content" : "" }}</span>
+          </div>
+          <div class="row" style="gap: 8px">
+            <button class="btn btn-primary" :disabled="answering !== null || joining !== null" @click="answer(s, true)">
+              <Loader2 v-if="answering === s.code" class="spin" /><Check v-else /> Accept and install
+            </button>
+            <button class="btn" :disabled="answering !== null" @click="answer(s, false)"><X /> Decline</button>
+          </div>
+        </div>
+      </div>
     </template>
 
     <template v-if="received.length">

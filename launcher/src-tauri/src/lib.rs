@@ -1081,6 +1081,29 @@ async fn shares_received(state: State<'_, AppState>) -> CmdResult<Value> {
     account::api(&state.client, reqwest::Method::GET, "/shares/received", None, None).await.map_err(err)
 }
 
+/// Packs friends invited me to that I haven't answered yet.
+#[tauri::command]
+async fn shares_invites(state: State<'_, AppState>) -> CmdResult<Value> {
+    account::api(&state.client, reqwest::Method::GET, "/shares/invites", None, None).await.map_err(err)
+}
+
+/// Takes an invite to a shared pack: it can be installed after this.
+#[tauri::command]
+async fn share_accept(state: State<'_, AppState>, code: String) -> CmdResult<()> {
+    let code = account::share_code(&code).map_err(err)?;
+    account::api(&state.client, reqwest::Method::POST, &format!("/shares/{code}/accept"), None, None).await.map_err(err)?;
+    Ok(())
+}
+
+/// Says no to an invite to a shared pack.
+#[tauri::command]
+async fn share_decline(state: State<'_, AppState>, code: String) -> CmdResult<()> {
+    let code = account::share_code(&code).map_err(err)?;
+    let me = account::current(&state.client).await.ok_or("Sign in to your Tessera account first.")?;
+    account::api(&state.client, reqwest::Method::DELETE, &format!("/shares/{code}/members/{}", me.id), None, None).await.map_err(err)?;
+    Ok(())
+}
+
 // ── friends and news ──
 
 /// The bell: friend requests, accepted requests and packs friends shared with me.
@@ -1930,6 +1953,9 @@ pub fn run() {
             share_remove_friend,
             share_set_expiry,
             shares_received,
+            shares_invites,
+            share_accept,
+            share_decline,
             share_join,
             share_member_status,
             share_sync_now,

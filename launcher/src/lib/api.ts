@@ -153,10 +153,11 @@ export interface Skins {
 
 /** One entry in the bell. */
 export interface Notice {
-  kind: "friend_request" | "friend_accepted" | "share_added";
+  /** share_invite: waiting for an answer; share_added is what older APIs sent */
+  kind: "friend_request" | "friend_accepted" | "share_invite" | "share_added";
   user_id: string;
   username: string;
-  /** share_added: the pack */
+  /** share_invite: the pack */
   code: string | null;
   name: string | null;
   at: string;
@@ -189,7 +190,14 @@ export interface Share {
   expires_at: string | null;
   owner: string | null;
   link?: string;
-  members?: { user_id: string; username: string; role: ShareRole }[];
+  /** pending: invited, hasn't accepted yet */
+  members?: { user_id: string; username: string; role: ShareRole; pending?: boolean }[];
+}
+
+/** A pack a friend invited me to: accept to install it, or decline. */
+export interface ShareInvite extends Share {
+  role: ShareRole;
+  invited_at: string;
 }
 
 export type ShareRole = "viewer" | "editor";
@@ -579,6 +587,9 @@ export const api = {
     syncNow: (id: string) => call<void>("share_sync_now", { id }),
     setExpiry: (code: string, days: number | null) => call<unknown>("share_set_expiry", { code, days }),
     received: () => call<{ shares: Share[] }>("shares_received").then((r) => r.shares),
+    invites: () => call<{ invites: ShareInvite[] }>("shares_invites").then((r) => r.invites),
+    accept: (code: string) => call<void>("share_accept", { code }),
+    decline: (code: string) => call<void>("share_decline", { code }),
     join: (link: string) => call<Instance>("share_join", { link }),
   },
   notifications: {

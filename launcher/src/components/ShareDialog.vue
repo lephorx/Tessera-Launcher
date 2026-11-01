@@ -57,7 +57,7 @@ async function add() {
       await api.share.addFriend(props.share.code, f.username, role);
       names.push(f.username);
     }
-    toast.success(`Shared with ${names.join(", ")}`);
+    toast.success(`Invited ${names.join(", ")}. They get it once they accept.`);
     emit("changed");
     emit("close");
   } catch (e) {
@@ -72,7 +72,7 @@ async function add() {
 <template>
   <AppDialog :title="`Share ${title}`" :width="500" @close="emit('close')">
     <div class="stack" style="gap: 14px">
-      <p class="hint" style="margin: 0">Pick friends to share it with: {{ onIt.size }} of {{ MAX_MEMBERS }} so far. They get the same mods and settings, and your changes.</p>
+      <p class="hint" style="margin: 0">Pick friends to share it with: {{ onIt.size }} of {{ MAX_MEMBERS }} so far. Each gets an invite; once they accept, they get the same mods and settings, and your changes.</p>
       <div v-if="friends && friends.length" class="input-icon"><Search /><input v-model="query" class="input" placeholder="Search friends" aria-label="Search friends" /></div>
       <div class="inset stack picker">
         <div v-if="!friends" class="empty"><Loader2 class="spin" /></div>

@@ -14,10 +14,13 @@
  *   PUT    /v1/shares/:code       .tapack body  upload a newer version (owner, or an editor: same
  *                                               Minecraft and loader versions only)
  *   GET    /v1/shares/mine                      what I share, with friends
- *   GET    /v1/shares/received                  what friends share with me
+ *   GET    /v1/shares/received                  packs friends share with me (invites I accepted)
+ *   GET    /v1/shares/invites                   packs friends invited me to, not answered yet
+ *   POST   /v1/shares/:code/accept              take the invite: the pack is mine to install now
  *   PATCH  /v1/shares/:code       {expires_in_days: 1|7|30|null}
  *   DELETE /v1/shares/:code
- *   POST   /v1/shares/:code/members   {username, role?}   friends only, at most 10 per pack
+ *   POST   /v1/shares/:code/members   {username, role?}   invite a friend (at most 10 per pack); they
+ *                                               accept first, declining is DELETE …/members/<me>
  *   PATCH  /v1/shares/:code/members/:userId   {role: viewer|editor}
  *   DELETE /v1/shares/:code/members/:userId   owner removes a friend, or a friend leaves
  *   POST   /v1/shares/:code/transfer  {user_id}  hand the share to a friend; you stay as editor
@@ -535,10 +538,10 @@ app.get("/me/export", async (c) => {
          email_friends, email_shares, two_factor_email
        from profiles where user_id = $1`),
     q(`select s.code, s.name, s.game_version, s.loader, s.loader_version, s.size_bytes, s.created_at, s.updated_at, s.expires_at, s.revision,
-         coalesce((select json_agg(json_build_object('username', mp.username, 'role', m.role, 'added_at', m.added_at) order by mp.username)
+         coalesce((select json_agg(json_build_object('username', mp.username, 'role', m.role, 'added_at', m.added_at, 'accepted_at', m.accepted_at) order by mp.username)
                    from share_members m join profiles mp on mp.user_id = m.user_id where m.code = s.code), '[]') as members
        from shares s where s.owner_id = $1 order by s.created_at`),
-    q(`select s.code, s.name, p.username as owner, m.role, m.added_at
+    q(`select s.code, s.name, p.username as owner, m.role, m.added_at, m.accepted_at
        from share_members m join shares s on s.code = m.code left join profiles p on p.user_id = s.owner_id
        where m.user_id = $1 order by m.added_at`),
     q(`select p.username, f.status, case when f.requester_id = $1 then 'sent' else 'received' end as direction, f.created_at
@@ -650,7 +653,7 @@ async function owned(c: Context<Env>) {
 async function access(c: Context<Env>) {
   const { rows } = await pool.query(
     `select s.*, case when s.owner_id = $2 then 'owner' else m.role end as role
-     from shares s left join share_members m on m.code = s.code and m.user_id = $2 where s.code = $1`,
+     from shares s left join share_members m on m.code = s.code and m.user_id = $2 and m.accepted_at is not null where s.code = $1`,
     [c.req.param("code"), c.var.userId],
   );
   return rows[0] ?? null;
@@ -698,7 +701,7 @@ app.get("/shares/sync", async (c) => {
     `select s.code, s.revision, s.updated_at, (s.updated_by = $2) as mine, up.username as updated_by,
        case when s.owner_id = $2 then 'owner' else m.role end as role
      from shares s
-     left join share_members m on m.code = s.code and m.user_id = $2
+     left join share_members m on m.code = s.code and m.user_id = $2 and m.accepted_at is not null
      left join profiles up on up.user_id = s.updated_by
      where s.code = any($1) and (s.owner_id = $2 or m.user_id is not null)`,
     [codes, c.var.userId],
@@ -709,7 +712,7 @@ app.get("/shares/sync", async (c) => {
 app.get("/shares/mine", async (c) => {
   const { rows } = await pool.query(
     `select ${SHARE_COLUMNS},
-       coalesce((select json_agg(json_build_object('user_id', m.user_id, 'username', mp.username, 'role', m.role) order by mp.username)
+       coalesce((select json_agg(json_build_object('user_id', m.user_id, 'username', mp.username, 'role', m.role, 'pending', m.accepted_at is null) order by mp.username)
                  from share_members m join profiles mp on mp.user_id = m.user_id where m.code = s.code), '[]') as members
      from shares s left join profiles p on p.user_id = s.owner_id
      where s.owner_id = $1 order by s.updated_at desc`,
@@ -721,16 +724,33 @@ app.get("/shares/mine", async (c) => {
 app.get("/shares/received", async (c) => {
   const { rows } = await pool.query(
     `select ${SHARE_COLUMNS}, m.role from share_members m join shares s on s.code = m.code
-     left join profiles p on p.user_id = s.owner_id where m.user_id = $1 order by s.updated_at desc`,
+     left join profiles p on p.user_id = s.owner_id where m.user_id = $1 and m.accepted_at is not null order by s.updated_at desc`,
     [c.var.userId],
   );
   return c.json({ shares: rows });
 });
 
+app.get("/shares/invites", async (c) => {
+  const { rows } = await pool.query(
+    `select ${SHARE_COLUMNS}, m.role, m.added_at as invited_at from share_members m join shares s on s.code = m.code
+     left join profiles p on p.user_id = s.owner_id where m.user_id = $1 and m.accepted_at is null order by m.added_at desc`,
+    [c.var.userId],
+  );
+  return c.json({ invites: rows });
+});
+
+app.post("/shares/:code/accept", async (c) => {
+  const { rows } = await pool.query(
+    `update share_members set accepted_at = coalesce(accepted_at, now()) where code = $1 and user_id = $2 returning role`,
+    [c.req.param("code"), c.var.userId],
+  );
+  return rows[0] ? c.json({ ok: true, role: rows[0].role }) : err(c, 404, "not_found", "That invite is gone. Its owner may have taken it back.");
+});
+
 app.get("/shares/:code", async (c) => {
   const { rows } = await pool.query(
     `select ${SHARE_COLUMNS}, s.loader_version,
-       case when s.owner_id = $2 then 'owner' else (select role from share_members where code = s.code and user_id = $2) end as role
+       case when s.owner_id = $2 then 'owner' else (select role from share_members where code = s.code and user_id = $2 and accepted_at is not null) end as role
      from shares s left join profiles p on p.user_id = s.owner_id where s.code = $1`,
     [c.req.param("code"), c.var.userId],
   );
@@ -814,10 +834,10 @@ app.post("/shares/:code/transfer", async (c) => {
   const db = await pool.connect();
   try {
     await db.query("begin");
-    const { rowCount } = await db.query(`delete from share_members where code = $1 and user_id = $2`, [share.code, body.data.user_id]);
+    const { rowCount } = await db.query(`delete from share_members where code = $1 and user_id = $2 and accepted_at is not null`, [share.code, body.data.user_id]);
     if (!rowCount) {
       await db.query("rollback");
-      return err(c, 404, "not_member", "Add them to the share first, then make them the owner.");
+      return err(c, 404, "not_member", "They have to accept the invite first, then you can make them the owner.");
     }
     const { rows: count } = await db.query(`select count(*)::int as n from shares where owner_id = $1`, [body.data.user_id]);
     if (count[0].n >= MAX_SHARES_PER_USER) {
@@ -825,7 +845,11 @@ app.post("/shares/:code/transfer", async (c) => {
       return err(c, 409, "too_many_shares", "They already own 20 shares.");
     }
     await db.query(`update shares set owner_id = $2, updated_at = updated_at where code = $1`, [share.code, body.data.user_id]);
-    await db.query(`insert into share_members (code, user_id, role) values ($1, $2, 'editor') on conflict (code, user_id) do update set role = 'editor'`, [share.code, c.var.userId]);
+    await db.query(
+      `insert into share_members (code, user_id, role, accepted_at) values ($1, $2, 'editor', now())
+       on conflict (code, user_id) do update set role = 'editor', accepted_at = coalesce(share_members.accepted_at, now())`,
+      [share.code, c.var.userId],
+    );
     await db.query("commit");
   } catch (e) {
     await db.query("rollback").catch(() => {});
@@ -838,14 +862,14 @@ app.post("/shares/:code/transfer", async (c) => {
 
 app.get("/shares/:code/download", async (c) => {
   const { rows } = await pool.query(
-    `select s.*, (s.owner_id = $2 or exists (select 1 from share_members m where m.code = s.code and m.user_id = $2)) as invited
+    `select s.*, (s.owner_id = $2 or exists (select 1 from share_members m where m.code = s.code and m.user_id = $2 and m.accepted_at is not null)) as invited
      from shares s where s.code = $1`,
     [c.req.param("code"), c.var.userId],
   );
   const share = rows[0];
   if (!share) return err(c, 404, "not_found", "That shared pack doesn't exist.");
   // shared packs are for the owner's friends they added: a link alone doesn't open it
-  if (!share.invited) return err(c, 403, "friends_only", "This pack is shared with friends only. Ask its owner to add you.");
+  if (!share.invited) return err(c, 403, "friends_only", "This pack is shared with friends only. Ask its owner to invite you, then accept the invite.");
   const url = await files.url(share.object_key, { expiresIn: 600 });
   return c.json({ url, size_bytes: share.size_bytes });
 });
@@ -982,7 +1006,7 @@ function notify(to: string, n: Notice) {
         ? { subject: `${n.from} wants to be friends on Tessera`, title: `${n.from} wants to be friends`, lines: [`${n.from} sent you a friend request on Tessera.`, "Open the launcher to accept or decline it. Friends can share modpacks with each other."] }
         : n.kind === "friend_accepted"
           ? { subject: `${n.from} accepted your friend request`, title: `You and ${n.from} are friends now`, lines: [`${n.from} accepted your friend request on Tessera.`, "You can share packs with each other from the launcher."] }
-          : { subject: `${n.from} shared "${n.pack}" with you`, title: `${n.from} shared a pack with you`, lines: [`${n.from} added you to their pack "${n.pack}" on Tessera.`, "Open the launcher to install it. It stays in sync when they change it."] };
+          : { subject: `${n.from} invited you to "${n.pack}"`, title: `${n.from} invited you to a pack`, lines: [`${n.from} wants to share their pack "${n.pack}" with you on Tessera.`, "Open the launcher to accept or decline. Once you accept, you can install it, and it stays in sync when they change it."] };
     await sendMail({ to: rows[0].email, ...mail, action: { label: "Open Tessera", url: `${SITE}/account` }, unsubscribe });
   })().catch((e) => console.error("notify", n.kind, e));
 }
@@ -1291,9 +1315,9 @@ app.get("/notifications", async (c) => {
          from friendships f join profiles p on p.user_id = f.addressee_id
          where f.requester_id = $1 and f.status = 'accepted' and f.accepted_at > now() - interval '14 days'
          union all
-         select 'share_added', s.owner_id, p.username, s.code, s.name, m.added_at
+         select 'share_invite', s.owner_id, p.username, s.code, s.name, m.added_at
          from share_members m join shares s on s.code = m.code join profiles p on p.user_id = s.owner_id
-         where m.user_id = $1 and m.added_at > now() - interval '14 days'
+         where m.user_id = $1 and m.accepted_at is null
        ) n order by at desc limit 30`,
       [c.var.userId],
     ),

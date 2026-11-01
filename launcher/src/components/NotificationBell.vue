@@ -5,9 +5,10 @@ import { Bell, Check, Package, UserCheck, UserPlus, X } from "lucide-vue-next";
 import { api, type Notice } from "@/lib/api";
 import { relative } from "@/lib/format";
 import { markSeen, notices, refreshNotices } from "@/lib/notifications";
+import { acceptInvite, declineInvite } from "@/lib/shareInvites";
 import { errorText, toast } from "@/lib/toast";
 
-/** The bell in the top bar: friend requests (accept or decline right here), accepted requests and shared packs. */
+/** The bell in the top bar: friend requests and pack invites (accept or decline right here), and accepted requests. */
 const router = useRouter();
 const open = ref(false);
 const busy = ref<string | null>(null);
@@ -37,6 +38,19 @@ async function answer(n: Notice, accept: boolean) {
   }
 }
 
+async function answerInvite(n: Notice, accept: boolean) {
+  if (!n.code) return;
+  busy.value = n.code;
+  try {
+    if (accept) {
+      open.value = false;
+      await acceptInvite(router, n.code, n.name);
+    } else await declineInvite(n.code, n.name);
+  } finally {
+    busy.value = null;
+  }
+}
+
 function openShared() {
   open.value = false;
   void router.push("/library");
@@ -59,11 +73,16 @@ const head = (name: string) => `https://mc-heads.net/avatar/${encodeURIComponent
         <div class="stack" style="gap: 2px; flex: 1; min-width: 0">
           <span v-if="n.kind === 'friend_request'"><UserPlus :size="13" /> <b>{{ n.username }}</b> wants to be friends</span>
           <span v-else-if="n.kind === 'friend_accepted'"><UserCheck :size="13" /> <b>{{ n.username }}</b> accepted your friend request</span>
+          <span v-else-if="n.kind === 'share_invite'"><Package :size="13" /> <b>{{ n.username }}</b> invited you to <b>{{ n.name }}</b></span>
           <span v-else><Package :size="13" /> <b>{{ n.username }}</b> shared <b>{{ n.name }}</b> with you</span>
           <span class="hint">{{ relative(n.at) }}</span>
           <div v-if="n.kind === 'friend_request'" class="row" style="gap: 6px; margin-top: 4px">
             <button class="btn btn-primary btn-sm" :disabled="busy === n.user_id" @click="answer(n, true)"><Check /> Accept</button>
             <button class="btn btn-sm" :disabled="busy === n.user_id" @click="answer(n, false)"><X /> Decline</button>
+          </div>
+          <div v-else-if="n.kind === 'share_invite'" class="row" style="gap: 6px; margin-top: 4px">
+            <button class="btn btn-primary btn-sm" :disabled="busy === n.code" @click="answerInvite(n, true)"><Check /> Accept</button>
+            <button class="btn btn-sm" :disabled="busy === n.code" @click="answerInvite(n, false)"><X /> Decline</button>
           </div>
           <button v-else-if="n.kind === 'share_added'" class="btn btn-sm" style="align-self: flex-start; margin-top: 4px" @click="openShared">Get it in the Library</button>
         </div>
