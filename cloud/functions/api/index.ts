@@ -321,9 +321,10 @@ async function webhookKey(kid: string) {
 }
 
 async function webhookSigned(c: Context, body: string): Promise<boolean> {
-  const sig = c.req.header("x-neon-signature") ?? "";
-  const kid = c.req.header("x-neon-signature-kid") ?? "";
-  const ts = c.req.header("x-neon-timestamp") ?? "";
+  // the website relay renames them: Neon's function gateway drops x-neon-* headers
+  const sig = c.req.header("x-webhook-signature") ?? "";
+  const kid = c.req.header("x-webhook-signature-kid") ?? "";
+  const ts = c.req.header("x-webhook-timestamp") ?? "";
   const [header, middle, signature] = sig.split(".");
   if (!header || middle !== "" || !signature || !kid || !/^\d+$/.test(ts)) return false;
   if (Math.abs(Date.now() - Number(ts)) > 5 * 60_000) return false;
