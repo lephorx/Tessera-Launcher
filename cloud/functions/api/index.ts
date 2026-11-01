@@ -47,6 +47,8 @@
  *   POST   /v1/me/2fa/verify     {code, label?}   sign-in step → {device_token}, good for 30 days
  *   POST   /v1/me/2fa/enable     {code, label?}   turn it on → {device_token} for this device
  *   POST   /v1/me/2fa/disable    {code}           turn it off (forgets every trusted device)
+ *   POST   /v1/me/2fa/auto       {label?}         after verifying the email: turns it on unless
+ *                                          you chose before → {device_token} for this device
  *   GET    /v1/me/2fa/devices                     trusted devices
  *   DELETE /v1/me/2fa/devices                     forget every device but this one
  *
@@ -1040,7 +1042,7 @@ app.post("/me/2fa/enable", async (c) => {
   if (!body.success) return err(c, 400, "wrong_code", "The code is 6 digits.");
   const ok = await takeCode(c.var.userId, "enable", body.data.code);
   if (ok !== true) return codeError(c, ok);
-  await pool.query(`update profiles set two_factor_email = true where user_id = $1`, [c.var.userId]);
+  await pool.query(`update profiles set two_factor_email = true, two_factor_set_at = now() where user_id = $1`, [c.var.userId]);
   // this device stays signed in
   return c.json({ device_token: await trustDevice(c.var.userId, body.data.label), expires_in_days: DEVICE_DAYS });
 });
@@ -1050,9 +1052,25 @@ app.post("/me/2fa/disable", async (c) => {
   if (!body.success) return err(c, 400, "wrong_code", "The code is 6 digits.");
   const ok = await takeCode(c.var.userId, "disable", body.data.code);
   if (ok !== true) return codeError(c, ok);
-  await pool.query(`update profiles set two_factor_email = false where user_id = $1`, [c.var.userId]);
+  await pool.query(`update profiles set two_factor_email = false, two_factor_set_at = now() where user_id = $1`, [c.var.userId]);
   await pool.query(`delete from trusted_devices where user_id = $1`, [c.var.userId]);
   return c.json({ ok: true });
+});
+
+// A verified email turns two-step sign-in on, unless the member already chose. Off means the
+// password alone gets in anyway, so trusting the caller's device gives nothing away.
+app.post("/me/2fa/auto", async (c) => {
+  const body = z.object({ label: z.string().trim().max(60).optional() }).safeParse(await c.req.json().catch(() => ({})));
+  const { rows } = await pool.query(
+    `update profiles p set two_factor_email = true, two_factor_set_at = now()
+     from neon_auth."user" u
+     where p.user_id = $1 and u.id = p.user_id and u."emailVerified" and p.two_factor_set_at is null and not p.two_factor_email
+     returning 1`,
+    [c.var.userId],
+  );
+  if (!rows[0]) return c.json({ ok: true, turned_on: false });
+  const token = await trustDevice(c.var.userId, body.success ? body.data.label : undefined);
+  return c.json({ ok: true, turned_on: true, device_token: token, expires_in_days: DEVICE_DAYS });
 });
 
 app.get("/me/2fa/devices", async (c) => {

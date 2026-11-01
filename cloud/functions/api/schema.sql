@@ -141,6 +141,9 @@ create table if not exists email_log (
 -- after entering a code sent to the account's email; then it's trusted for 30 days.
 -- Codes and device tokens are stored as SHA-256 hashes only.
 alter table profiles add column if not exists two_factor_email boolean not null default false;
+-- When the member last turned it on or off themselves (2026-11-01); until then it goes on by
+-- itself once the email is verified (POST /v1/me/2fa/auto).
+alter table profiles add column if not exists two_factor_set_at timestamptz;
 create table if not exists email_codes (
   user_id    uuid not null references neon_auth."user"(id) on delete cascade,
   purpose    text not null check (purpose in ('sign_in', 'enable', 'disable')),

@@ -284,7 +284,17 @@ pub async fn verify_email(client: &reqwest::Client, email: &str, code: &str) -> 
     if session().is_none() {
         bail!("Your email is verified. Sign in with your password.");
     }
+    two_factor_auto(client).await;
     me(client).await
+}
+
+/// A verified email turns two-step sign-in on (unless the member chose before), and this
+/// computer stays trusted. Best effort: without it the account just stays as it was.
+async fn two_factor_auto(client: &reqwest::Client) {
+    let body = api(client, reqwest::Method::POST, "/me/2fa/auto", Some(serde_json::json!({ "label": device_label() })), None).await;
+    if let Some(token) = body.ok().and_then(|b| b["device_token"].as_str().map(String::from)) {
+        let _ = store_device(Some(token));
+    }
 }
 
 /// What this computer calls itself in the list of trusted devices.
@@ -388,6 +398,7 @@ pub async fn redeem(client: &reqwest::Client, invite: &str, username: &str, cons
         body["parental_consent"] = c.parental_consent.into();
     }
     api(client, reqwest::Method::POST, &format!("/invites/{code}/redeem"), Some(body), None).await?;
+    two_factor_auto(client).await;
     Ok(())
 }
 
