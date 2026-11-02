@@ -25,6 +25,8 @@ PLATFORMS = {
     "linux-x86_64-appimage": ".AppImage",
     "linux-x86_64-deb": ".deb",
     "linux-x86_64-rpm": ".rpm",
+    # the Arch package; the launcher asks for this one itself (install_pacman_update)
+    "linux-x86_64-pacman": ".pkg.tar.zst",
 }
 
 

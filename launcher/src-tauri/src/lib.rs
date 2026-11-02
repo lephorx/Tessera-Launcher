@@ -2048,6 +2048,43 @@ async fn docker_status() -> serde_json::Value {
     }
 }
 
+/// The updater's entry for the Arch package in latest.json.
+const PACMAN_TARGET: &str = "linux-x86_64-pacman";
+
+/// Installed with the Arch package: its binary carries no bundle type (the AppImage, .deb
+/// and .rpm do), and the built-in updater only knows those three, so updates go through pacman.
+fn pacman_install() -> bool {
+    cfg!(all(target_os = "linux", not(debug_assertions)))
+        && tauri::utils::platform::bundle_type().is_none()
+        && std::env::var_os("APPIMAGE").is_none()
+}
+
+/// How this launcher updates: "pacman" (install_pacman_update) or "builtin" (the updater plugin).
+#[tauri::command]
+fn update_kind() -> &'static str {
+    if pacman_install() { "pacman" } else { "builtin" }
+}
+
+/// Downloads the new Arch package (signed like every update; the download checks it) and
+/// installs it with pacman, asking for the password through polkit.
+#[tauri::command]
+async fn install_pacman_update(app: AppHandle) -> Result<String, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let update = app.updater_builder().target(PACMAN_TARGET).build().map_err(err)?.check().await.map_err(err)?.ok_or("Tessera Launcher is up to date")?;
+    let manual = format!("Update it in a terminal: sudo pacman -U {}", update.download_url);
+    let bytes = update.download(|_, _| {}, || {}).await.map_err(err)?;
+    let dir = app.path().app_cache_dir().map_err(err)?;
+    std::fs::create_dir_all(&dir).map_err(err)?;
+    let file = dir.join(format!("tessera-launcher-{}-x86_64.pkg.tar.zst", update.version));
+    std::fs::write(&file, bytes).map_err(err)?;
+    let status = tokio::process::Command::new("pkexec").args(["pacman", "-U", "--noconfirm"]).arg(&file).status().await;
+    let _ = std::fs::remove_file(&file);
+    match status {
+        Ok(s) if s.success() => Ok(update.version),
+        _ => Err(manual),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -2197,6 +2234,8 @@ pub fn run() {
             remove_machine,
             machine_request,
             docker_status,
+            update_kind,
+            install_pacman_update,
             host_local_status,
             host_local_install,
             host_local_start,

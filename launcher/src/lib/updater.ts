@@ -2,6 +2,7 @@ import { reactive } from "vue";
 import { getVersion } from "@tauri-apps/api/app";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { invoke } from "@tauri-apps/api/core";
 import { runs } from "./store";
 import { errorText, toast } from "./toast";
 
@@ -12,6 +13,9 @@ import { errorText, toast } from "./toast";
  * is open it checks every 30 minutes and when the window comes back into focus, downloads a
  * new version in the background, and the top bar shows "Reload to update": installing then
  * restarts the launcher, which would close a running game, so that waits for a click.
+ *
+ * The Arch package updates through pacman instead (install_pacman_update): that asks for the
+ * password, so it waits for the click on start too, and downloads only then.
  */
 export const updater = reactive({
   current: "",
@@ -27,6 +31,9 @@ export const updater = reactive({
 let pending: Update | null = null;
 let downloading: Promise<void> | null = null;
 let lastCheck = 0;
+/** "pacman" for the Arch package, else "builtin" */
+let kind: Promise<string> | null = null;
+const updateKind = () => (kind ??= invoke<string>("update_kind").catch(() => "builtin"));
 
 export async function checkForUpdate(manual = false) {
   if (updater.checking || updater.installing) return;
@@ -34,7 +41,8 @@ export async function checkForUpdate(manual = false) {
   lastCheck = Date.now();
   try {
     updater.current ||= await getVersion();
-    const update = await check();
+    const pacman = (await updateKind()) === "pacman";
+    const update = await check(pacman ? { target: "linux-x86_64-pacman" } : undefined);
     if (update && update.version !== pending?.version) {
       pending = update;
       updater.ready = false;
@@ -77,6 +85,11 @@ export async function installUpdate() {
   if (!pending || updater.installing) return;
   updater.installing = true;
   try {
+    if ((await updateKind()) === "pacman") {
+      await invoke("install_pacman_update");
+      await relaunch();
+      return;
+    }
     await download();
     await pending.install();
     await relaunch();
@@ -89,7 +102,7 @@ export async function installUpdate() {
 /** Checks, and gets a new version ready in the background. */
 async function checkAndPrepare() {
   await checkForUpdate();
-  if (pending && !updater.ready) await download().catch(() => {});
+  if (pending && !updater.ready && (await updateKind()) !== "pacman") await download().catch(() => {});
 }
 
 let timer: ReturnType<typeof setInterval> | undefined;
@@ -102,6 +115,7 @@ export async function startUpdateChecks() {
 
   await checkForUpdate();
   // on start nothing is running yet: update straight away
+  if ((await updateKind()) === "pacman") return;
   if (pending && !Object.keys(runs).length) {
     toast.info(`Updating Tessera Launcher to ${pending.version}…`);
     await installUpdate();

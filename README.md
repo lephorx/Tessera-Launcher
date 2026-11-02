@@ -32,6 +32,27 @@ Get the newest version from [Releases](https://github.com/lephorx/Tessera-Launch
 
 The builds aren't signed with an Apple or Microsoft certificate yet. On macOS, right-click the app → **Open** the first time; on Windows, choose **More info → Run anyway**.
 
+### Linux
+
+The easiest way: run this in a terminal. It asks which distribution you use (and suggests the one it detects), then installs the right package:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/lephorx/Tessera-Launcher/main/scripts/install-linux.sh | sh
+```
+
+Or install the package from the [newest release](https://github.com/lephorx/Tessera-Launcher/releases/latest) yourself (64-bit Intel/AMD):
+
+| Distribution | Package | Install |
+| --- | --- | --- |
+| Debian, Ubuntu, Linux Mint, Pop!_OS, Zorin | `.deb` | `sudo apt install ./Tessera.Launcher_<version>_amd64.deb` |
+| Fedora | `.rpm` | `sudo dnf install ./Tessera.Launcher-<version>-1.x86_64.rpm` |
+| RHEL, Rocky Linux, AlmaLinux 10 | `.rpm` | `sudo dnf install epel-release`, then as Fedora (WebKitGTK comes from EPEL) |
+| openSUSE Tumbleweed and Leap | `.rpm` | `sudo zypper install --allow-unsigned-rpm ./Tessera.Launcher-<version>-1.x86_64.rpm` |
+| Arch, Manjaro, EndeavourOS, CachyOS | `.pkg.tar.zst` | `sudo pacman -U ./tessera-launcher-<version>-1-x86_64.pkg.tar.zst` |
+| Anything else (also RHEL 9) | `.AppImage` | `chmod +x` it and run it; needs FUSE 2 (`libfuse2` / `fuse-libs`) |
+
+Every one of them updates itself. The `.deb` and `.rpm` update with your system's package tool, and the Arch package through `pacman -U`; both ask for your password. Remove the launcher with your package manager (`sudo apt remove tessera-launcher`, `sudo dnf remove tessera-launcher`, `sudo pacman -R tessera-launcher`); your instances stay in `~/.local/share/dev.tessera.launcher`.
+
 ## Releasing
 
 Push a version tag; GitHub Actions builds and signs every platform in parallel and publishes the release. Every push to `main` also runs the same release build to keep the build cache warm, so tag builds only recompile the launcher itself. The tag's message becomes the release notes and a post in the launcher's News.

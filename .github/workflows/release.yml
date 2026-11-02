@@ -1,6 +1,7 @@
-# Builds Tessera Launcher for macOS (Apple silicon and Intel), Windows and Linux when a version tag (v1.2.3) is
-# pushed, signs the update files and publishes a GitHub release with latest.json, which
-# the launcher's updater reads. The release notes are the annotated tag's message.
+# Builds Tessera Launcher for macOS (Apple silicon and Intel), Windows and Linux (AppImage, .deb,
+# .rpm and an Arch package) when a version tag (v1.2.3) is pushed, signs the update files and
+# publishes a GitHub release with latest.json, which the launcher's updater reads. The release
+# notes are the annotated tag's message.
 #
 # The release is made as a draft first and only published when every platform built, so
 # launchers never see a new version before their own download is there.
@@ -99,6 +100,20 @@ jobs:
           # parallel builds would overwrite each other's latest.json; publish-release writes it
           includeUpdaterJson: false
           args: --target ${{ matrix.target }}
+
+      # Arch: the .deb's files as a pacman package, signed for the updater like the others
+      - name: Arch package
+        if: matrix.platform == 'ubuntu-22.04'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          deb=$(ls launcher/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb)
+          scripts/arch-package.sh "$deb" "${GITHUB_REF_NAME#v}" arch
+          pkg=$PWD/$(ls arch/*.pkg.tar.zst)
+          pnpm --dir launcher tauri signer sign "$pkg"
+          gh release upload "${GITHUB_REF_NAME}" "$pkg" "$pkg.sig" --clobber -R "${GITHUB_REPOSITORY}"
 
   publish-release:
     needs: [create-release, build]
