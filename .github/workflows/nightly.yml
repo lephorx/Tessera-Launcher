@@ -1,0 +1,180 @@
+# Builds Tessera Launcher Nightly from every push to main: the experimental launcher, installed next to
+# the released one with its own name, icon, data folder and midnight look
+# (launcher/src-tauri/tauri.nightly.conf.json, TESSERA_NIGHTLY). Released versions still come
+# from v* tags (release.yml).
+#
+# Each build is a prerelease "nightly-<run>" with version <next patch>-nightly.<run>, published
+# once every platform built. The "nightly" release only holds latest.json, which Tessera
+# Nightly's updater reads, pointing at the newest build. The last 5 builds are kept.
+#
+# It also saves the release build caches (check.yml used to), so release builds from tags
+# start warm.
+name: Nightly
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["docs/**", "cloud/**", "**/*.md"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# a newer push replaces a build still running (its draft is cleaned up by the next run)
+concurrency:
+  group: nightly
+  cancel-in-progress: true
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.create.outputs.result }}
+      version: ${{ steps.version.outputs.version }}
+      tag: nightly-${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - id: version
+        run: |
+          base=$(node -p 'require("./launcher/package.json").version')
+          next=$(echo "$base" | awk -F. '{ print $1 "." $2 "." $3 + 1 }')
+          echo "version=$next-nightly.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+      - name: Notes (the changes since the last released version)
+        run: |
+          stable=$(git describe --tags --match 'v*' --abbrev=0)
+          {
+            echo "Experimental build of Tessera from ${GITHUB_SHA::7}. It installs next to Tessera Launcher, with its own data and updates. Things may break: for your worlds and servers, use Tessera Launcher."
+            echo
+            echo "Changes since $stable:"
+            git log --no-merges --format='- %s' "$stable..HEAD" | head -40
+          } > notes.md
+      - id: create
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        with:
+          script: |
+            const fs = require("fs");
+            const { owner, repo } = context.repo;
+            // drafts of builds that were replaced before they finished
+            for (const r of await github.paginate(github.rest.repos.listReleases, { owner, repo })) {
+              if (r.draft && r.tag_name.startsWith("nightly-")) await github.rest.repos.deleteRelease({ owner, repo, release_id: r.id });
+            }
+            const { data } = await github.rest.repos.createRelease({
+              owner,
+              repo,
+              tag_name: `nightly-${context.runNumber}`,
+              target_commitish: context.sha,
+              name: "Tessera Launcher Nightly ${{ steps.version.outputs.version }}",
+              body: fs.readFileSync("notes.md", "utf8").trim(),
+              draft: true,
+              prerelease: true,
+            });
+            return data.id;
+
+  build:
+    needs: create-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+          - platform: macos-latest
+            target: x86_64-apple-darwin
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.platform }}
+    # the update-signing key; the environment allows v* tags and main
+    environment: release
+    env:
+      TESSERA_NIGHTLY: "1"
+      VERSION: ${{ needs.create-release.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Linux packages
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: ${{ matrix.target }}
+      # the same cache release.yml restores; only the launcher's own crate differs
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: launcher/src-tauri -> target
+          shared-key: release-${{ matrix.target }}
+
+      - run: pnpm install --frozen-lockfile
+
+      # the nightly version in the app (Cargo) and in the installers (Tauri)
+      - name: Version
+        shell: bash
+        run: |
+          sed -i.bak "3s/^version = \".*\"/version = \"$VERSION\"/" launcher/src-tauri/Cargo.toml && rm launcher/src-tauri/Cargo.toml.bak
+          node -e '
+            const f = "launcher/src-tauri/tauri.nightly.conf.json", fs = require("fs");
+            const c = JSON.parse(fs.readFileSync(f, "utf8"));
+            fs.writeFileSync(f, JSON.stringify({ ...c, version: process.env.VERSION }, null, 2));
+          '
+
+      - uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: launcher
+          tauriScript: pnpm tauri
+          releaseId: ${{ needs.create-release.outputs.release_id }}
+          includeUpdaterJson: false
+          args: --target ${{ matrix.target }} --config src-tauri/tauri.nightly.conf.json
+
+      - name: Arch package
+        if: matrix.platform == 'ubuntu-22.04'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          deb=$(ls launcher/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb)
+          scripts/arch-package.sh "$deb" "$VERSION" arch tessera-launcher-nightly
+          pkg=$PWD/$(ls arch/*.pkg.tar.zst)
+          pnpm --dir launcher tauri signer sign "$pkg"
+          gh release upload "${{ needs.create-release.outputs.tag }}" "$pkg" "$pkg.sig" --clobber -R "${GITHUB_REPOSITORY}"
+
+  publish-release:
+    needs: [create-release, build]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ needs.create-release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Publish the build
+        run: |
+          gh release edit "$TAG" --draft=false --prerelease -R "$GITHUB_REPOSITORY"
+          python3 scripts/updater-json.py "$TAG" "${{ needs.create-release.outputs.version }}" > latest.json
+      # the feed: the "nightly" release (made once), whose latest.json now points at this build
+      - name: Point Tessera Launcher Nightly's updates at it
+        run: |
+          if ! gh release view nightly -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create nightly --prerelease --target "$GITHUB_SHA" -R "$GITHUB_REPOSITORY" \
+              --title "Tessera Launcher Nightly (update feed)" \
+              --notes "Tessera Launcher Nightly reads its updates from here. The builds themselves are the \"Tessera Launcher Nightly …\" prereleases."
+          fi
+          gh release upload nightly latest.json --clobber -R "$GITHUB_REPOSITORY"
+      - name: Keep the last 5 builds
+        run: |
+          gh release list -R "$GITHUB_REPOSITORY" --limit 200 --json tagName,createdAt \
+            --jq '[.[] | select(.tagName | startswith("nightly-"))] | sort_by(.createdAt) | reverse | .[5:] | .[].tagName' |
+          while read -r tag; do gh release delete "$tag" --cleanup-tag --yes -R "$GITHUB_REPOSITORY"; done

@@ -3,6 +3,7 @@
 files, once all platforms have built. Run where `gh` is signed in:
 
     scripts/updater-json.py v0.5.2 > latest.json
+    scripts/updater-json.py nightly-42 0.6.28-nightly.42 > latest.json   (Tessera Launcher Nightly)
 """
 import json
 import subprocess
@@ -30,7 +31,7 @@ PLATFORMS = {
 }
 
 
-def main(tag: str) -> None:
+def main(tag: str, version: str | None = None) -> None:
     info = json.loads(subprocess.check_output(["gh", "release", "view", tag, "-R", REPO, "--json", "body,assets"]))
     names = [a["name"] for a in info["assets"]]
     with tempfile.TemporaryDirectory() as tmp:
@@ -48,7 +49,7 @@ def main(tag: str) -> None:
     if missing:
         sys.exit(f"no signed files for: {', '.join(missing)}")
     print(json.dumps({
-        "version": tag.lstrip("v"),
+        "version": version or tag.lstrip("v"),
         "notes": info["body"],
         "pub_date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "platforms": platforms,
@@ -56,4 +57,4 @@ def main(tag: str) -> None:
 
 
 if __name__ == "__main__":
-    main(sys.argv[1])
+    main(*sys.argv[1:3])

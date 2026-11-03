@@ -2070,12 +2070,12 @@ fn update_kind() -> &'static str {
 #[tauri::command]
 async fn install_pacman_update(app: AppHandle) -> Result<String, String> {
     use tauri_plugin_updater::UpdaterExt;
-    let update = app.updater_builder().target(PACMAN_TARGET).build().map_err(err)?.check().await.map_err(err)?.ok_or("Tessera Launcher is up to date")?;
+    let update = app.updater_builder().target(PACMAN_TARGET).build().map_err(err)?.check().await.map_err(err)?.ok_or(format!("{} is up to date", core::APP_NAME))?;
     let manual = format!("Update it in a terminal: sudo pacman -U {}", update.download_url);
     let bytes = update.download(|_, _| {}, || {}).await.map_err(err)?;
     let dir = app.path().app_cache_dir().map_err(err)?;
     std::fs::create_dir_all(&dir).map_err(err)?;
-    let file = dir.join(format!("tessera-launcher-{}-x86_64.pkg.tar.zst", update.version));
+    let file = dir.join(format!("update-{}-x86_64.pkg.tar.zst", update.version));
     std::fs::write(&file, bytes).map_err(err)?;
     let status = tokio::process::Command::new("pkexec").args(["pacman", "-U", "--noconfirm"]).arg(&file).status().await;
     let _ = std::fs::remove_file(&file);

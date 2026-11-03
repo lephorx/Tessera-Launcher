@@ -1,0 +1,8 @@
+[Unit]
+Description=Install the newest nightly Tessera API build
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/tessera-api-nightly-update

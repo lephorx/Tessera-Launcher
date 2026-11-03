@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tauri dev",
+    "dev:nightly": "TESSERA_NIGHTLY=1 tauri dev --config src-tauri/tauri.nightly.conf.json",
     "build": "tauri build",
     "dev:web": "vite",
     "build:web": "vue-tsc --noEmit && vite build",

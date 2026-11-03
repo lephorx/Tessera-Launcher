@@ -394,8 +394,9 @@ app.get("/shares/:code", async (c, next) => {
   return c.json({ share });
 });
 
-// Public: launcher news, with each launcher release as a post of its own.
-const RELEASES_URL = "https://api.github.com/repos/lephorx/Tessera-Launcher/releases?per_page=5";
+// Public: launcher news, with each launcher release as a post of its own (not the Nightly builds
+// and their update feed: those are "nightly" and "nightly-<run>").
+const RELEASES_URL = "https://api.github.com/repos/lephorx/Tessera-Launcher/releases?per_page=30";
 let releasesCache: { at: number; items: unknown[] } = { at: 0, items: [] };
 
 /**
@@ -434,7 +435,8 @@ async function releases(): Promise<unknown[]> {
       releasesCache = {
         at: Date.now(),
         items: list
-          .filter((r) => !r.draft)
+          .filter((r) => !r.draft && !r.tag_name.startsWith("nightly"))
+          .slice(0, 5)
           .map((r) => ({
             id: 1_000_000_000 + (r.id % 1_000_000_000),
             title: `Tessera Launcher ${r.tag_name.replace(/^v/, "")}${r.prerelease ? " (beta)" : ""}`,

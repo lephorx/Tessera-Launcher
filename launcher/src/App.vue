@@ -3,7 +3,8 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { RouterLink, RouterView, useRouter } from "vue-router";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { Blocks, ChevronDown, Compass, Home, Loader2, LogIn, LogOut, RefreshCw, Server, Settings as SettingsIcon, Shirt, UserRound } from "lucide-vue-next";
+import { Blocks, ChevronDown, Compass, Home, Loader2, LogIn, LogOut, Moon, RefreshCw, Server, Settings as SettingsIcon, Shirt, UserRound } from "lucide-vue-next";
+import { NIGHTLY } from "./lib/channel";
 import { checkForUpdate, installUpdate, startUpdateChecks, updater } from "./lib/updater";
 import markUrl from "./assets/mark.svg";
 import markWhiteUrl from "./assets/mark-white.svg";
@@ -114,10 +115,11 @@ const nav = [
   <div class="shell">
     <header class="topbar" :class="{ scrolled }" data-tauri-drag-region>
       <div data-tauri-drag-region>
-        <RouterLink to="/" class="brand" title="Home" aria-label="Tessera, go to Home">
+        <RouterLink to="/" class="brand" title="Home" :aria-label="NIGHTLY ? 'Tessera Launcher Nightly, go to Home' : 'Tessera, go to Home'">
           <span class="brand-tile"><img :src="markWhiteUrl" alt="" draggable="false" /></span>
           <img class="brand-mark" :src="markUrl" alt="" draggable="false" />
           tessera
+          <span v-if="NIGHTLY" class="channel-pill" title="Experimental builds from the newest code"><Moon :size="12" /> nightly</span>
         </RouterLink>
       </div>
       <nav class="nav">

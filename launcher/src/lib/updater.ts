@@ -5,6 +5,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { invoke } from "@tauri-apps/api/core";
 import { runs } from "./store";
 import { errorText, toast } from "./toast";
+import { APP_NAME } from "./channel";
 
 /**
  * Launcher updates from GitHub releases (signed; the updater refuses anything else).
@@ -50,7 +51,7 @@ export async function checkForUpdate(manual = false) {
     }
     if (!update) pending = null;
     updater.available = update ? { version: update.version, notes: update.body ?? "" } : null;
-    if (manual && !update) toast.success(`Tessera Launcher is up to date (${updater.current})`);
+    if (manual && !update) toast.success(`${APP_NAME} is up to date (${updater.current})`);
   } catch (e) {
     if (manual) toast.error(`Couldn't check for updates: ${errorText(e)}`);
   } finally {
@@ -117,7 +118,7 @@ export async function startUpdateChecks() {
   // on start nothing is running yet: update straight away
   if ((await updateKind()) === "pacman") return;
   if (pending && !Object.keys(runs).length) {
-    toast.info(`Updating Tessera Launcher to ${pending.version}…`);
+    toast.info(`Updating ${APP_NAME} to ${pending.version}…`);
     await installUpdate();
   } else if (pending) {
     void download().catch(() => {});

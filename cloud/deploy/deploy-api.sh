@@ -3,9 +3,7 @@
 # Run from cloud/: sh deploy/deploy-api.sh   (add --env to also upload /etc/tessera/api.env)
 set -e
 cd "$(dirname "$0")/.."
-ESBUILD=$(node -e "console.log(require.resolve('esbuild/bin/esbuild', { paths: [require.resolve('tsx')] }))")
-"$ESBUILD" functions/api/server.ts --bundle --platform=node --format=esm --target=node22 --external:pg-native \
-  --outfile=dist-api/server.mjs "--banner:js=import { createRequire as __cr } from 'module'; const require = __cr(import.meta.url);" --log-level=warning
+sh deploy/build-api.sh
 if [ "$1" = "--env" ]; then
   # Neon's branch env (DATABASE_URL, bucket keys, Neon Auth URLs) + the mail secrets
   { grep -hE '^(DATABASE_URL|NEON_AUTH_BASE_URL|NEON_AUTH_JWKS_URL|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_ENDPOINT_URL_S3|AWS_REGION)=' .env.local

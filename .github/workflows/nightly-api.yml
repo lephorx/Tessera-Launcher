@@ -1,0 +1,49 @@
+# Bundles main's API for the nightly API (api-nightly.tesseralauncher.com, which Tessera Launcher
+# Nightly talks to) and puts it in the "nightly" release as api-nightly.mjs. The home server
+# installs a changed file within 5 minutes (cloud/deploy/tessera-api-nightly-update.sh). The
+# released API is still deployed by hand (cloud/deploy/README.md).
+name: Nightly API
+
+on:
+  push:
+    branches: [main]
+    paths: ["cloud/**", "pnpm-lock.yaml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nightly-api
+  cancel-in-progress: true
+
+jobs:
+  api:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --filter @tessera/cloud
+      - run: sh cloud/deploy/build-api.sh "$PWD/api-nightly.mjs"
+      # it has to start: a bundle that crashes on import never reaches the server
+      - name: Starts
+        run: |
+          PORT=8799 DATABASE_URL=postgres://x@127.0.0.1:1/x AWS_ENDPOINT_URL_S3=http://127.0.0.1:1 AWS_REGION=x \
+            AWS_ACCESS_KEY_ID=x AWS_SECRET_ACCESS_KEY=x NEON_AUTH_JWKS_URL=http://127.0.0.1:1/jwks NEON_AUTH_BASE_URL=http://127.0.0.1:1/auth \
+            timeout 5 node api-nightly.mjs > out.log 2>&1 || true
+          cat out.log
+          grep -q "Tessera API on" out.log
+      - name: Upload to the nightly release
+        run: |
+          if ! gh release view nightly -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create nightly --prerelease --target "$GITHUB_SHA" -R "$GITHUB_REPOSITORY" \
+              --title "Tessera Launcher Nightly (update feed)" \
+              --notes "Tessera Launcher Nightly reads its updates from here, and the nightly API its code. The builds themselves are the \"Tessera Launcher Nightly …\" prereleases."
+          fi
+          gh release upload nightly api-nightly.mjs --clobber -R "$GITHUB_REPOSITORY"

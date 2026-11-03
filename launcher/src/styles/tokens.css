@@ -8,6 +8,8 @@
  * Selecting a look (same as the dashboard, see docs/10-ui-design.md):
  *   <html data-design="modern" class="dark">   modern, follows the OS light/dark
  *   <html data-design="classic" class="dark">  classic, always dark
+ *
+ * Tessera Launcher Nightly adds data-channel="nightly": always dark, midnight colors over either look.
  */
 
 /* ── Classic (and the base every look starts from) ───────────────────── */
@@ -168,6 +170,36 @@ html[data-design="modern"].dark {
   --surface-shadow: none;
   --raised-shadow: 0 16px 48px rgb(0 0 0 / 0.45), 0 0 0 1px rgb(255 255 255 / 0.06);
   --hover-shadow: 0 12px 28px rgb(0 0 0 / 0.35);
+}
+
+/* ── Tessera Launcher Nightly: midnight blue layers, violet light ─────── */
+html[data-channel="nightly"].dark {
+  --background: #0a0c1b;
+  --foreground: #e6e8f5;
+  --card: #13162d;
+  --card-foreground: #e6e8f5;
+  --popover: #1b1f3c;
+  --popover-foreground: #e6e8f5;
+  --primary: #7c4dff;
+  --primary-foreground: #ffffff;
+  --secondary: #1b1f3c;
+  --secondary-foreground: #e6e8f5;
+  --muted: #1b1f3c;
+  --muted-foreground: #9da3c8;
+  --accent: #1b1f3c;
+  --accent-foreground: #e6e8f5;
+  --border: rgb(190 180 255 / 0.08);
+  --input: rgb(190 180 255 / 0.14);
+  --ring: #a78bfa;
+
+  --surface-2: #1b1f3c;
+  --surface-3: #262b52;
+  --tint: #b69cff;
+  --tint-bg: rgb(124 77 255 / 0.2);
+  --fill: #1b1f3c;
+  --separator: rgb(190 180 255 / 0.08);
+  --raised-shadow: 0 16px 48px rgb(3 2 20 / 0.6), 0 0 0 1px rgb(190 180 255 / 0.1);
+  --hover-shadow: 0 12px 28px rgb(3 2 20 / 0.5), 0 0 24px rgb(124 77 255 / 0.12);
 }
 
 @media (prefers-contrast: more) {

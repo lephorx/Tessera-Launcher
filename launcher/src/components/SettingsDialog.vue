@@ -10,6 +10,7 @@ import SocialSection from "./settings/SocialSection.vue";
 import TroubleshootingSection from "./settings/TroubleshootingSection.vue";
 import markUrl from "@/assets/mark.svg";
 import { api } from "@/lib/api";
+import { APP_NAME } from "@/lib/channel";
 import { settingsDialog, type SettingsSection } from "@/lib/settingsDialog";
 
 /** Settings as a popup: sections on the left, each saving its changes right away. */
@@ -73,7 +74,7 @@ onUnmounted(() => window.removeEventListener("keydown", onKey));
             </div>
             <div v-if="info" class="settings-about">
               <img :src="markUrl" alt="" width="28" height="28" />
-              <span>Tessera Launcher {{ info.version }}<br />{{ info.os }}</span>
+              <span>{{ APP_NAME }} {{ info.version }}<br />{{ info.os }}</span>
             </div>
           </nav>
           <section class="settings-content">

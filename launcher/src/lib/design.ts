@@ -1,3 +1,5 @@
+import { NIGHTLY } from "./channel";
+
 export type Design = "modern" | "classic";
 
 export function currentDesign(): Design {
@@ -9,7 +11,7 @@ export function setDesign(design: Design) {
   localStorage.setItem("cscm-design", design);
   const apply = () => {
     const root = document.documentElement;
-    const dark = design === "classic" || matchMedia("(prefers-color-scheme: dark)").matches;
+    const dark = design === "classic" || NIGHTLY || matchMedia("(prefers-color-scheme: dark)").matches;
     root.dataset.design = design;
     root.classList.toggle("dark", dark);
     root.style.colorScheme = dark ? "dark" : "light";

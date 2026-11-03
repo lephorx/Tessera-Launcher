@@ -2478,3 +2478,52 @@ html[data-design="modern"] .set-path {
     max-height: 180px;
   }
 }
+
+/* ── Tessera Launcher Nightly (tokens.css has its colors) ─────────────── */
+html[data-channel="nightly"] body {
+  background:
+    radial-gradient(1100px 520px at 88% -12%, rgb(124 77 255 / 0.2), transparent 62%),
+    radial-gradient(900px 480px at -12% 112%, rgb(56 189 248 / 0.08), transparent 60%),
+    var(--background);
+}
+
+/* a few stars behind everything, fading out towards the bottom */
+html[data-channel="nightly"] .shell::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image:
+    radial-gradient(1px 1px at 24px 36px, rgb(255 255 255 / 0.55), transparent),
+    radial-gradient(1px 1px at 148px 92px, rgb(255 255 255 / 0.35), transparent),
+    radial-gradient(1.5px 1.5px at 96px 170px, rgb(205 190 255 / 0.55), transparent),
+    radial-gradient(1px 1px at 236px 214px, rgb(255 255 255 / 0.3), transparent),
+    radial-gradient(1px 1px at 300px 40px, rgb(255 255 255 / 0.4), transparent);
+  background-size: 340px 260px;
+  mask-image: linear-gradient(to bottom, #000, transparent 75%);
+}
+
+html[data-channel="nightly"] .topbar {
+  background: color-mix(in srgb, var(--background) 60%, transparent);
+  box-shadow: inset 0 -1px 0 rgb(124 77 255 / 0.18);
+}
+
+html[data-channel="nightly"] .brand-tile {
+  background: linear-gradient(135deg, #7c4dff, #1d1660);
+  box-shadow: 0 4px 16px rgb(124 77 255 / 0.5), inset 0 0 0 1px rgb(255 255 255 / 0.12);
+}
+
+.channel-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px 3px 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #e9e2ff;
+  background: linear-gradient(135deg, rgb(124 77 255 / 0.45), rgb(56 189 248 / 0.25));
+  box-shadow: inset 0 0 0 1px rgb(190 180 255 / 0.25);
+}

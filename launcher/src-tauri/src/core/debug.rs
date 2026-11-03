@@ -24,7 +24,7 @@ pub fn export(paths: &Paths, out: &Path, launcher_logs: &[(String, Vec<String>)]
 
     let s = settings::load(paths);
     let mut info = String::new();
-    info += &format!("Tessera Launcher {}\n", env!("CARGO_PKG_VERSION"));
+    info += &format!("{} {}\n", super::APP_NAME, env!("CARGO_PKG_VERSION"));
     info += &format!("{} ({})\n", sysinfo::System::long_os_version().unwrap_or_default(), std::env::consts::ARCH);
     let memory = sysinfo::System::new().map(|mut s| {
         s.refresh_memory();

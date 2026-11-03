@@ -1,0 +1,41 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Tessera Launcher Nightly",
+  "mainBinaryName": "tessera-launcher-nightly",
+  "identifier": "dev.tessera.launcher.nightly",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Tessera Launcher Nightly",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 960,
+        "minHeight": 640,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": {
+          "x": 20,
+          "y": 35
+        }
+      }
+    ]
+  },
+  "bundle": {
+    "targets": ["app", "dmg", "nsis", "deb", "rpm", "appimage"],
+    "icon": [
+      "icons-nightly/32x32.png",
+      "icons-nightly/128x128.png",
+      "icons-nightly/128x128@2x.png",
+      "icons-nightly/icon.icns",
+      "icons-nightly/icon.ico"
+    ]
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/lephorx/Tessera-Launcher/releases/download/nightly/latest.json"
+      ]
+    }
+  }
+}

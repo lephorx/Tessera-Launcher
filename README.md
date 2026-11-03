@@ -53,9 +53,18 @@ Or install the package from the [newest release](https://github.com/lephorx/Tess
 
 Every one of them updates itself. The `.deb` and `.rpm` update with your system's package tool, and the Arch package through `pacman -U`; both ask for your password. Remove the launcher with your package manager (`sudo apt remove tessera-launcher`, `sudo dnf remove tessera-launcher`, `sudo pacman -R tessera-launcher`); your instances stay in `~/.local/share/dev.tessera.launcher`.
 
+### Tessera Launcher Nightly
+
+Want new features before they're done? **Tessera Launcher Nightly** is built from the newest code on every push to `main` and published as a prerelease ([Nightly builds](https://github.com/lephorx/Tessera-Launcher/releases?q=Nightly+prerelease%3Atrue&expanded=true)). It installs next to Tessera Launcher with its own name, icon, midnight look and data folder (`dev.tessera.launcher.nightly`), so experiments never touch your instances in the released launcher. It updates itself from the Nightly feed and talks to the nightly API (`api-nightly.tesseralauncher.com`, the newest server code, same accounts), falling back to the released API when that's down. Things may break: for your worlds and servers, use Tessera Launcher.
+
+![Tessera Launcher Nightly](docs/releases/nightly-look.png)
+
 ## Releasing
 
-Push a version tag; GitHub Actions builds and signs every platform in parallel and publishes the release. Every push to `main` also runs the same release build to keep the build cache warm, so tag builds only recompile the launcher itself. The tag's message becomes the release notes and a post in the launcher's News.
+Two channels:
+
+- **Nightly** (`.github/workflows/nightly.yml`): every push to `main` builds Tessera Launcher Nightly as a prerelease `nightly-<run>` with version `<next patch>-nightly.<run>`, and points the `nightly` release's `latest.json` (the Nightly updater's feed) at it. The last 5 builds are kept. Cloud changes also bundle the API into that release (`nightly-api.yml`), which the home server installs as the nightly API within 5 minutes. Run it locally with `pnpm --filter @tessera/launcher dev:nightly`.
+- **Released**: once things work, push a version tag; GitHub Actions builds and signs every platform in parallel and publishes the release. Nightly builds keep the build cache warm, so tag builds only recompile the launcher itself. The tag's message becomes the release notes and a post in the launcher's News (Nightly builds don't show up there or on the website).
 
 ```sh
 # bump "version" in launcher/package.json, launcher/src-tauri/Cargo.toml and tauri.conf.json, then
@@ -63,7 +72,7 @@ git tag -a v0.3.0 -m "What's new in this version"
 git push origin v0.3.0
 ```
 
-Needs the repository secrets `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (the updater key; the launcher only installs updates signed with it).
+Needs the secrets `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` in the `release` environment, which allows `v*` tags and `main` (the updater key; the launcher only installs updates signed with it).
 
 ## Background
 

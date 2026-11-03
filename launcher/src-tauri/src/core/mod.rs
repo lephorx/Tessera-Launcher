@@ -34,6 +34,12 @@ pub mod tapack;
 mod smoke;
 pub mod versions;
 
+/// Tessera Launcher Nightly: the experimental build from main (built with TESSERA_NIGHTLY set, see
+/// .github/workflows/nightly.yml). It installs next to the released launcher with its own
+/// name, data folder and update feed (tauri.nightly.conf.json).
+pub const NIGHTLY: bool = option_env!("TESSERA_NIGHTLY").is_some();
+pub const APP_NAME: &str = if NIGHTLY { "Tessera Launcher Nightly" } else { "Tessera Launcher" };
+
 /// Identifies us to Mojang, Fabric and Modrinth (Modrinth requires a descriptive User-Agent).
 pub const USER_AGENT: &str = concat!("tessera-launcher/", env!("CARGO_PKG_VERSION"), " (github.com/lephorx/Tessera-Launcher)");
 

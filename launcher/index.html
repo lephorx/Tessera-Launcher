@@ -11,7 +11,8 @@
         var root = document.documentElement;
         var media = window.matchMedia("(prefers-color-scheme: dark)");
         function apply() {
-          var dark = d === "classic" || media.matches;
+          // Nightly is always dark (its midnight look, tokens.css)
+          var dark = d === "classic" || root.dataset.channel === "nightly" || media.matches;
           root.dataset.design = d;
           root.classList.toggle("dark", dark);
           root.style.colorScheme = dark ? "dark" : "light";

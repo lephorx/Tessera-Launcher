@@ -21,13 +21,19 @@ pub const AUTH_URL: &str = match option_env!("TESSERA_AUTH_URL") {
     Some(u) => u,
     None => "https://ep-aged-brook-b9nb312t.neonauth.c-7.eu-central-1.aws.neon.tech/neondb/auth",
 };
+/// Nightly talks to the nightly API (the newest code from main, same database and accounts).
 pub const API_URL: &str = match option_env!("TESSERA_API_URL") {
     Some(u) => u,
+    None if super::NIGHTLY => "https://api-nightly.tesseralauncher.com/v1",
     None => "https://api.tesseralauncher.com/v1",
 };
-/// The same API as a Neon Function, same database: used when the home server behind
-/// api.tesseralauncher.com can't be reached.
-const FALLBACK_API_URL: &str = "https://br-rapid-thunder-b9spxx3v-api.compute.c-7.eu-central-1.aws.neon.tech/v1";
+/// Used when the home server behind API_URL can't be reached: the same API as a Neon
+/// Function (same database), or for Nightly the released API.
+const FALLBACK_API_URL: &str = if super::NIGHTLY {
+    "https://api.tesseralauncher.com/v1"
+} else {
+    "https://br-rapid-thunder-b9spxx3v-api.compute.c-7.eu-central-1.aws.neon.tech/v1"
+};
 
 /// Sends a request built for `API_URL`, and again for the fallback when the home server is
 /// down: no connection, or Cloudflare saying the tunnel is gone (502/503/530). Not after a
@@ -387,7 +393,7 @@ fn device_label() -> String {
         "linux" => "Linux",
         other => other,
     };
-    format!("Tessera Launcher on {os}")
+    format!("{} on {os}", super::APP_NAME)
 }
 
 /// Emails a two-step code: "sign_in", "enable", "disable" or "delete_account".
