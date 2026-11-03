@@ -195,7 +195,6 @@ pub async fn start(client: &reqwest::Client, paths: &Paths, id: &str, emit: Emit
     if adopt_one(paths, id, &emit) {
         return Ok(());
     }
-    let java = console_java(&ensure_java(client, paths, &s.java_component, |_, _| {}).await?);
     let data = data_dir(paths, id);
     // the same address twice would fail late, with a Java stack trace
     if !port_free(s.port) {
@@ -219,18 +218,23 @@ pub async fn start(client: &reqwest::Client, paths: &Paths, id: &str, emit: Emit
     writeln!(out, "[Tessera] Starting {} ({:?} {})", s.name, s.kind, s.game_version)?;
     let err = out.try_clone()?;
 
-    let mut cmd = command(&java);
-    cmd.arg(format!("-Xmx{}M", s.memory_mb)).arg(format!("-Xms{}M", (s.memory_mb / 2).max(512)));
-    match &s.start {
-        Start::Jar { file } => {
-            cmd.arg("-jar").arg(file);
+    let mut cmd = match &s.start {
+        Start::Horizon { build } => horizon_command(client, paths, &data, build).await?,
+        start => {
+            let java = console_java(&ensure_java(client, paths, &s.java_component, |_, _| {}).await?);
+            let mut cmd = command(&java);
+            cmd.arg(format!("-Xmx{}M", s.memory_mb)).arg(format!("-Xms{}M", (s.memory_mb / 2).max(512)));
+            match start {
+                Start::Jar { file } => cmd.arg("-jar").arg(file),
+                Start::Args { file } => cmd.arg(format!("@{file}")),
+                Start::Horizon { .. } => unreachable!(),
+            };
+            cmd.arg("nogui");
+            cmd
         }
-        Start::Args { file } => {
-            cmd.arg(format!("@{file}"));
-        }
-    }
-    cmd.arg("nogui").current_dir(&data).stdout(Stdio::from(out)).stderr(Stdio::from(err));
-    let child = cmd.spawn().context("starting Java")?;
+    };
+    cmd.current_dir(&data).stdout(Stdio::from(out)).stderr(Stdio::from(err));
+    let child = cmd.spawn().context("starting the server")?;
     let pid = child.id().ok_or_else(|| anyhow!("Java exited right away"))?;
     let run = RunFile { pid, started_at: Utc::now(), rcon_port, rcon_password, counted: 0 };
     write_run(paths, id, &run)?;
@@ -240,6 +244,65 @@ pub async fn start(client: &reqwest::Client, paths: &Paths, id: &str, emit: Emit
     emit(Event::Changed(id));
     tokio::spawn(watch(paths.clone(), id.to_string(), Some(child), 0, emit));
     Ok(())
+}
+
+/// server.properties' keys and where `horizon-server`'s server.toml keeps them; any other key
+/// goes into its `[properties]`.
+const HORIZON_KEYS: [(&str, &str); 14] = [
+    ("motd", "server.motd"),
+    ("server-port", "server.port"),
+    ("server-ip", "server.bind"),
+    ("max-players", "server.max_players"),
+    ("online-mode", "server.online_mode"),
+    ("white-list", "server.whitelist"),
+    ("enforce-whitelist", "server.enforce_whitelist"),
+    ("view-distance", "server.view_distance"),
+    ("simulation-distance", "server.simulation_distance"),
+    ("level-name", "world.name"),
+    ("level-seed", "world.seed"),
+    ("gamemode", "world.game_mode"),
+    ("difficulty", "world.difficulty"),
+    ("hardcore", "world.hardcore"),
+];
+
+/// `horizon-server run` for a Horizon server. Horizon writes server.properties from its
+/// server.toml at every start, so what the launcher keeps in server.properties (the settings
+/// page, the port, RCON) goes into server.toml first. Its own web panel stays off: the
+/// launcher is the panel.
+async fn horizon_command(client: &reqwest::Client, paths: &Paths, data: &Path, build: &str) -> Result<tokio::process::Command> {
+    use super::super::horizon;
+    let log = |_: &str| {};
+    let progress = |_: &str, _: usize, _: usize| {};
+    let build = horizon::resolve(client, paths, Some(build), &progress, &log).await?;
+    let resources = horizon::prepare(client, paths, &build, &progress, &log).await?;
+    let dir = horizon::build_dir(paths, &build);
+    let server = dir.join(horizon::exe("horizon-server"));
+    let mut set = vec![
+        format!("engine.path={}", dir.join(horizon::exe("horizon-client")).display()),
+        format!("engine.resources={}", resources.display()),
+        "panel.bind=".to_string(),
+    ];
+    for (k, v) in super::read_properties(data) {
+        // empty values Horizon refuses for typed keys (a seed may be empty)
+        if v.is_empty() && k != "level-seed" && k != "motd" {
+            continue;
+        }
+        match HORIZON_KEYS.iter().find(|(p, _)| *p == k) {
+            Some((_, key)) => set.push(format!("{key}={v}")),
+            None if k.chars().all(|c| c.is_ascii_alphanumeric() || "-._".contains(c)) => set.push(format!("properties.{k}={v}")),
+            None => {}
+        }
+    }
+    let out = command(&server).arg("--dir").arg(data).args(["config", "set"]).args(&set).output().await.context("starting horizon-server")?;
+    if !out.status.success() {
+        // one key Horizon doesn't take: set the rest one by one, so the server still starts
+        for kv in &set {
+            let _ = command(&server).arg("--dir").arg(data).args(["config", "set", kv]).output().await;
+        }
+    }
+    let mut cmd = command(&server);
+    cmd.arg("--dir").arg(data).arg("run");
+    Ok(cmd)
 }
 
 /// Servers still running from an earlier launcher: picks them up again. At launcher start.

@@ -3,7 +3,9 @@ import { computed, onMounted, ref, watch } from "vue";
 import { ImagePlus, Loader2, RefreshCw, Save, Trash2, X } from "lucide-vue-next";
 import AppDialog from "@/components/AppDialog.vue";
 import { api, type EasyKind, type EasyServer, type GameVersion, type LoaderVersion } from "@/lib/api";
+import { NIGHTLY } from "@/lib/channel";
 import { KIND } from "@/lib/easy";
+import { HORIZON_MINECRAFT, horizonBuild } from "@/lib/format";
 import { errorText, toast } from "@/lib/toast";
 
 /** The server's settings: name, MOTD, icon, gameplay, memory and port; its type and version; deleting it. */
@@ -138,7 +140,12 @@ const loaderVersion = ref<string>("");
 const changing = ref(false);
 const confirmChange = ref(false);
 
-const LOADER: Partial<Record<EasyKind, "fabric" | "forge" | "neoforge">> = { fabric: "fabric", forge: "forge", neoforge: "neoforge" };
+const LOADER: Partial<Record<EasyKind, "fabric" | "forge" | "neoforge" | "horizon">> = { fabric: "fabric", forge: "forge", neoforge: "neoforge", horizon: "horizon" };
+/** Horizon only in Nightly (and on a server that already is one). */
+const kinds = computed(() => Object.entries(KIND).filter(([k]) => k !== "horizon" || NIGHTLY || props.server.kind === "horizon"));
+watch(kind, (k) => {
+  if (k === "horizon") game.value = HORIZON_MINECRAFT;
+});
 watch(
   [kind, game],
   async () => {
@@ -252,10 +259,10 @@ async function change() {
         <div class="field">
           <label for="c-kind">Type</label>
           <select id="c-kind" v-model="kind" class="select">
-            <option v-for="(label, k) in KIND" :key="k" :value="k">{{ label }}</option>
+            <option v-for="[k, label] in kinds" :key="k" :value="k">{{ label }}</option>
           </select>
         </div>
-        <div class="field">
+        <div v-if="kind !== 'horizon'" class="field">
           <label for="c-game">Minecraft version</label>
           <select id="c-game" v-model="game" class="select">
             <option v-for="v in releases" :key="v.id" :value="v.id">{{ v.id }}</option>
@@ -265,7 +272,9 @@ async function change() {
           <label for="c-loader">{{ KIND[kind] }} version</label>
           <select id="c-loader" v-model="loaderVersion" class="select">
             <option value="">Newest</option>
-            <option v-for="l in loaderVersions" :key="l.version" :value="l.version">{{ l.version }}{{ l.stable ? "" : " (beta)" }}</option>
+            <option v-for="l in loaderVersions.filter((l) => l.version !== 'latest')" :key="l.version" :value="l.version">
+              {{ kind === "horizon" ? horizonBuild(l.version) : l.version }}{{ l.stable || kind === "horizon" ? "" : " (beta)" }}
+            </option>
           </select>
         </div>
       </div>

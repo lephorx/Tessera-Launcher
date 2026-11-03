@@ -390,6 +390,7 @@ fn write_mrpack(
         Loader::Quilt => Some("quilt-loader"),
         Loader::Forge => Some("forge"),
         Loader::NeoForge => Some("neoforge"),
+        Loader::Horizon => Some("horizon"),
     };
     if let (Some(k), Some(v)) = (loader_key, &inst.loader_version) {
         deps.insert(k.into(), json!(v));

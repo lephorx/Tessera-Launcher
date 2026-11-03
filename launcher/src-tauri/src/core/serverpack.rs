@@ -103,6 +103,7 @@ pub async fn build(client: &reqwest::Client, paths: &Paths, id: &str, progress: 
         Loader::Quilt => Some("quilt-loader"),
         Loader::Forge => Some("forge"),
         Loader::NeoForge => Some("neoforge"),
+        Loader::Horizon => None,
     };
     if let (Some(k), Some(v)) = (loader_key, &inst.loader_version) {
         deps.insert(k.into(), json!(v));

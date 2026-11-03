@@ -118,6 +118,12 @@ async fn game_versions(state: State<'_, AppState>) -> CmdResult<GameVersions> {
 
 #[tauri::command]
 async fn loader_versions(state: State<'_, AppState>, loader: Loader, game_version: String) -> CmdResult<Vec<loaders::LoaderVersion>> {
+    if loader == Loader::Horizon {
+        // "latest" follows the newest Nightly; the others stay on one build
+        let mut list = vec![loaders::LoaderVersion { version: core::horizon::LATEST.into(), stable: true }];
+        list.extend(core::horizon::builds(&state.client, &state.paths).await.map_err(err)?.into_iter().map(|b| loaders::LoaderVersion { version: b.id, stable: false }));
+        return Ok(list);
+    }
     loaders::versions(&state.client, loader, &game_version).await.map_err(err)
 }
 
@@ -143,8 +149,16 @@ async fn create_instance(
     icon: Option<Icon>,
     icon_file: Option<String>,
 ) -> CmdResult<Instance> {
+    if loader == Loader::Horizon && !core::NIGHTLY {
+        return Err("Horizon is in Tessera Launcher Nightly".into());
+    }
+    if loader == Loader::Horizon && core::horizon::asset_name().is_none() {
+        return Err("Horizon isn't made for this computer yet".into());
+    }
+    let game_version = if loader == Loader::Horizon { core::horizon::MINECRAFT.to_string() } else { game_version };
     let loader_version = match (loader, loader_version) {
         (Loader::Vanilla, _) => None,
+        (Loader::Horizon, v) => Some(v.unwrap_or_else(|| core::horizon::LATEST.into())),
         (_, Some(v)) => Some(v),
         (_, None) => {
             let list = loaders::versions(&state.client, loader, &game_version).await.map_err(err)?;
@@ -216,6 +230,9 @@ struct InstanceSettings {
     java_path: Option<String>,
     jvm_args: Option<String>,
     resolution: Option<Resolution>,
+    /// A Horizon instance's build ("latest" follows the newest Nightly)
+    #[serde(default)]
+    horizon_version: Option<String>,
 }
 
 #[tauri::command]
@@ -228,6 +245,9 @@ fn update_instance(state: State<AppState>, id: String, settings: InstanceSetting
     inst.java_path = settings.java_path.map(|p| p.trim().to_string()).filter(|p| !p.is_empty());
     inst.jvm_args = settings.jvm_args.map(|a| a.trim().to_string()).filter(|a| !a.is_empty());
     inst.resolution = settings.resolution.filter(|r| r.width >= 320 && r.height >= 240);
+    if let (Loader::Horizon, Some(v)) = (inst.loader, settings.horizon_version.filter(|v| !v.is_empty())) {
+        inst.loader_version = Some(v);
+    }
     instances::save(&state.paths, &inst).map_err(err)?;
     Ok(inst)
 }
@@ -507,13 +527,22 @@ async fn run_instance(app: &AppHandle, mut inst: Instance, quick_play: Option<Qu
             }
         }
     }
-    let plan = prepare(&state.client, &state.paths, &inst, &player, inst.memory_mb.unwrap_or(settings.memory_mb), quick_play.as_ref(), &progress).await?;
+    let log = |line: &str| push_log(app, &id, line);
+    let plan = if inst.loader == Loader::Horizon {
+        let (plan, build) = core::horizon::launch_plan(&state.client, &state.paths, &inst, &player, quick_play.as_ref(), &progress, &log).await?;
+        push_log(app, &id, &format!("[Tessera] Horizon {build}"));
+        plan
+    } else {
+        prepare(&state.client, &state.paths, &inst, &player, inst.memory_mb.unwrap_or(settings.memory_mb), quick_play.as_ref(), &progress).await?
+    };
 
     // the skin comes from Mojang; this takes out the "Tessera Skin" pack older versions added
     skins::prepare_instance(&state.paths, &state.paths.game_dir(&id), &player.name, player.online);
-    push_log(app, &id, &format!("[Tessera] Starting Minecraft {} as {}", inst.game_version, player.name));
+    let what = if inst.loader == Loader::Horizon { "Horizon" } else { "Minecraft" };
+    push_log(app, &id, &format!("[Tessera] Starting {what} {} as {}", inst.game_version, player.name));
     let mut child = tokio::process::Command::new(&plan.java)
         .args(&plan.args)
+        .stdin(if plan.stdin.is_some() { Stdio::piped() } else { Stdio::null() })
         .current_dir(&plan.game_dir)
         // `cargo run` / `tauri dev` set these; inherited by the game they crash older versions on macOS.
         .env_remove("DYLD_FALLBACK_LIBRARY_PATH")
@@ -523,6 +552,12 @@ async fn run_instance(app: &AppHandle, mut inst: Instance, quick_play: Option<Qu
         .kill_on_drop(true)
         .spawn()?;
 
+    // Horizon's session: on standard input, never on its command line
+    if let (Some(text), Some(mut stdin)) = (plan.stdin.as_ref(), child.stdin.take()) {
+        use tokio::io::AsyncWriteExt;
+        stdin.write_all(text.as_bytes()).await?;
+        drop(stdin);
+    }
     let (kill_tx, kill_rx) = oneshot::channel();
     state.running.lock().unwrap().insert(id.clone(), Some(kill_tx));
     inst.last_played = Some(chrono::Utc::now());
@@ -602,6 +637,23 @@ async fn search_projects(
     )
     .await
     .map_err(err)
+}
+
+// ── Horizon's mods (Tessera Launcher Nightly) ──
+
+#[tauri::command]
+async fn horizon_mods(state: State<'_, AppState>, query: String, kind: Option<String>) -> CmdResult<Vec<core::horizon::registry::Project>> {
+    core::horizon::registry::search(&state.client, &state.paths, &query, kind.as_deref()).await.map_err(err)
+}
+
+#[tauri::command]
+async fn horizon_install(state: State<'_, AppState>, instance_id: String, project_id: String, version: Option<String>) -> CmdResult<Instance> {
+    core::horizon::registry::install(&state.client, &state.paths, &instance_id, &project_id, version.as_deref()).await.map_err(err)
+}
+
+#[tauri::command]
+async fn horizon_updates(state: State<'_, AppState>, instance_id: String) -> CmdResult<Vec<(String, String)>> {
+    core::horizon::registry::updates(&state.client, &state.paths, &instance_id).await.map_err(err)
 }
 
 #[tauri::command]
@@ -2123,6 +2175,9 @@ pub fn run() {
             save_settings,
             game_versions,
             loader_versions,
+        horizon_mods,
+        horizon_install,
+        horizon_updates,
             list_instances,
             get_instance,
             create_instance,

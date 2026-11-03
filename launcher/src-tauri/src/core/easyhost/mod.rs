@@ -41,6 +41,8 @@ pub enum Kind {
     Fabric,
     Forge,
     NeoForge,
+    /// Horizon's server (Tessera Launcher Nightly): Minecraft 26.3 in Rust, `horizon-server`
+    Horizon,
 }
 
 /// How the server starts, after the JVM options.
@@ -51,6 +53,8 @@ enum Start {
     Jar { file: String },
     /// `@<file>`: Forge/NeoForge 1.17+ write their classpath and main class into one
     Args { file: String },
+    /// `horizon-server run` of this Horizon build, with its prepared resources
+    Horizon { build: String },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -212,11 +216,15 @@ pub async fn create(client: &reqwest::Client, paths: &Paths, new: NewServer, pro
                 Loader::Forge => Kind::Forge,
                 Loader::NeoForge => Kind::NeoForge,
                 Loader::Quilt => bail!("Quilt servers aren't supported yet; use Tessera with Docker for this one"),
+                Loader::Horizon => Kind::Horizon,
             };
             (kind, inst.game_version, inst.loader_version)
         }
         None => (new.kind, new.game_version.trim().to_string(), None),
     };
+    if kind == Kind::Horizon {
+        game = super::horizon::MINECRAFT.to_string();
+    }
     if game.is_empty() {
         progress("Finding the newest Minecraft", 0, 0);
         game = versions::manifest(client).await?.latest.release;
@@ -227,7 +235,8 @@ pub async fn create(client: &reqwest::Client, paths: &Paths, new: NewServer, pro
     std::fs::create_dir_all(&data)?;
     let made: Result<EasyServer> = async {
         let installed = install(client, paths, &data, kind, &game, loader_version, progress).await?;
-        if let Some(inst) = &new.instance {
+        // a Horizon server runs no instance's mods yet (native mods need a server build)
+        if let Some(inst) = new.instance.as_ref().filter(|_| kind != Kind::Horizon) {
             let pack = serverpack::build(client, paths, inst, progress).await?;
             install_pack(client, &pack.bytes, &data, progress).await?;
         }
@@ -270,6 +279,9 @@ pub(crate) struct Installed {
 /// Puts the server software into `data`: Minecraft's server, Paper, Fabric's server
 /// launcher, or Forge/NeoForge through their installer. The newest loader if none is given.
 pub(crate) async fn install(client: &reqwest::Client, paths: &Paths, data: &Path, kind: Kind, game: &str, loader_version: Option<String>, progress: Progress<'_>) -> Result<Installed> {
+    if kind == Kind::Horizon {
+        return install_horizon(client, paths, data, loader_version.as_deref(), progress).await;
+    }
     progress("Getting Minecraft", 0, 0);
     // they go into URLs and the installer's paths
     versions::check_version(game)?;
@@ -311,6 +323,7 @@ pub(crate) async fn install(client: &reqwest::Client, paths: &Paths, data: &Path
             lv = Some(v);
             Start::Jar { file: "fabric-server-launch.jar".into() }
         }
+        Kind::Horizon => unreachable!("install_horizon"),
         Kind::Forge | Kind::NeoForge => {
             let loader = if kind == Kind::Forge { Loader::Forge } else { Loader::NeoForge };
             let v = match lv.clone() {
@@ -335,6 +348,34 @@ pub(crate) async fn install(client: &reqwest::Client, paths: &Paths, data: &Path
         }
     };
     Ok(Installed { start, loader_version: lv, java_component: component })
+}
+
+/// A Horizon server: the build (the newest Nightly, or `build`), its resources, and the
+/// server folder set up by `horizon-server init`. Its "loader version" is the build.
+async fn install_horizon(client: &reqwest::Client, paths: &Paths, data: &Path, build: Option<&str>, progress: Progress<'_>) -> Result<Installed> {
+    let log = |_: &str| {};
+    let build = super::horizon::resolve(client, paths, build, progress, &log).await?;
+    super::horizon::prepare(client, paths, &build, progress, &log).await?;
+    if !data.join("server.toml").exists() {
+        progress("Setting up the server", 0, 0);
+        let server = super::horizon::build_dir(paths, &build).join(super::horizon::exe("horizon-server"));
+        let out = command(&server).arg("--dir").arg(data).args(["init", "--eula", "--world", "world", "--port", "25565", "--no-whitelist", "--yes"]).output().await.context("starting horizon-server")?;
+        if !out.status.success() {
+            bail!("Setting up the Horizon server failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+        }
+    }
+    Ok(Installed { start: Start::Horizon { build: build.clone() }, loader_version: Some(build), java_component: String::new() })
+}
+
+/// The Horizon builds servers here run (kept when old builds are cleaned up).
+pub fn horizon_builds(paths: &Paths) -> Vec<String> {
+    list(paths)
+        .into_iter()
+        .filter_map(|v| match v.server.start {
+            Start::Horizon { build } => Some(build),
+            _ => None,
+        })
+        .collect()
 }
 
 async fn newest_loader(client: &reqwest::Client, loader: Loader, game: &str) -> Result<String> {
@@ -645,6 +686,7 @@ fn family(k: Kind) -> &'static str {
         Kind::Paper => "plugins",
         Kind::Fabric => "fabric",
         Kind::Forge | Kind::NeoForge => "forge",
+        Kind::Horizon => "horizon",
     }
 }
 
@@ -666,6 +708,7 @@ pub async fn change(client: &reqwest::Client, paths: &Paths, id: &str, c: Change
         bail!("Stop the server first");
     }
     let game = match c.game_version.trim() {
+        _ if c.kind == Kind::Horizon => super::horizon::MINECRAFT.to_string(),
         "" => versions::manifest(client).await?.latest.release,
         v => v.to_string(),
     };

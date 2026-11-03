@@ -16,7 +16,7 @@ import StateBadge from "@/components/StateBadge.vue";
 import { api, type ContentFile, type Icon, type Instance } from "@/lib/api";
 import { iconVersion } from "@/lib/iconCache";
 import { tabDirection, type PanelDirection } from "@/lib/tabSwitch";
-import { LOADERS, relative } from "@/lib/format";
+import { LOADERS, horizonBuild, relative } from "@/lib/format";
 import { logListeners, runOf } from "@/lib/store";
 import { errorText, toast } from "@/lib/toast";
 
@@ -36,19 +36,31 @@ const contentQuery = ref("");
 const editingIcon = ref(false);
 const exporting = ref(false);
 const creatingServer = ref(false);
-const KINDS = [
-  { id: "all", label: "All" },
-  { id: "mod", label: "Mods" },
-  { id: "resourcepack", label: "Resource packs" },
-  { id: "shader", label: "Shaders" },
-  { id: "datapack", label: "Data packs" },
-] as const;
-const countOf = (kind: (typeof KINDS)[number]["id"]) => content.value.filter((c) => kind === "all" || c.kind === kind).length;
+type KindId = "all" | ContentFile["kind"];
+const KINDS = computed<{ id: KindId; label: string }[]>(() =>
+  isHorizon.value
+    ? [
+        { id: "all", label: "All" },
+        { id: "native-mod", label: "Native mods" },
+        { id: "horizon-mod", label: "Content mods" },
+        { id: "resourcepack", label: "Resource packs" },
+        { id: "shader", label: "Shaders" },
+      ]
+    : [
+        { id: "all", label: "All" },
+        { id: "mod", label: "Mods" },
+        { id: "resourcepack", label: "Resource packs" },
+        { id: "shader", label: "Shaders" },
+        { id: "datapack", label: "Data packs" },
+      ],
+);
+const isHorizon = computed(() => inst.value?.loader === "horizon");
+const countOf = (kind: KindId) => content.value.filter((c) => kind === "all" || c.kind === kind).length;
 // "42 mods · 3 resource packs · 2 turned off" under the filters
 const summary = computed(() => {
   const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
   const parts = [
-    plural(countOf("mod"), "mod", "mods"),
+    isHorizon.value ? plural(countOf("native-mod") + countOf("horizon-mod"), "mod", "mods") : plural(countOf("mod"), "mod", "mods"),
     countOf("resourcepack") && plural(countOf("resourcepack"), "resource pack", "resource packs"),
     countOf("shader") && plural(countOf("shader"), "shader", "shaders"),
     countOf("datapack") && plural(countOf("datapack"), "data pack", "data packs"),
@@ -200,7 +212,7 @@ async function openFolder() {
           <div class="row" style="margin-top: 8px; flex-wrap: wrap">
             <StateBadge :id="inst.id" />
             <span class="chip" :style="{ color: LOADERS[inst.loader].color }">
-              {{ LOADERS[inst.loader].label }}{{ inst.loader_version ? ` ${inst.loader_version}` : "" }}
+              {{ LOADERS[inst.loader].label }}{{ isHorizon ? ` · ${horizonBuild(inst.loader_version)}` : inst.loader_version ? ` ${inst.loader_version}` : "" }}
             </span>
             <span class="chip num">{{ inst.game_version }}</span>
             <span class="hint">{{ relative(inst.last_played) }}</span>
@@ -209,8 +221,8 @@ async function openFolder() {
       </div>
       <div class="row">
         <button class="btn btn-lg" title="Open folder" @click="openFolder"><FolderOpen /> Folder</button>
-        <button class="btn btn-lg" title="Export as .tapack" @click="exporting = true"><PackageCheck /> Export</button>
-        <button class="btn btn-lg" title="Create a server with these mods" @click="creatingServer = true"><Server /> Create server</button>
+        <button v-if="!isHorizon" class="btn btn-lg" title="Export as .tapack" @click="exporting = true"><PackageCheck /> Export</button>
+        <button class="btn btn-lg" :title="isHorizon ? 'Create a Horizon server' : 'Create a server with these mods'" @click="isHorizon ? router.push(`/servers/new?instance=${inst.id}`) : (creatingServer = true)"><Server /> Create server</button>
         <PlayButton :id="inst.id" large />
       </div>
     </div>
@@ -242,7 +254,9 @@ async function openFolder() {
           <input v-model="contentQuery" class="input" style="height: 30px" placeholder="Search content" aria-label="Search content" @keydown.esc="contentQuery = ''" />
         </div>
         <span v-else class="spacer" />
+        <RouterLink v-if="isHorizon" :to="`/instance/${inst.id}/horizon`" class="btn btn-primary btn-sm"><Plus /> Add Horizon mods</RouterLink>
         <RouterLink
+          v-else
           :to="{ path: `/instance/${inst.id}/add`, query: { type: inst.loader === 'vanilla' ? 'resourcepack' : 'mod' } }"
           class="btn btn-primary btn-sm"
         ><Plus /> Add content</RouterLink>
@@ -250,7 +264,14 @@ async function openFolder() {
       <ModpackPanel v-if="fromModpack" :key="inst.pack?.version_id ?? ''" :instance="inst" :added="addedCount" @changed="packChanged" />
       <p v-if="content.length" class="hint" style="margin: 0">{{ summary }}</p>
       <p v-if="!content.length" class="hint">
-        Nothing here yet. {{ inst.loader === "vanilla" ? "Vanilla can use resource packs, data packs and shaders." : "Add mods, resource packs and more from Discover." }}
+        Nothing here yet.
+        {{
+          isHorizon
+            ? "Add mods, resource packs and shaders from Horizon's registry. Native mods are compiled into the game the next time you press Play."
+            : inst.loader === "vanilla"
+              ? "Vanilla can use resource packs, data packs and shaders."
+              : "Add mods, resource packs and more from Discover."
+        }}
       </p>
       <p v-else-if="!shownContent.length" class="hint">
         Nothing{{ contentQuery.trim() ? ` matches “${contentQuery.trim()}”` : " of this kind" }}.
@@ -261,7 +282,7 @@ async function openFolder() {
         <span v-else class="tile tile-sm" style="--type: #a2a9b4"><Package /></span>
         <div style="flex: 1; min-width: 0">
           <RouterLink
-            v-if="f.project_id"
+            v-if="f.project_id && !isHorizon"
             :to="{ path: `/project/${f.project_id}`, query: { instance: inst.id } }"
             class="content-title"
             :title="`${f.title}: other versions`"

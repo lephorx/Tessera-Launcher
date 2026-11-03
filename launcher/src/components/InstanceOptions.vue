@@ -2,7 +2,8 @@
 import { computed, onMounted, ref } from "vue";
 import { open } from "@tauri-apps/plugin-dialog";
 import { CircleCheck, CircleX, FolderSearch, Loader2, Trash2 } from "lucide-vue-next";
-import { api, type Instance } from "@/lib/api";
+import { api, type Instance, type LoaderVersion } from "@/lib/api";
+import { HORIZON_MINECRAFT, horizonBuild } from "@/lib/format";
 import { errorText, toast } from "@/lib/toast";
 
 /** Per-instance settings: name, memory, Java, JVM arguments, window size. */
@@ -23,12 +24,17 @@ const customSize = ref(props.instance.resolution !== null);
 const width = ref(props.instance.resolution?.width ?? 1280);
 const height = ref(props.instance.resolution?.height ?? 720);
 const saving = ref(false);
+// Horizon: the build it plays, no Java or memory of its own
+const horizon = computed(() => props.instance.loader === "horizon");
+const horizonVersion = ref(props.instance.loader_version ?? "latest");
+const horizonBuilds = ref<LoaderVersion[]>([]);
 
 // keep a quarter of the RAM for the system; steps of 512 MB
 const maxMb = computed(() => Math.max(2048, Math.floor((totalMb.value * 0.75) / 512) * 512));
 const memoryWarn = computed(() => customMemory.value && memory.value > totalMb.value * 0.6);
 
 onMounted(async () => {
+  if (horizon.value) horizonBuilds.value = await api.loaders.versions("horizon", HORIZON_MINECRAFT).catch(() => []);
   totalMb.value = await api.system.memoryMb();
   defaultMb.value = (await api.settings.get()).memory_mb;
   if (!customMemory.value) memory.value = defaultMb.value;
@@ -62,6 +68,7 @@ async function save() {
       java_path: javaMode.value === "custom" ? javaPath.value : null,
       jvm_args: jvmArgs.value,
       resolution: customSize.value ? { width: width.value, height: height.value } : null,
+      horizon_version: horizon.value ? horizonVersion.value : null,
     });
     emit("saved", inst);
     toast.success("Saved");
@@ -85,7 +92,17 @@ const gb = (mb: number) => (mb / 1024).toFixed(mb % 1024 ? 1 : 0);
       </div>
     </section>
 
-    <section class="card stack">
+    <section v-if="horizon" class="card stack">
+      <h3 class="opt-title">Horizon version</h3>
+      <select v-model="horizonVersion" class="select" aria-label="Horizon version">
+        <option value="latest">Newest Nightly (updates itself)</option>
+        <option v-if="horizonVersion !== 'latest' && !horizonBuilds.some((b) => b.version === horizonVersion)" :value="horizonVersion">{{ horizonBuild(horizonVersion) }}</option>
+        <option v-for="b in horizonBuilds.filter((b) => b.version !== 'latest')" :key="b.version" :value="b.version">{{ horizonBuild(b.version) }}</option>
+      </select>
+      <span class="hint">Horizon's Nightlies stay on GitHub for a week; a build you keep stays installed here. Horizon needs no Java and manages its own memory.</span>
+    </section>
+
+    <section v-if="!horizon" class="card stack">
       <h3 class="opt-title">Memory</h3>
       <label class="row" style="justify-content: space-between">
         <span><span class="label">Custom memory for this instance</span><span class="hint" style="display: block">Otherwise the default from Settings: {{ gb(defaultMb) }} GB</span></span>
@@ -109,7 +126,7 @@ const gb = (mb: number) => (mb / 1024).toFixed(mb % 1024 ? 1 : 0);
       </div>
     </section>
 
-    <section class="card stack">
+    <section v-if="!horizon" class="card stack">
       <h3 class="opt-title">Java</h3>
       <div class="choices">
         <button type="button" class="choice" :class="{ on: javaMode === 'auto' }" @click="javaMode = 'auto'">Automatic</button>

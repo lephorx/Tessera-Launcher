@@ -19,9 +19,30 @@ use super::versions::{check_version, flatten_arguments, os_name, rules_allow, ve
 pub type Progress<'a> = &'a (dyn Fn(&str, usize, usize) + Send + Sync);
 
 pub struct LaunchPlan {
+    /// The program: Java, or Horizon's own game
     pub java: PathBuf,
     pub args: Vec<String>,
     pub game_dir: PathBuf,
+    /// Written to the game's standard input, which is then closed (Horizon's session).
+    pub stdin: Option<String>,
+}
+
+/// A version's own files (libraries, client jar, assets) and the Java Mojang names for it,
+/// downloaded where missing: what Horizon prepares its resources from. The client jar's path.
+pub async fn vanilla_files(client: &reqwest::Client, paths: &Paths, game_version: &str, progress: Progress<'_>) -> Result<(super::versions::VersionJson, PathBuf, PathBuf)> {
+    progress("Reading version", 0, 0);
+    let vanilla = version_json(client, paths, game_version).await?;
+    let component = vanilla.java_version.as_ref().map(|j| j.component.clone()).unwrap_or_else(|| "jre-legacy".into());
+    let java = ensure_java(client, paths, &component, &|d, t| progress("Downloading Java", d, t)).await?;
+    let mut libs = resolve_libraries(paths, &vanilla.libraries)?;
+    let client_jar = paths.version_dir(&vanilla.id).join(format!("{}.jar", vanilla.id));
+    let dl = vanilla.downloads.as_ref().ok_or_else(|| anyhow!("Version has no client download"))?;
+    libs.downloads.push(Download { url: dl.client.url.clone(), path: client_jar.clone(), sha1: dl.client.sha1.clone(), size: dl.client.size, executable: false });
+    download_all(client, libs.downloads, |d, t| progress("Downloading libraries", d, t)).await?;
+    let asset_index = vanilla.asset_index.as_ref().ok_or_else(|| anyhow!("Version has no assets"))?;
+    let assets = asset_downloads(client, paths, asset_index).await?;
+    download_all(client, assets, |d, t| progress("Downloading assets", d, t)).await?;
+    Ok((vanilla, client_jar, java))
 }
 
 pub struct Player {
@@ -311,7 +332,7 @@ pub async fn prepare(
         }
         None => {}
     }
-    Ok(LaunchPlan { java, args, game_dir })
+    Ok(LaunchPlan { java, args, game_dir, stdin: None })
 }
 
 #[cfg(test)]

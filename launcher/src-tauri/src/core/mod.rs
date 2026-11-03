@@ -7,6 +7,7 @@ pub mod debug;
 pub mod download;
 pub mod easyhost;
 pub mod forge;
+pub mod horizon;
 pub mod hostlocal;
 pub mod instances;
 pub mod import;

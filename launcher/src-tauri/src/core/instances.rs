@@ -142,6 +142,9 @@ pub fn content_dir(kind: &str) -> &'static str {
     match kind {
         "resourcepack" => "resourcepacks",
         "shader" => "shaderpacks",
+        // Horizon's content mods and native mods (its own folders)
+        "horizon-mod" => "horizon-mods",
+        "native-mod" => "horizon-native-mods",
         _ => "mods",
     }
 }
@@ -353,7 +356,12 @@ pub fn content(paths: &Paths, inst: &Instance) -> Vec<ContentFile> {
             });
         }
     };
-    scan(game.join("mods"), "mod", None);
+    if inst.loader == Loader::Horizon {
+        scan(game.join("horizon-mods"), "horizon-mod", None);
+        scan(game.join("horizon-native-mods"), "native-mod", None);
+    } else {
+        scan(game.join("mods"), "mod", None);
+    }
     scan(game.join("resourcepacks"), "resourcepack", None);
     scan(game.join("shaderpacks"), "shader", None);
     for world in worlds(paths, &inst.id) {
@@ -403,7 +411,14 @@ pub fn remove_content(paths: &Paths, id: &str, kind: &str, world: Option<&str>, 
 
 /// Turns a mod/pack on or off by adding or removing ".disabled".
 pub fn toggle_content(paths: &Paths, id: &str, kind: &str, world: Option<&str>, filename: &str) -> Result<()> {
-    get(paths, id)?;
+    let inst = get(paths, id)?;
+    // a Horizon content mod is also switched in the game's own list
+    if kind == "horizon-mod" {
+        let base = filename.trim_end_matches(".disabled");
+        if let Some(m) = inst.mods.iter().find(|m| m.filename == base && m.kind == kind) {
+            super::horizon::registry::set_switch(&paths.game_dir(id), &m.project_id, filename.ends_with(".disabled"))?;
+        }
+    }
     let path = content_path(paths, id, kind, world, filename)?;
     let target = match filename.strip_suffix(".disabled") {
         Some(base) => path.with_file_name(base),

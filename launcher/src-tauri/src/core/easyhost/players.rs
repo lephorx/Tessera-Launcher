@@ -33,6 +33,8 @@ fn valid_name(n: &str) -> bool {
 /// What a console line says about players, if anything. Chat (`<name> text`) never counts.
 pub fn event(line: &str) -> Option<LogEvent> {
     let msg = line.rsplit_once("]: ").map(|(_, m)| m).unwrap_or(line).trim();
+    // Horizon's server logs what it says in chat that way
+    let msg = msg.strip_prefix("System chat: ").unwrap_or(msg);
     if msg.starts_with('<') {
         return None;
     }

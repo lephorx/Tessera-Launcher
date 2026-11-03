@@ -24,6 +24,8 @@ const busy = ref(false);
 const gameVersions = computed(() => props.version?.game_versions ?? props.hit.versions);
 function fits(i: Instance) {
   if (gameVersions.value.length && !gameVersions.value.includes(i.game_version)) return false;
+  // Horizon runs resource and data packs, not Java mods or Iris/OptiFine shaders
+  if (i.loader === "horizon" && (props.hit.project_type === "mod" || props.hit.project_type === "shader")) return false;
   if (props.hit.project_type !== "mod") return true;
   if (i.loader === "vanilla") return false;
   const ok = i.loader === "quilt" ? ["quilt", "fabric"] : [i.loader];

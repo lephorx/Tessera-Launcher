@@ -119,7 +119,7 @@ impl Pack {
     fn target(&self) -> Result<(String, Loader, Option<String>)> {
         let deps = &self.index.dependencies;
         let game = deps.get("minecraft").ok_or_else(|| anyhow!("The modpack doesn't say which Minecraft version it needs"))?;
-        let (loader, version) = [("neoforge", Loader::NeoForge), ("forge", Loader::Forge), ("quilt-loader", Loader::Quilt), ("fabric-loader", Loader::Fabric)]
+        let (loader, version) = [("neoforge", Loader::NeoForge), ("forge", Loader::Forge), ("quilt-loader", Loader::Quilt), ("fabric-loader", Loader::Fabric), ("horizon", Loader::Horizon)]
             .iter()
             .find_map(|(k, l)| deps.get(*k).map(|v| (*l, Some(v.clone()))))
             .unwrap_or((Loader::Vanilla, None));

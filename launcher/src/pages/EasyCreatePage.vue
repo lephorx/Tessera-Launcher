@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { RouterLink, useRouter } from "vue-router";
-import { ArrowLeft, Blocks, Box, Hammer, Loader2, Package, Puzzle, Server } from "lucide-vue-next";
+import { ArrowLeft, Blocks, Box, Hammer, Loader2, Package, Puzzle, Rocket, Server } from "lucide-vue-next";
 import { api, type EasyKind, type GameVersion, type Instance } from "@/lib/api";
+import { NIGHTLY } from "@/lib/channel";
+import { HORIZON_MINECRAFT } from "@/lib/format";
 import { LEGAL, openLegal } from "@/lib/legal";
 import { errorText, toast } from "@/lib/toast";
 
@@ -18,6 +20,8 @@ const sources: { id: Source; label: string; hint: string; icon: typeof Box }[] =
   { id: "fabric", label: "Fabric", hint: "For Fabric mods", icon: Blocks },
   { id: "forge", label: "Forge", hint: "For Forge mods", icon: Hammer },
   { id: "neoforge", label: "NeoForge", hint: "For NeoForge mods", icon: Hammer },
+  // Minecraft rewritten in Rust (Nightly)
+  ...(NIGHTLY ? [{ id: "horizon" as Source, label: "Horizon", hint: `Minecraft ${HORIZON_MINECRAFT} in Rust: fast, little memory. Friends join with Minecraft ${HORIZON_MINECRAFT} or Horizon`, icon: Rocket }] : []),
 ];
 
 const source = ref<Source>(props.instanceId ? "instance" : "vanilla");
@@ -56,7 +60,7 @@ async function create() {
     const s = await api.easy.create({
       name: name.value.trim() || placeholder.value,
       kind: fromInstance ? "vanilla" : (source.value as EasyKind),
-      game_version: fromInstance ? "" : version.value,
+      game_version: fromInstance ? "" : source.value === "horizon" ? HORIZON_MINECRAFT : version.value,
       memory_mb: memGb.value * 1024,
       instance: fromInstance ? instance.value : null,
       eula: eula.value,
@@ -102,6 +106,13 @@ async function create() {
         <p v-else class="hint">No instances to host yet. Make one in the Library first.</p>
         <span class="hint">Mods that only run in the game (like minimaps and shaders) stay out; the server gets the rest.</span>
       </div>
+      <div v-else-if="source === 'horizon'" class="field">
+        <span class="label">Minecraft version</span>
+        <span class="hint">
+          Horizon is Minecraft {{ HORIZON_MINECRAFT }}, on its newest Nightly. It prepares its game files from your own Minecraft {{ HORIZON_MINECRAFT }} first, which takes a
+          minute. Horizon's native mods don't run on servers yet.
+        </span>
+      </div>
       <div v-else class="field">
         <label for="e-ver">Minecraft version</label>
         <select id="e-ver" v-model="version" class="select">
@@ -114,7 +125,7 @@ async function create() {
         <input id="e-name" v-model="name" class="input" maxlength="48" :placeholder="placeholder" />
       </div>
 
-      <div class="field">
+      <div v-if="source !== 'horizon' && picked?.loader !== 'horizon'" class="field">
         <label for="e-mem">Memory</label>
         <div class="row">
           <input

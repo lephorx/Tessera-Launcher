@@ -1,7 +1,7 @@
 import type { EasyKind } from "./api";
 
 /** Servers on this computer: names and states the pages share. */
-export const KIND: Record<EasyKind, string> = { vanilla: "Vanilla", paper: "Paper", fabric: "Fabric", forge: "Forge", neoforge: "NeoForge" };
+export const KIND: Record<EasyKind, string> = { vanilla: "Vanilla", paper: "Paper", fabric: "Fabric", forge: "Forge", neoforge: "NeoForge", horizon: "Horizon" };
 
 export const STATE: Record<string, { key: string; label: string }> = {
   stopped: { key: "idle", label: "Stopped" },

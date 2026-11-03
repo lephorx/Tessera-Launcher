@@ -8,6 +8,8 @@ export const router = createRouter({
     { path: "/instance/:id", component: () => import("./pages/InstancePage.vue"), props: true },
     // "Add content": Discover for one instance; everything clicked goes straight in
     { path: "/instance/:id/add", component: () => import("./pages/DiscoverPage.vue"), props: (r) => ({ instanceId: r.params.id }) },
+    // a Horizon instance's mods, from Horizon's own registry (Nightly)
+    { path: "/instance/:id/horizon", component: () => import("./pages/HorizonModsPage.vue"), props: (r) => ({ instanceId: r.params.id }) },
     { path: "/discover", component: () => import("./pages/DiscoverPage.vue") },
     // a Modrinth project (id or slug): versions, what's in a modpack; ?instance= from "Add content"
     { path: "/project/:id", component: () => import("./pages/ProjectPage.vue"), props: (r) => ({ id: r.params.id, instanceId: r.query.instance ?? null }) },

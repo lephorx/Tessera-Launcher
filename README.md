@@ -59,6 +59,15 @@ Want new features before they're done? **Tessera Launcher Nightly** is built fro
 
 ![Tessera Launcher Nightly](docs/releases/nightly-look.png)
 
+#### Horizon (Nightly only)
+
+Nightly can make **Horizon** instances and servers: [Horizon](https://github.com/horizon-rust/horizon) is Minecraft: Java Edition 26.3 rewritten in Rust (MIT, unofficial). Tessera follows Horizon's Launch API for other launchers:
+
+- **Builds**: Horizon's Nightlies from GitHub, checked against their Ed25519-signed `SHA256SUMS`. An instance follows the newest one, or keeps one build (Settings → Horizon version).
+- **Game files**: on the first start, `horizon-prepare` makes Horizon's resources from Minecraft 26.3's own files (downloaded like vanilla's) and its server jar, about half a minute once per build. Horizon needs a Microsoft account that owns Minecraft; its session goes to the game on standard input.
+- **Mods**: **Add Horizon mods** browses [Horizon's registry](https://github.com/horizon-rust/horizon-mods): content mods, native mods, resource packs and Horizon shaders, each checked against the registry's SHA-256 (and its author's minisign key when there is one). Native mods are Rust compiled into the game: on Play, Tessera downloads Horizon's pinned Rust toolchain (once, about 450 MB), horizon-mixins and Horizon's source, applies the mods and compiles the game (several minutes the first time, about a minute after a change; builds are reused). macOS needs Apple's Command Line Tools, Linux a C compiler and the ALSA and libudev development files. Trait mods (an `[api]` crate) aren't built yet.
+- **Servers**: Servers → New → Horizon runs `horizon-server` with the same prepared files; the launcher's settings, console and RCON work as for other servers. Native mods don't run on servers yet.
+
 ## Releasing
 
 Two channels:

@@ -17,6 +17,8 @@ pub enum Loader {
     Forge,
     #[serde(rename = "neoforge")]
     NeoForge,
+    /// Minecraft rewritten in Rust (Tessera Launcher Nightly only, core/horizon)
+    Horizon,
 }
 
 impl Loader {
@@ -28,6 +30,8 @@ impl Loader {
             Loader::Quilt => &["quilt", "fabric"],
             Loader::Forge => &["forge"],
             Loader::NeoForge => &["neoforge"],
+            // its mods come from its own registry
+            Loader::Horizon => &[],
         }
     }
 }
@@ -90,7 +94,8 @@ fn version_key(v: &str) -> Vec<u64> {
 pub async fn versions(client: &reqwest::Client, loader: Loader, game: &str) -> Result<Vec<LoaderVersion>> {
     super::versions::check_version(game)?;
     match loader {
-        Loader::Vanilla => Ok(vec![]),
+        // Horizon's builds: `horizon::builds` (lib.rs's loader_versions)
+        Loader::Vanilla | Loader::Horizon => Ok(vec![]),
         Loader::Fabric | Loader::Quilt => {
             let base = if loader == Loader::Fabric { FABRIC } else { QUILT };
             let entries: Vec<MetaEntry> = fetch_json(client, &format!("{base}/versions/loader/{game}")).await.unwrap_or_default();

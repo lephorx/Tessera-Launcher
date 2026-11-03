@@ -2,11 +2,12 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { open } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   ArrowLeft, Boxes, Check, Compass, Download, FolderSearch, Loader2, Palette, PackageOpen, Plus, RefreshCw, Search, Upload,
 } from "lucide-vue-next";
 import { api, type FoundInstance, type GameVersion, type Icon, type LauncherDir, type Loader, type LoaderVersion } from "@/lib/api";
-import { LOADERS, LOADER_ORDER } from "@/lib/format";
+import { HORIZON_MINECRAFT, LOADERS, LOADER_ORDER, horizonBuild } from "@/lib/format";
 import { randomIcon } from "@/lib/icons";
 import { errorText, toast } from "@/lib/toast";
 import AppDialog from "./AppDialog.vue";
@@ -36,10 +37,13 @@ const loaderVersions = ref<LoaderVersion[] | null>(null);
 const loaderPick = ref<"stable" | "latest" | "other">("stable");
 const otherVersion = ref("");
 
-const placeholder = computed(() => `${LOADERS[loader.value].label} ${gameVersion.value}`);
+const horizon = computed(() => loader.value === "horizon");
+const placeholder = computed(() => (horizon.value ? "Horizon" : `${LOADERS[loader.value].label} ${gameVersion.value}`));
 const chosenLoaderVersion = computed(() => {
   const list = loaderVersions.value ?? [];
   if (loader.value === "vanilla") return null;
+  // Horizon: "latest" follows the newest Nightly; "other" stays on one build
+  if (horizon.value) return loaderPick.value === "other" ? otherVersion.value || null : "latest";
   if (loaderPick.value === "other") return otherVersion.value || null;
   if (loaderPick.value === "latest") return list[0]?.version ?? null;
   return (list.find((l) => l.stable) ?? list[0])?.version ?? null;
@@ -63,10 +67,10 @@ watch([loader, gameVersion], async () => {
   if (loader.value === "vanilla" || !gameVersion.value) return;
   const mine = ++token;
   try {
-    const list = await api.loaders.versions(loader.value, gameVersion.value);
+    const list = await api.loaders.versions(loader.value, horizon.value ? HORIZON_MINECRAFT : gameVersion.value);
     if (mine === token) {
-      loaderVersions.value = list;
-      otherVersion.value = list[0]?.version ?? "";
+      loaderVersions.value = horizon.value ? list.filter((l) => l.version !== "latest") : list;
+      otherVersion.value = loaderVersions.value[0]?.version ?? "";
     }
   } catch {
     if (mine === token) loaderVersions.value = [];
@@ -99,7 +103,7 @@ async function create() {
   try {
     const inst = await api.instances.create({
       name: name.value.trim() || placeholder.value,
-      gameVersion: gameVersion.value,
+      gameVersion: horizon.value ? HORIZON_MINECRAFT : gameVersion.value,
       loader: loader.value,
       loaderVersion: chosenLoaderVersion.value,
       icon: iconFile.value ? null : icon.value,
@@ -255,11 +259,30 @@ async function runImport() {
           </button>
         </div>
       </div>
-      <div class="field">
+      <div v-if="horizon" class="inset stack horizon-note" style="gap: 4px">
+        <span style="font-weight: 700">Minecraft {{ HORIZON_MINECRAFT }}, rewritten in Rust</span>
+        <span class="hint">
+          <a href="#" @click.prevent="openUrl('https://github.com/horizon-rust/horizon')">Horizon</a> plays your worlds faster with the same rules. It's experimental and
+          unofficial. It needs your Microsoft account that owns Minecraft. The first start prepares its game files from Minecraft {{ HORIZON_MINECRAFT }}, which takes a minute.
+        </span>
+      </div>
+      <div v-else class="field">
         <span class="label">Game version</span>
         <VersionPicker v-model="gameVersion" :versions="versions" />
       </div>
-      <div v-if="loader !== 'vanilla'" class="field">
+      <div v-if="horizon" class="field">
+        <span class="label">Horizon version</span>
+        <div class="choices">
+          <button type="button" class="choice" :class="{ on: loaderPick !== 'other' }" @click="loaderPick = 'stable'"><Check v-if="loaderPick !== 'other'" />Newest Nightly</button>
+          <button type="button" class="choice" :class="{ on: loaderPick === 'other' }" :disabled="!loaderVersions?.length" @click="loaderPick = 'other'"><Check v-if="loaderPick === 'other'" />Keep one build</button>
+        </div>
+        <p v-if="loaderVersions === null" class="hint row"><Loader2 class="spin" :size="13" /> Looking up Horizon's builds…</p>
+        <select v-else-if="loaderPick === 'other'" v-model="otherVersion" class="select">
+          <option v-for="v in loaderVersions" :key="v.version" :value="v.version">{{ horizonBuild(v.version) }}</option>
+        </select>
+        <span v-else class="hint">Updates itself to each new Horizon Nightly.</span>
+      </div>
+      <div v-else-if="loader !== 'vanilla'" class="field">
         <span class="label">Loader version</span>
         <p v-if="loaderVersions === null" class="hint row"><Loader2 class="spin" :size="13" /> Looking up {{ LOADERS[loader].label }} versions…</p>
         <p v-else-if="unsupported" class="error-text">{{ LOADERS[loader].label }} has no version for Minecraft {{ gameVersion }} yet.</p>
@@ -278,7 +301,7 @@ async function runImport() {
       <p v-if="error" class="error-text">{{ error }}</p>
       <div class="dialog-footer" style="margin-top: 0">
         <button type="button" class="btn btn-lg" @click="step = 'choose'"><ArrowLeft /> Back</button>
-        <button type="submit" class="btn btn-primary btn-lg" :disabled="busy || !gameVersion || unsupported || (loader !== 'vanilla' && !chosenLoaderVersion)">
+        <button type="submit" class="btn btn-primary btn-lg" :disabled="busy || (!horizon && (!gameVersion || unsupported)) || (loader !== 'vanilla' && !chosenLoaderVersion)">
           <Loader2 v-if="busy" class="spin" /><Plus v-else /> Create instance
         </button>
       </div>

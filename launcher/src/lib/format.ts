@@ -1,4 +1,5 @@
 import type { Loader } from "./api";
+import { NIGHTLY } from "./channel";
 
 export const LOADERS: Record<Loader, { label: string; color: string }> = {
   vanilla: { label: "Vanilla", color: "#7dd87d" },
@@ -6,9 +7,21 @@ export const LOADERS: Record<Loader, { label: string; color: string }> = {
   quilt: { label: "Quilt", color: "#d6a2f0" },
   forge: { label: "Forge", color: "#959eef" },
   neoforge: { label: "NeoForge", color: "#f2a76d" },
+  horizon: { label: "Horizon", color: "#f0795a" },
 };
 
-export const LOADER_ORDER: Loader[] = ["vanilla", "fabric", "neoforge", "forge", "quilt"];
+/** Horizon (Minecraft 26.3 rewritten in Rust) is in Tessera Launcher Nightly only. */
+export const LOADER_ORDER: Loader[] = ["vanilla", "fabric", "neoforge", "forge", "quilt", ...(NIGHTLY ? (["horizon"] as Loader[]) : [])];
+
+/** The Minecraft version Horizon is. */
+export const HORIZON_MINECRAFT = "26.3";
+
+/** "nightly-2026-11-03-f42ef42" → "Nightly 11-03 · f42ef42"; "latest" → "Newest Nightly". */
+export function horizonBuild(v: string | null): string {
+  if (!v || v === "latest") return "Newest Nightly";
+  const m = /^nightly-\d{4}-(\d{2}-\d{2})-([0-9a-f]+)$/.exec(v);
+  return m ? `Nightly ${m[1]} · ${m[2]}` : v;
+}
 
 export function relative(iso: string | null): string {
   if (!iso) return "Never played";

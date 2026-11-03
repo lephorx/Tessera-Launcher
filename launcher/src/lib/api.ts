@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { Consent } from "./legal";
 
-export type Loader = "vanilla" | "fabric" | "quilt" | "forge" | "neoforge";
+export type Loader = "vanilla" | "fabric" | "quilt" | "forge" | "neoforge" | "horizon";
 export type ProjectType = "modpack" | "mod" | "resourcepack" | "datapack" | "shader";
 
 export type Icon = { kind: "generated"; background: string; symbol: string } | { kind: "file" };
@@ -52,13 +52,31 @@ export interface PackSource {
   files: string[];
 }
 
+export type HorizonKind = "mod" | "native-mod" | "resourcepack" | "shader";
+
+export interface HorizonProject {
+  id: string;
+  kind: HorizonKind;
+  name: string;
+  summary: string;
+  description: string;
+  authors: string[];
+  license: string;
+  source: string;
+  icon: string | null;
+  key: string | null;
+  downloads: number | null;
+  versions: { version: string; published: string; changelog: string; game: string | null; side: string | null; file: { name: string; size: number } }[];
+}
+
 export interface LoaderVersion {
   version: string;
   stable: boolean;
 }
 
 export interface ContentFile {
-  kind: "mod" | "resourcepack" | "shader" | "datapack";
+  /** horizon-mod and native-mod: a Horizon instance's mods */
+  kind: "mod" | "resourcepack" | "shader" | "datapack" | "horizon-mod" | "native-mod";
   filename: string;
   enabled: boolean;
   title: string;
@@ -323,7 +341,7 @@ export interface Blocked {
   created_at: string;
 }
 
-export type EasyKind = "vanilla" | "paper" | "fabric" | "forge" | "neoforge";
+export type EasyKind = "vanilla" | "paper" | "fabric" | "forge" | "neoforge" | "horizon";
 
 /** A server the launcher runs itself (no Docker). */
 export interface EasyServer {
@@ -598,7 +616,7 @@ export const api = {
     worlds: (id: string) => call<string[]>("list_worlds", { id }),
     update: (
       id: string,
-      settings: { name: string; memory_mb: number | null; java_path: string | null; jvm_args: string | null; resolution: { width: number; height: number } | null },
+      settings: { name: string; memory_mb: number | null; java_path: string | null; jvm_args: string | null; resolution: { width: number; height: number } | null; horizon_version?: string | null },
     ) => call<Instance>("update_instance", { id, settings }),
     worldsDetail: (id: string) => call<World[]>("instance_worlds", { id }),
     deleteWorld: (id: string, folder: string) => call<void>("delete_world", { id, folder }),
@@ -626,6 +644,13 @@ export const api = {
   },
   loaders: {
     versions: (loader: Loader, gameVersion: string) => call<LoaderVersion[]>("loader_versions", { loader, gameVersion }),
+  },
+  /** Horizon's mod registry (Tessera Launcher Nightly). */
+  horizon: {
+    mods: (query: string, kind: HorizonKind | null = null) => call<HorizonProject[]>("horizon_mods", { query, kind }),
+    install: (instanceId: string, projectId: string, version: string | null = null) => call<Instance>("horizon_install", { instanceId, projectId, version }),
+    /** [project id, newest version] for each installed one with a newer version */
+    updates: (instanceId: string) => call<[string, string][]>("horizon_updates", { instanceId }),
   },
   projects: {
     search: (o: {
