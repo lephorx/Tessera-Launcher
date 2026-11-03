@@ -55,7 +55,7 @@ Every one of them updates itself. The `.deb` and `.rpm` update with your system'
 
 ### Tessera Launcher Nightly
 
-Want new features before they're done? **Tessera Launcher Nightly** is built from the newest code on every push to `main` and published as a prerelease ([Nightly builds](https://github.com/lephorx/Tessera-Launcher/releases?q=Nightly+prerelease%3Atrue&expanded=true)). It installs next to Tessera Launcher with its own name, icon, midnight look and data folder (`dev.tessera.launcher.nightly`), so experiments never touch your instances in the released launcher. It updates itself from the Nightly feed and talks to the nightly API (`api-nightly.tesseralauncher.com`, the newest server code, same accounts), falling back to the released API when that's down. Things may break: for your worlds and servers, use Tessera Launcher.
+Want new features before they're done? **Tessera Launcher Nightly** is built from the newest code on every push to `main` and published as a prerelease ([Nightly builds](https://github.com/lephorx/Tessera-Launcher/releases?q=Nightly+prerelease%3Atrue&expanded=true)). It installs next to Tessera Launcher with its own name, icon, midnight look and data folder (`dev.tessera.launcher.nightly`), so experiments never touch your instances in the released launcher. It updates itself from the Nightly feed and talks to the nightly API (`api-nightly.tesseralauncher.com`, the newest server code, same accounts), falling back to the released API when that's down. Things may break: for your worlds and servers, use Tessera Launcher. On Linux there's the `.deb`, the Arch package and the AppImage (no `.rpm`: it can't carry a nightly version).
 
 ![Tessera Launcher Nightly](docs/releases/nightly-look.png)
 

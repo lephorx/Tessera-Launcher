@@ -5,7 +5,8 @@
 #
 # Each build is a prerelease "nightly-<run>" with version <next patch>-nightly.<run>, published
 # once every platform built. The "nightly" release only holds latest.json, which Tessera
-# Nightly's updater reads, pointing at the newest build. The last 5 builds are kept.
+# Nightly's updater reads, pointing at the newest build. The last 5 builds are kept. No .msi
+# and no .rpm: neither allows the "-nightly.<run>" in the version (the .exe and AppImage do it).
 #
 # It also saves the release build caches (check.yml used to), so release builds from tags
 # start warm.
