@@ -164,6 +164,14 @@ export interface ServerEntry {
   ip: string;
 }
 
+/** A skin from MineSkin's gallery or a player: `id` is its texture's hash; `model` is null when the picture has to tell. */
+export interface GallerySkin {
+  id: string;
+  name: string;
+  texture: string;
+  model: "classic" | "slim" | null;
+}
+
 export interface Skin {
   id: string;
   name: string;
@@ -839,6 +847,12 @@ export const api = {
     update: (id: string, name: string, model: "classic" | "slim", cape: string | null) => call<void>("skins_update", { id, name, model, cape }),
     remove: (id: string) => call<void>("skins_remove", { id }),
     select: (id: string | null) => call<void>("skins_select", { id }),
+    /** A page of MineSkin's public gallery: the newest skins, or those named like `query`. */
+    gallery: (query: string, after: string | null) => call<{ skins: GallerySkin[]; next: string | null }>("skins_gallery", { query, after }),
+    /** The skin a Minecraft player wears now. */
+    player: (name: string) => call<GallerySkin>("skins_player", { name }),
+    saveTexture: (hash: string, name: string, model: "classic" | "slim") =>
+      call<Omit<Skin, "texture" | "default">>("skins_save_texture", { hash, name, model }),
   },
   /** `eula`: the user accepted the Minecraft EULA for this server. */
   createServer: (instanceId: string, machineId: string, name: string, memGb: number, eula: boolean) =>

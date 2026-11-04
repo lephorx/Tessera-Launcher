@@ -34,3 +34,19 @@ export function renderSkin(texture: string, model: "classic" | "slim", cape: str
   }
   return done;
 }
+
+/** A still picture of a skin whose arms aren't known, and which arms its picture has. */
+export function renderSkinAuto(texture: string): Promise<{ picture: string; model: "classic" | "slim" }> {
+  const done = queue.then(async () => {
+    const v = get();
+    await v.loadSkin(texture, { model: "auto-detect" });
+    v.loadCape(null);
+    v.playerWrapper.rotation.y = -0.5;
+    v.playerObject.skin.leftArm.rotation.z = 0.12;
+    v.playerObject.skin.rightArm.rotation.z = -0.12;
+    v.render();
+    return { picture: v.canvas.toDataURL("image/png"), model: v.playerObject.skin.modelType === "slim" ? ("slim" as const) : ("classic" as const) };
+  });
+  queue = done.catch(() => {});
+  return done;
+}

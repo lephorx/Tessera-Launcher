@@ -1884,6 +1884,24 @@ fn skins_add(state: State<AppState>, path: Option<String>, from: Option<String>,
     skins::add(&state.paths, path.as_deref().map(std::path::Path::new), from.as_deref(), &name, model, cape).map_err(err)
 }
 
+/// A page of MineSkin's public skin gallery (newest, or matching `query`).
+#[tauri::command]
+async fn skins_gallery(state: State<'_, AppState>, query: String, after: Option<String>) -> CmdResult<core::skinlib::Gallery> {
+    core::skinlib::browse(&state.client, &state.paths, &query, after.as_deref()).await.map_err(err)
+}
+
+/// The skin a Minecraft player wears now.
+#[tauri::command]
+async fn skins_player(state: State<'_, AppState>, name: String) -> CmdResult<core::skinlib::GallerySkin> {
+    core::skinlib::player(&state.client, &state.paths, &name).await.map_err(err)
+}
+
+/// Saves a gallery or player skin (by its texture hash) as one of your skins.
+#[tauri::command]
+async fn skins_save_texture(state: State<'_, AppState>, hash: String, name: String, model: skins::Model) -> CmdResult<skins::SavedSkin> {
+    core::skinlib::save(&state.client, &state.paths, &hash, &name, model).await.map_err(err)
+}
+
 #[tauri::command]
 fn skins_update(state: State<AppState>, id: String, name: String, model: skins::Model, cape: Option<String>) -> CmdResult<()> {
     skins::update(&state.paths, &id, &name, model, cape).map_err(err)
@@ -2279,6 +2297,9 @@ pub fn run() {
             skins_list,
             skins_add,
             skins_update,
+            skins_gallery,
+            skins_player,
+            skins_save_texture,
             skins_remove,
             skins_select,
             linked_servers,

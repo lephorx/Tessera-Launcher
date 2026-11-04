@@ -1,29 +1,41 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { open } from "@tauri-apps/plugin-dialog";
-import { ChevronDown, Loader2, Move3d, Pencil, Plus } from "lucide-vue-next";
+import { ChevronDown, Download, Loader2, Move3d, Pencil, Plus, X } from "lucide-vue-next";
 import SkinEditDialog from "@/components/SkinEditDialog.vue";
+import SkinGallery, { type Picked } from "@/components/SkinGallery.vue";
 import SkinTile from "@/components/SkinTile.vue";
 import SkinViewer from "@/components/SkinViewer.vue";
 import { api, type Cape, type Skin, type Skins } from "@/lib/api";
 import { ensureAccount, player } from "@/lib/player";
 import { errorText, toast } from "@/lib/toast";
 
-/** Pick the skin the active player uses: your saved skins and Minecraft's default ones. */
+/** Pick the skin the active player uses: your saved skins, Minecraft's default ones, and
+ * more from MineSkin's gallery or any player. */
 const skins = ref<Skins | null>(null);
 const editing = ref<Skin | null>(null);
-const open_ = ref({ saved: true, defaults: true });
+const open_ = ref({ saved: true, defaults: true, more: true });
+/** A gallery or player skin shown in the big preview before it's saved. */
+const previewing = ref<Picked | null>(null);
+const savingPreview = ref(false);
+/** The default characters come with both arms; one switch picks which the grid shows. */
+const arms = ref<"classic" | "slim">("classic");
+const defaultsShown = computed(() => (skins.value?.defaults ?? []).filter((s) => s.model === arms.value).map((s) => ({ ...s, name: s.name.replace(/ \(slim\)$/, "") })));
 const adding = ref(false);
 const capes = ref<Cape[]>([]);
 const applying = ref<string | null>(null);
 
 const all = computed(() => [...(skins.value?.account ? [skins.value.account] : []), ...(skins.value?.saved ?? []), ...(skins.value?.defaults ?? [])]);
 const current = computed(() => all.value.find((s) => s.id === skins.value?.selected) ?? skins.value?.defaults.find((s) => s.id === "default:steve:classic") ?? null);
+const shown = computed(() => (previewing.value ? { texture: previewing.value.texture, model: previewing.value.model, cape: null } : current.value ? { texture: current.value.texture, model: current.value.model, cape: player.microsoft ? capeOf(current.value) : null } : null));
 const capeOf = (s: Skin) => capes.value.find((c) => c.id === s.cape)?.texture ?? null;
 
 async function load() {
   try {
     skins.value = await api.skins.list();
+    // the arms of the default skin in use
+    const sel = skins.value.defaults.find((s) => s.id === skins.value?.selected);
+    if (sel) arms.value = sel.model;
   } catch (e) {
     toast.error(errorText(e));
   }
@@ -97,6 +109,25 @@ onMounted(() => {
 });
 onUnmounted(() => window.removeEventListener("tessera-skin-files", onDrop));
 
+/** Saves the previewed gallery skin; `use` also makes it your skin. */
+async function savePreview(use: boolean) {
+  const p = previewing.value;
+  if (!p || savingPreview.value) return;
+  savingPreview.value = true;
+  try {
+    const s = await api.skins.saveTexture(p.id, p.name === "Untitled" ? "Gallery skin" : p.name, p.model);
+    await load();
+    previewing.value = null;
+    const added = skins.value?.saved.find((x) => x.id === s.id);
+    if (use && added) await pick(added);
+    else toast.success(`${s.name} saved`);
+  } catch (e) {
+    toast.error(errorText(e));
+  } finally {
+    savingPreview.value = false;
+  }
+}
+
 async function saved(id: string) {
   editing.value = null;
   await load();
@@ -110,11 +141,21 @@ async function saved(id: string) {
     <aside class="skins-preview">
       <h1 class="page-title">Skins</h1>
       <span class="skins-name mono">{{ player.name }}</span>
-      <SkinViewer v-if="current" :texture="current.texture" :model="current.model" :cape="player.microsoft ? capeOf(current) : null" :width="260" :height="380" />
+      <SkinViewer v-if="shown" :texture="shown.texture" :model="shown.model" :cape="shown.cape" :width="260" :height="380" />
       <div v-else class="empty" style="height: 380px"><Loader2 class="spin" /></div>
       <span v-if="applying" class="hint row" style="gap: 6px"><Loader2 class="spin" :size="14" /> Changing your skin…</span>
       <span v-else class="hint row" style="gap: 6px"><Move3d :size="14" /> Drag to rotate</span>
-      <button v-if="current" class="btn" @click="editing = current"><Pencil /> Edit skin</button>
+      <template v-if="previewing">
+        <span class="skins-name" style="text-align: center">{{ previewing.name }}</span>
+        <button class="btn btn-primary" :disabled="savingPreview" @click="savePreview(true)">
+          <Loader2 v-if="savingPreview" class="spin" /><Download v-else /> Save and use
+        </button>
+        <div class="row" style="gap: 8px">
+          <button class="btn" :disabled="savingPreview" @click="savePreview(false)">Save</button>
+          <button class="btn btn-ghost" :disabled="savingPreview" @click="previewing = null"><X /> Back</button>
+        </div>
+      </template>
+      <button v-else-if="current" class="btn" @click="editing = current"><Pencil /> Edit skin</button>
       <p v-if="player.microsoft" class="hint skins-note">Picking a skin makes it your Minecraft skin and cape, so everyone sees it.</p>
       <p v-else class="hint skins-note">Add your Minecraft account under Playing as on Home to change your skin.</p>
     </aside>
@@ -144,10 +185,21 @@ async function saved(id: string) {
       </button>
       <template v-if="open_.defaults">
         <p v-if="skins && !skins.defaults.length" class="hint">The default skins come from Minecraft itself; play any version once (1.19.3 or newer) to get them.</p>
-        <div class="skins-grid">
-          <SkinTile v-for="s in skins?.defaults ?? []" :key="s.id" :skin="s" :selected="skins?.selected === s.id" @pick="pick(s)" @edit="editing = s" />
-        </div>
+        <template v-else>
+          <div v-slider class="tabs" role="tablist" aria-label="Arms" style="margin-bottom: 0; align-self: flex-start">
+            <button role="tab" :aria-selected="arms === 'classic'" :class="{ active: arms === 'classic' }" @click="arms = 'classic'">Classic arms</button>
+            <button role="tab" :aria-selected="arms === 'slim'" :class="{ active: arms === 'slim' }" @click="arms = 'slim'">Slim arms</button>
+          </div>
+          <div class="skins-grid">
+            <SkinTile v-for="s in defaultsShown" :key="s.id" :skin="s" :selected="skins?.selected === s.id" @pick="pick(s)" @edit="editing = s" />
+          </div>
+        </template>
       </template>
+
+      <button class="skins-section" :aria-expanded="open_.more" @click="open_.more = !open_.more">
+        <ChevronDown :size="18" class="side-chevron" :class="{ open: !open_.more }" /> More skins
+      </button>
+      <SkinGallery v-if="open_.more" :previewing="previewing?.id ?? null" @preview="(s) => (previewing = s)" />
     </div>
 
     <SkinEditDialog v-if="editing" :skin="editing" :capes="capes" @close="editing = null" @saved="saved" @removed="(editing = null), load()" />

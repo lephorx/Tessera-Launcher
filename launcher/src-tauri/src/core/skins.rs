@@ -257,6 +257,11 @@ pub fn add(paths: &Paths, file: Option<&Path>, from: Option<&str>, name: &str, m
         (None, Some(id)) => texture_of(paths, id)?.0,
         _ => bail!("No skin given"),
     };
+    add_bytes(paths, bytes, name, model, cape)
+}
+
+/// Saves a skin picture as one of your skins.
+pub fn add_bytes(paths: &Paths, bytes: Vec<u8>, name: &str, model: Model, cape: Option<String>) -> Result<SavedSkin> {
     validate(&bytes)?;
     let mut store = load(paths);
     if store.skins.len() >= 100 {
