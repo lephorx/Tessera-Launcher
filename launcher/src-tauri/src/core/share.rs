@@ -33,6 +33,10 @@ pub const SHARED: &[&str] = &[
     "options.txt",
     "optionsof.txt",      // OptiFine
     "optionsshaders.txt", // OptiFine and Iris shader settings
+    // Horizon: content mods, native mods (code: checked like jars) and which are on
+    "horizon-mods",
+    "horizon-native-mods",
+    "horizon-mods.txt",
 ];
 
 /// A path in the game folder that belongs in a shared pack.

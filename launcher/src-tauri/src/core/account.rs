@@ -458,6 +458,14 @@ pub async fn sign_up(client: &reqwest::Client, email: &str, invite: &str, userna
     if check["valid"] != true {
         bail!("{}", check["reason"].as_str().unwrap_or("That invite doesn't work."));
     }
+    // before the account exists: a taken username used to leave an account without one
+    let free: Value = match send(|base| client.get(format!("{base}/usernames/{username}"))).await {
+        Ok(r) => r.json().await.unwrap_or(Value::Null),
+        Err(_) => Value::Null,
+    };
+    if free["available"] == false {
+        bail!("{}", free["reason"].as_str().unwrap_or("That username is taken. Pick another one."));
+    }
     let res = client
         .post(format!("{AUTH_URL}/sign-up/email"))
         .header("origin", ORIGIN)

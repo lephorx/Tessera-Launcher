@@ -34,8 +34,8 @@ use super::tapack::{self, rel_string, walk};
 
 /// Folders whose changes are published (the pack carries all of `share::SHARED`; options.txt
 /// isn't watched: the game rewrites it every time it closes).
-const WATCHED: [&str; 7] = ["mods", "resourcepacks", "shaderpacks", "config", "defaultconfigs", "kubejs", "scripts"];
-const CONTENT: [&str; 3] = ["mods", "resourcepacks", "shaderpacks"];
+const WATCHED: [&str; 9] = ["mods", "resourcepacks", "shaderpacks", "config", "defaultconfigs", "kubejs", "scripts", "horizon-mods", "horizon-native-mods"];
+const CONTENT: [&str; 5] = ["mods", "resourcepacks", "shaderpacks", "horizon-mods", "horizon-native-mods"];
 
 #[derive(Serialize, Clone)]
 pub struct SyncEvent {

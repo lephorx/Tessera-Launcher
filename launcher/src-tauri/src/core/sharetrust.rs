@@ -107,7 +107,31 @@ pub fn save(paths: &Paths, id: &str, trust: &Trust) -> Result<()> {
 pub fn is_code(rel: &str) -> bool {
     let lower = rel.to_lowercase();
     let name = lower.strip_suffix(".disabled").unwrap_or(&lower);
-    name.ends_with(".jar") || name.ends_with(".litemod") || (name.starts_with("mods/") && name.ends_with(".zip"))
+    // Horizon's native mods are Rust compiled into the game: code too
+    name.ends_with(".jar") || name.ends_with(".litemod") || name.ends_with(".hnmod") || (name.starts_with("mods/") && name.ends_with(".zip"))
+}
+
+fn is_native_mod(rel: &str) -> bool {
+    let lower = rel.to_lowercase();
+    lower.strip_suffix(".disabled").unwrap_or(&lower).ends_with(".hnmod")
+}
+
+/// SHA-256s of the native mods Horizon's registry lists and hasn't taken down: those come in
+/// like Modrinth jars, without asking. Empty when the pack isn't Horizon's or the registry
+/// can't be reached (then they're asked about).
+async fn horizon_registry(client: &reqwest::Client, paths: &Paths, m: &tapack::Manifest) -> HashSet<String> {
+    if m.loader.kind != super::loaders::Loader::Horizon {
+        return HashSet::new();
+    }
+    let Ok(index) = super::horizon::registry::index(client, paths).await else { return HashSet::new() };
+    let revoked: HashSet<String> = index.revoked.iter().filter_map(|r| r.sha256.as_ref().map(|s| s.to_lowercase())).collect();
+    index
+        .projects
+        .iter()
+        .filter(|p| p.kind == "native-mod")
+        .flat_map(|p| p.versions.iter().map(|v| v.file.sha256.to_lowercase()))
+        .filter(|h| !revoked.contains(h))
+        .collect()
 }
 
 #[derive(Debug, PartialEq)]
@@ -143,6 +167,13 @@ fn modrinth_file<'a>(c: &ContentRef, known: &'a HashMap<String, modrinth::Versio
         return None;
     }
     v.file_with_sha1(&c.sha1)
+}
+
+fn sha256_of(mut r: impl Read) -> Result<String> {
+    use sha2::Digest;
+    let mut h = sha2::Sha256::new();
+    std::io::copy(&mut r, &mut h)?;
+    Ok(hex::encode(h.finalize()))
 }
 
 fn sha512_of(mut r: impl Read) -> Result<String> {
@@ -216,7 +247,8 @@ pub async fn prepare(client: &reqwest::Client, paths: &Paths, id: &str, pack: &P
     trust.version_change = None;
 
     let out = std::env::temp_dir().join(format!("tessera-safe-{id}.tapack"));
-    let asking = check_jars(client, &mut zip, m, &held_dir(paths, id), Some(&paths.game_dir(id)), &mut trust, by, &out).await?;
+    let registry = horizon_registry(client, paths, &m).await;
+    let asking = check_jars(client, &mut zip, m, &held_dir(paths, id), Some(&paths.game_dir(id)), &mut trust, by, &out, &registry).await?;
     save(paths, id, &trust)?;
     tidy(paths, id, &trust);
     Ok(Prepared::Ready { pack: out, asking })
@@ -239,7 +271,8 @@ pub async fn install_new(
     let out = std::env::temp_dir().join(format!("tessera-safe-join-{stamp}.tapack"));
     let mut trust = Trust::default();
     progress("Checking the mods", 0, 0);
-    let checked = check_jars(client, &mut zip, m, &staging, None, &mut trust, by, &out).await;
+    let registry = horizon_registry(client, paths, &m).await;
+    let checked = check_jars(client, &mut zip, m, &staging, None, &mut trust, by, &out, &registry).await;
     let installed = match checked {
         Ok(_) => tapack::import(client, paths, &out, progress).await,
         Err(e) => Err(e),
@@ -273,6 +306,7 @@ async fn check_jars(
     trust: &mut Trust,
     by: Option<&str>,
     out: &Path,
+    registry: &HashSet<String>,
 ) -> Result<usize> {
     // (path in the game folder, sha512, size) of every jar Modrinth doesn't vouch for
     let mut unknown: Vec<(String, String, u64)> = Vec::new();
@@ -341,7 +375,7 @@ async fn check_jars(
     let mut local_files = Vec::new();
     let game = game.unwrap_or(Path::new(""));
     if !game.as_os_str().is_empty() {
-        for top in ["mods", "config", "kubejs", "scripts", "defaultconfigs", "resourcepacks", "shaderpacks"] {
+        for top in ["mods", "config", "kubejs", "scripts", "defaultconfigs", "resourcepacks", "shaderpacks", "horizon-native-mods"] {
             walk(game, PathBuf::from(top), &mut local_files);
         }
     }
@@ -355,6 +389,14 @@ async fn check_jars(
     let mut install = Vec::new();
     let mut held = Vec::new();
     for (path, sha, size) in unknown {
+        // a native mod the Horizon registry lists, byte for byte
+        let listed = is_native_mod(&path)
+            && !registry.is_empty()
+            && std::fs::File::open(dir.join(&sha)).ok().and_then(|f| sha256_of(f).ok()).is_some_and(|h| registry.contains(&h));
+        if listed {
+            install.push((path, sha));
+            continue;
+        }
         match verdict(trust, &sha, &local) {
             Verdict::Install => {
                 trust.accepted.insert(sha.clone());

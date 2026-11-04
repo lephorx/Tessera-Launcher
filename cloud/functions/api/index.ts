@@ -48,7 +48,10 @@
  *   GET    /v1/me/email                         which notice emails I get
  *   PUT    /v1/me/email          {friends?, shares?}
  *   GET    /v1/email/unsubscribe?u=&k=&t=      public: the link in notice emails (POST turns them off)
- *   POST   /v1/webhooks/neon-authNeon Auth's send.otp webhook (signed): we email its codes ourselves
+ *   POST   /v1/webhooks/neon-authNeon Auth's webhooks (signed): send.otp (we email its codes ourselves) and
+ *                                               user.before_create (refuses a taken or not allowed username;
+ *                                               Neon Auth didn't enforce it when tried, so the event is off)
+ *   GET    /v1/usernames/:name                  public: {available, reason?}, asked before signing up
  *   POST   /v1/email/change      {email, password, new_email}
  *                                               public, password-checked: fixes the address of an
  *                                               account whose email never was verified (a typo, a throwaway)
@@ -214,7 +217,7 @@ function newCode(): string {
 const packMeta = z.object({
   name: z.string().trim().min(1).max(80),
   game_version: z.string().trim().min(1).max(40),
-  loader: z.enum(["vanilla", "fabric", "quilt", "forge", "neoforge"]),
+  loader: z.enum(["vanilla", "fabric", "quilt", "forge", "neoforge", "horizon"]),
 });
 
 /** Reads a .tapack request body, refusing anything too big or not a zip. */
@@ -304,7 +307,7 @@ function packVersions(body: Uint8Array): { game_version: string; loader: string;
     const raw = packManifest(body);
     if (!raw || raw === "too_many") return raw;
     const m = JSON.parse(strFromU8(raw));
-    const loader = z.enum(["vanilla", "fabric", "quilt", "forge", "neoforge"]).safeParse(m?.loader?.type);
+    const loader = z.enum(["vanilla", "fabric", "quilt", "forge", "neoforge", "horizon"]).safeParse(m?.loader?.type);
     if (typeof m?.minecraft !== "string" || !loader.success) return null;
     return { game_version: m.minecraft, loader: loader.data, loader_version: typeof m.loader.version === "string" ? m.loader.version : null };
   } catch {
@@ -483,6 +486,18 @@ app.get("/invites/:code", async (c, next) => {
   return c.json({ valid: true, invited_by: rows[0].invited_by });
 });
 
+// Public: whether a username is free. Asked before an account is made: Neon Auth makes the
+// account first and the username is only claimed when joining, so a taken one used to leave an
+// account without a username ("Your account is made, but joining failed").
+app.get("/usernames/:name", async (c) => {
+  if (!publicLookups.take(clientIp(c))) return err(c, 429, "rate_limited");
+  const name = c.req.param("name").trim();
+  const problem = usernameProblem(name);
+  if (problem) return c.json({ available: false, reason: problem });
+  const { rows } = await pool.query(`select 1 from profiles where username = $1::citext`, [name]);
+  return c.json(rows[0] ? { available: false, reason: "That username is taken. Pick another one." } : { available: true });
+});
+
 // Public: the "turn these emails off" link in notices. GET only asks (mail scanners open links),
 // POST turns them off: the button on that page, or the mail app's one-click unsubscribe.
 const unsubscribeQuery = (c: Context) => ({ u: c.req.query("u") ?? "", k: c.req.query("k") ?? "", t: c.req.query("t") ?? "" });
@@ -564,12 +579,28 @@ app.post("/webhooks/neon-auth", async (c) => {
     .object({
       event_id: z.string(),
       event_type: z.string(),
-      user: z.object({ email: z.string().email().optional() }).passthrough().optional(),
-      event_data: z.object({ otp_code: z.string().optional(), otp_type: z.string().optional() }).passthrough().optional(),
+      user: z.object({ email: z.string().email().optional(), name: z.string().optional() }).passthrough().optional(),
+      event_data: z
+        .object({ otp_code: z.string().optional(), otp_type: z.string().optional(), auth_provider: z.string().optional() })
+        .passthrough()
+        .optional(),
     })
     .safeParse((() => { try { return JSON.parse(body); } catch { return null; } })());
   if (!event.success) return err(c, 400, "invalid_event");
   const { event_id, event_type, user, event_data } = event.data;
+  // Before Neon Auth makes an account: the name is the username the account joins with, so a
+  // taken (or not allowed) one is refused here, not after the account exists ("joining failed"
+  // left accounts without a profile). Neon Auth shows error_message to the person signing up.
+  if (event_type === "user.before_create") {
+    const meta = (event_data?.signup_metadata ?? {}) as Record<string, unknown>;
+    const name = String(user?.name ?? meta.name ?? "").trim();
+    const problem = usernameProblem(name);
+    if (problem) return c.json({ allowed: false, error_message: problem, error_code: "invalid_username" });
+    // citext: "minomat" is taken when "Minomat" is (a text parameter would compare exactly)
+    const { rows } = await pool.query(`select 1 from profiles where username = $1::citext`, [name]);
+    if (rows[0]) return c.json({ allowed: false, error_message: "That username is taken. Pick another one.", error_code: "username_taken" });
+    return c.json({ allowed: true });
+  }
   if (event_type !== "send.otp") return c.json({ ok: true });
   const to = user?.email;
   const code = event_data?.otp_code;
@@ -583,7 +614,7 @@ app.post("/webhooks/neon-auth", async (c) => {
     title: text.title,
     lines: [text.line],
     code,
-    after: ["It works for 10 minutes. If you didn't ask for it, you can ignore this email."],
+    after: ["It works for 5 minutes. If you didn't ask for it, you can ignore this email."],
   });
   // test addresses (example.com) never get mail: that's fine, not a failure
   if (!sent && deliverable(to)) return err(c, 503, "email_unavailable");
