@@ -37,6 +37,7 @@ use super::paths::Paths;
 
 pub mod native;
 pub mod registry;
+pub mod server_mods;
 mod toolchain;
 
 pub const REPO: &str = "horizon-rust/horizon";

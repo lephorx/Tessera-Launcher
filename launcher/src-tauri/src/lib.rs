@@ -647,8 +647,10 @@ async fn horizon_mods(state: State<'_, AppState>, query: String, kind: Option<St
 }
 
 #[tauri::command]
-async fn horizon_install(state: State<'_, AppState>, instance_id: String, project_id: String, version: Option<String>) -> CmdResult<Instance> {
-    core::horizon::registry::install(&state.client, &state.paths, &instance_id, &project_id, version.as_deref()).await.map_err(err)
+async fn horizon_install(app: AppHandle, state: State<'_, AppState>, instance_id: String, project_id: String, version: Option<String>) -> CmdResult<Instance> {
+    let inst = core::horizon::registry::install(&state.client, &state.paths, &instance_id, &project_id, version.as_deref()).await.map_err(err)?;
+    schedule_server_sync(&app, &instance_id);
+    Ok(inst)
 }
 
 #[tauri::command]
@@ -1701,8 +1703,18 @@ async fn create_horizon_server(state: State<'_, AppState>, instance_id: String, 
         return Err(msg.unwrap_or_else(|| format!("Tessera answered {}", res.status)));
     }
     let server_id = res.body.get("server_id").and_then(|v| v.as_i64()).ok_or("Tessera didn't say which server it made")?;
+    // the content mods that run on servers: installed when it first starts
+    let mut pack_hash = None;
+    if let Ok(mods) = core::horizon::server_mods::build(&state.paths.game_dir(&instance_id)) {
+        if mods.count > 0 {
+            // not sent now: the next change or game start sends them (pack_hash stays None)
+            if servers::update_horizon_mods(&state.client, &state.paths, &machine_id, server_id, mods.bytes).await.is_ok() {
+                pack_hash = Some(mods.hash);
+            }
+        }
+    }
     let mut inst = instances::get(&state.paths, &instance_id).map_err(err)?;
-    inst.servers.push(instances::LinkedServer { machine_id, server_id, name, pack_hash: None, address: None, port: None });
+    inst.servers.push(instances::LinkedServer { machine_id, server_id, name, pack_hash, address: None, port: None });
     instances::save(&state.paths, &inst).map_err(err)?;
     Ok(server_id)
 }
@@ -1751,10 +1763,6 @@ async fn sync_servers(app: &AppHandle, id: &str, force: bool, only: Option<i64>)
     let state = app.state::<AppState>();
     let mut results = Vec::new();
     let Ok(mut inst) = instances::get(&state.paths, id) else { return results };
-    // Horizon servers install Horizon themselves; there's no server pack to send
-    if inst.loader == loaders::Loader::Horizon {
-        return results;
-    }
     inst.servers.retain(|s| only.is_none_or(|o| s.server_id == o));
     if inst.servers.is_empty() {
         return results;
@@ -1762,7 +1770,17 @@ async fn sync_servers(app: &AppHandle, id: &str, force: bool, only: Option<i64>)
     let emit = |server_id: i64, st: &str, message: Option<String>| {
         let _ = app.emit("server-sync", ServerSyncEvent { instance: id, server_id, state: st, message, needs_restart: false });
     };
-    let built = match serverpack::build(&state.client, &state.paths, id, &|_, _, _| {}).await {
+    // Horizon servers install Horizon themselves and get the content mods that run on servers
+    let horizon = inst.loader == loaders::Loader::Horizon;
+    let built = if horizon {
+        core::horizon::server_mods::build(&state.paths.game_dir(id)).map(|b| (b.bytes, Some(b.hash)))
+    } else {
+        serverpack::build(&state.client, &state.paths, id, &|_, _, _| {}).await.map(|b| {
+            let hash = serverpack::fingerprint(&b.bytes).ok();
+            (b.bytes, hash)
+        })
+    };
+    let (bytes, hash) = match built {
         Ok(b) => b,
         Err(e) => {
             for s in &inst.servers {
@@ -1772,13 +1790,17 @@ async fn sync_servers(app: &AppHandle, id: &str, force: bool, only: Option<i64>)
             return results;
         }
     };
-    let hash = serverpack::fingerprint(&built.bytes).ok();
     for linked in &inst.servers {
         if !force && hash.is_some() && linked.pack_hash == hash {
             continue;
         }
         emit(linked.server_id, "syncing", None);
-        match servers::update_pack(&state.client, &state.paths, &linked.machine_id, linked.server_id, built.bytes.clone()).await {
+        let sent = if horizon {
+            servers::update_horizon_mods(&state.client, &state.paths, &linked.machine_id, linked.server_id, bytes.clone()).await
+        } else {
+            servers::update_pack(&state.client, &state.paths, &linked.machine_id, linked.server_id, bytes.clone()).await
+        };
+        match sent {
             Ok(sent) => {
                 // fresh copy: the instance may have changed meanwhile
                 if let Ok(mut now) = instances::get(&state.paths, id) {
@@ -1819,10 +1841,6 @@ async fn sync_instance_servers(app: AppHandle, id: String) -> CmdResult<()> {
 /// Ok(true): it's running and installs them once restarted.
 #[tauri::command]
 async fn sync_instance_server(app: AppHandle, id: String, server_id: i64) -> CmdResult<bool> {
-    let state = app.state::<AppState>();
-    if instances::get(&state.paths, &id).is_ok_and(|i| i.loader == loaders::Loader::Horizon) {
-        return Err("Horizon servers set Horizon up themselves: there are no mods to send".into());
-    }
     match sync_servers(&app, &id, true, Some(server_id)).await.pop() {
         Some((_, result)) => result,
         None => Err("That server isn't linked to this instance anymore".into()),

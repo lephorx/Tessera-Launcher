@@ -43,7 +43,7 @@ onMounted(() => {
   void loadServers();
 });
 
-// Horizon servers install Horizon themselves: nothing to sync, only restarting
+// Horizon servers install Horizon themselves and get only the mods that run on servers
 const horizon = computed(() => props.instance.loader === "horizon");
 const running = (s: LinkedServer) => s.runtime_status === "healthy" || s.runtime_status === "running";
 const statusText = (s: LinkedServer) => {
@@ -57,14 +57,14 @@ const syncOf = (s: LinkedServer) => serverSync[`${props.instance.id}:${s.server_
 const restarting = ref<number | null>(null);
 
 /** Restarts the server so it installs the mods it got (it's never restarted for you: players may be on). */
-async function restart(s: LinkedServer, mods = true) {
+async function restart(s: LinkedServer) {
   restarting.value = s.server_id;
   try {
     const res = await api.machines.request<{ message?: string }>(s.machine_id, "POST", `/servers/${s.server_id}/restart`);
     if (res.status >= 400) throw new Error(res.body?.message ?? `The server answered ${res.status}`);
     const sync = syncOf(s);
     if (sync) sync.needsRestart = false;
-    toast.success(mods ? `${s.name} is restarting and installs the new mods` : `${s.name} is restarting`);
+    toast.success(`${s.name} is restarting and installs the new mods`);
     await loadServers();
   } catch (e) {
     toast.error(errorText(e));
@@ -164,20 +164,10 @@ const size = (n: number) => (n > 1e9 ? `${(n / 1e9).toFixed(1)} GB` : n > 1e6 ? 
             <span class="hint" style="color: var(--fill-orange)">New mods are waiting: they're installed when the server restarts.</span>
             <button class="btn btn-sm" :disabled="restarting === s.server_id" @click="restart(s)"><Loader2 v-if="restarting === s.server_id" class="spin" /><RotateCw v-else /> Restart now</button>
           </span>
-          <span v-else-if="horizon" class="hint">Sets Horizon up by itself: there are no mods to send to it.</span>
+          <span v-else-if="horizon" class="hint">Gets this instance's Horizon mods that run on servers when you change them (not client-only ones like HUDs); a running server installs them when you restart it.</span>
           <span v-else class="hint">Gets this instance's server-side mods when you change them; a running server installs them when you restart it.</span>
         </div>
         <button
-          v-if="horizon && running(s)"
-          class="btn"
-          :title="`Restart ${s.name}`"
-          :disabled="restarting === s.server_id"
-          @click="restart(s, false)"
-        >
-          <Loader2 v-if="restarting === s.server_id" class="spin" /><RotateCw v-else /> Restart
-        </button>
-        <button
-          v-else-if="!horizon"
           class="btn"
           :title="running(s) ? `Send all the mods to ${s.name} and restart it to install them` : `Send all the mods to ${s.name}: it installs them when it starts`"
           :disabled="syncingTo !== null || restarting === s.server_id || syncOf(s)?.state === 'syncing' || s.runtime_status === null"

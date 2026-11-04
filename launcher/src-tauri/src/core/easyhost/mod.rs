@@ -235,10 +235,15 @@ pub async fn create(client: &reqwest::Client, paths: &Paths, new: NewServer, pro
     std::fs::create_dir_all(&data)?;
     let made: Result<EasyServer> = async {
         let installed = install(client, paths, &data, kind, &game, loader_version, progress).await?;
-        // a Horizon server runs no instance's mods yet (native mods need a server build)
-        if let Some(inst) = new.instance.as_ref().filter(|_| kind != Kind::Horizon) {
-            let pack = serverpack::build(client, paths, inst, progress).await?;
-            install_pack(client, &pack.bytes, &data, progress).await?;
+        // a Horizon server gets the instance's content mods that run on servers (native mods
+        // would need a server engine built with them)
+        if let Some(inst) = new.instance.as_ref() {
+            if kind == Kind::Horizon {
+                super::horizon::server_mods::install(&paths.game_dir(inst), &data)?;
+            } else {
+                let pack = serverpack::build(client, paths, inst, progress).await?;
+                install_pack(client, &pack.bytes, &data, progress).await?;
+            }
         }
         let server = EasyServer {
             id: id.clone(),

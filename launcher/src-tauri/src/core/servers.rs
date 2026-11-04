@@ -308,13 +308,22 @@ pub struct PackSent {
 /// installs the new mods (and removes the ones that left the pack) on its next start. A
 /// running server isn't restarted (CSCM 1.16.1+): players may be on, the owner decides.
 pub async fn update_pack(client: &reqwest::Client, paths: &Paths, id: &str, server_id: i64, pack: Vec<u8>) -> Result<PackSent> {
+    send_files(client, paths, id, server_id, "pack", "pack", "pack.mrpack", pack, "CSCM").await
+}
+
+/// A Horizon server's content mods (a zip of `.hmod` files, horizon::server_mods), Tessera 1.19+.
+pub async fn update_horizon_mods(client: &reqwest::Client, paths: &Paths, id: &str, server_id: i64, mods: Vec<u8>) -> Result<PackSent> {
+    send_files(client, paths, id, server_id, "horizon-mods", "mods", "horizon-mods.zip", mods, "Tessera").await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn send_files(client: &reqwest::Client, paths: &Paths, id: &str, server_id: i64, route: &str, field: &'static str, file: &'static str, bytes: Vec<u8>, older: &str) -> Result<PackSent> {
     let machines = load(paths);
     let m = machines.iter().find(|m| m.id == id).ok_or_else(|| anyhow!("Unknown server"))?;
     let token = m.token.clone().ok_or_else(|| anyhow!("Sign in to {} first", m.name))?;
-    let form = reqwest::multipart::Form::new()
-        .part("pack", reqwest::multipart::Part::bytes(pack).file_name("pack.mrpack").mime_str("application/zip")?);
+    let form = reqwest::multipart::Form::new().part(field, reqwest::multipart::Part::bytes(bytes).file_name(file).mime_str("application/zip")?);
     let res = client
-        .put(format!("{}/api/servers/{server_id}/pack", m.url))
+        .put(format!("{}/api/servers/{server_id}/{route}", m.url))
         .bearer_auth(token)
         .multipart(form)
         .timeout(std::time::Duration::from_secs(300))
@@ -326,7 +335,7 @@ pub async fn update_pack(client: &reqwest::Client, paths: &Paths, id: &str, serv
     match status.as_u16() {
         200..=299 => Ok(PackSent { restarted: body["restarted"].as_bool().unwrap_or(false), needs_restart: body["needs_restart"].as_bool().unwrap_or(false) }),
         // the route itself is missing on older CSCM; a missing server says so in its message
-        404 if body["message"].is_null() && body["error"].is_null() => bail!("{} runs an older CSCM. Update it to keep the server's mods in sync.", m.name),
+        404 if body["message"].is_null() && body["error"].is_null() => bail!("{} runs an older {older}. Update it to keep the server's mods in sync.", m.name),
         _ => bail!("{}", body["error"].as_str().or(body["message"].as_str()).unwrap_or("CSCM refused the pack")),
     }
 }
