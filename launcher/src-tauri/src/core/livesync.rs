@@ -80,7 +80,7 @@ pub fn local_state(paths: &Paths, id: &str) -> (String, Vec<String>) {
 }
 
 /// The share an instance is on, and whether this copy may change it.
-fn link(inst: &Instance) -> Option<(String, bool)> {
+pub fn link(inst: &Instance) -> Option<(String, bool)> {
     if let Some(code) = &inst.share_code {
         return Some((code.clone(), true));
     }
@@ -231,11 +231,11 @@ pub async fn tick(client: &reqwest::Client, paths: &Paths, running: &HashSet<Str
         let Some(r) = remote.get(&code) else { continue }; // removed from the share, or it's gone
         // the servers linked to the pack: mine go up, the others' into the game's list
         super::shareservers::publish(client, &inst, &code).await;
-        if !running.contains(&inst.id) {
-            if let Some(servers) = super::shareservers::from_sync(r) {
-                if let Err(e) = super::shareservers::apply(paths, &inst.id, &servers) {
-                    events.push(SyncEvent { instance: inst.id.clone(), name: inst.name.clone(), state: "error", by: None, message: Some(format!("adding the pack's servers: {e:#}")) });
-                }
+        if let Some(servers) = super::shareservers::from_sync(r) {
+            match super::shareservers::apply(paths, &inst.id, &servers, running.contains(&inst.id)) {
+                Ok(added) if !added.is_empty() => events.push(SyncEvent { instance: inst.id.clone(), name: inst.name.clone(), state: "servers", by: None, message: Some(added.join(", ")) }),
+                Ok(_) => {}
+                Err(e) => events.push(SyncEvent { instance: inst.id.clone(), name: inst.name.clone(), state: "error", by: None, message: Some(format!("adding the pack's servers: {e:#}")) }),
             }
         }
         if !BUSY.lock().unwrap().insert(inst.id.clone()) {

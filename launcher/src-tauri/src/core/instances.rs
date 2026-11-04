@@ -115,6 +115,10 @@ pub struct LinkedServer {
     /// The address written to the game's server list (servers.dat).
     #[serde(default)]
     pub address: Option<String>,
+    /// Its public address (custom domain or Playit), once it has one: what the others on a
+    /// shared pack get in their server list (`address` may be the machine's LAN address).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public: Option<String>,
     /// The server's port on its machine, to join by IP when CSCM can't be asked.
     #[serde(default)]
     pub port: Option<i64>,

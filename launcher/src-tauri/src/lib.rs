@@ -1543,11 +1543,28 @@ fn start_live_sync(app: AppHandle) {
             tokio::time::sleep(std::time::Duration::from_secs(10)).await;
             let state = app.state::<AppState>();
             let running: std::collections::HashSet<String> = state.running.lock().unwrap().keys().cloned().collect();
+            refresh_shared_servers(&state.client, &state.paths, &running).await;
             for e in livesync::tick(&state.client, &state.paths, &running, None).await {
                 let _ = app.emit("share-sync", e);
             }
         }
     });
+}
+
+/// The addresses of servers linked to shared packs, so the others get a new server as soon
+/// as it has one: every round while one is still waiting for it (the tunnel is being made),
+/// else every few minutes (a changed domain).
+async fn refresh_shared_servers(client: &reqwest::Client, paths: &Paths, running: &std::collections::HashSet<String>) {
+    static ASKED: std::sync::LazyLock<Mutex<HashMap<String, std::time::Instant>>> = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+    let Ok(list) = instances::list(paths) else { return };
+    for inst in list.into_iter().filter(|i| livesync::link(i).is_some() && !i.servers.is_empty()) {
+        let waiting = inst.servers.iter().any(|s| s.public.is_none());
+        let due = ASKED.lock().unwrap().get(&inst.id).is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(if waiting { 20 } else { 300 }));
+        if due {
+            ASKED.lock().unwrap().insert(inst.id.clone(), std::time::Instant::now());
+            let _ = refresh_linked(client, paths, &inst.id, running.contains(&inst.id)).await;
+        }
+    }
 }
 
 /// What sharing an instance uploads, shown before the first upload.
@@ -1723,7 +1740,7 @@ async fn create_server_from_instance(
         let hash = serverpack::fingerprint(&built.bytes).ok();
         let server_id = servers::create_from_pack(&state.client, &state.paths, &machine_id, &name, mem_gb, built.bytes, upload).await?;
         let mut inst = instances::get(&state.paths, &instance_id)?;
-        inst.servers.push(instances::LinkedServer { machine_id: machine_id.clone(), server_id, name: name.clone(), pack_hash: hash, address: None, port: None });
+        inst.servers.push(instances::LinkedServer { machine_id: machine_id.clone(), server_id, name: name.clone(), pack_hash: hash, address: None, public: None, port: None });
         instances::save(&state.paths, &inst)?;
         anyhow::Ok(CreatedServer { server_id, linked: built.linked, embedded: built.embedded, client_only: built.client_only })
     }
@@ -1778,7 +1795,7 @@ async fn create_horizon_server(state: State<'_, AppState>, instance_id: String, 
         }
     }
     let mut inst = instances::get(&state.paths, &instance_id).map_err(err)?;
-    inst.servers.push(instances::LinkedServer { machine_id, server_id, name, pack_hash, address: None, port: None });
+    inst.servers.push(instances::LinkedServer { machine_id, server_id, name, pack_hash, address: None, public: None, port: None });
     instances::save(&state.paths, &inst).map_err(err)?;
     Ok(server_id)
 }
@@ -1925,18 +1942,24 @@ struct LinkedServerView {
 /// server list up to date (adds new servers, follows address changes, drops deleted ones).
 #[tauri::command]
 async fn linked_servers(state: State<'_, AppState>, id: String) -> CmdResult<Vec<LinkedServerView>> {
-    let mut inst = instances::get(&state.paths, &id).map_err(err)?;
-    let game_dir = state.paths.game_dir(&id);
-    // the running game rewrites servers.dat from memory; update it next time instead
     let game_open = state.running.lock().unwrap().contains_key(&id);
-    let machines = servers::list(&state.paths);
+    refresh_linked(&state.client, &state.paths, &id, game_open).await.map_err(err)
+}
+
+/// Asks each machine about the instance's servers (see `linked_servers`); also run in the
+/// background for shared packs, so a new server's address reaches the others once it has one.
+async fn refresh_linked(client: &reqwest::Client, paths: &Paths, id: &str, game_open: bool) -> anyhow::Result<Vec<LinkedServerView>> {
+    let mut inst = instances::get(paths, id)?;
+    let game_dir = paths.game_dir(id);
+    // (the running game rewrites servers.dat from memory: own entries are updated next time)
+    let machines = servers::list(paths);
     let mut views = Vec::new();
     let mut keep = Vec::new();
     let mut changed = false;
     for mut linked in inst.servers.clone() {
         let machine_name = machines.iter().find(|m| m.id == linked.machine_id).map(|m| m.name.clone()).unwrap_or_else(|| "Unknown machine".into());
-        let url = servers::machine_url(&state.paths, &linked.machine_id).unwrap_or_default();
-        let res = servers::request(&state.client, &state.paths, &linked.machine_id, "GET", &format!("/servers/{}", linked.server_id), None).await;
+        let url = servers::machine_url(paths, &linked.machine_id).unwrap_or_default();
+        let res = servers::request(client, paths, &linked.machine_id, "GET", &format!("/servers/{}", linked.server_id), None).await;
         let (addresses, runtime) = match res {
             Ok(r) if r.status == 404 && !game_open => {
                 // deleted in CSCM: forget it and take it off the server list
@@ -1955,7 +1978,12 @@ async fn linked_servers(state: State<'_, AppState>, id: String) -> CmdResult<Vec
                         changed = true;
                     }
                 }
-                (servers::addresses(server, &url), server["runtime_status"].as_str().map(String::from))
+                let addresses = servers::addresses(server, &url);
+                if linked.public != addresses.public {
+                    linked.public = addresses.public.clone();
+                    changed = true;
+                }
+                (addresses, server["runtime_status"].as_str().map(String::from))
             }
             // offline or signed out: what we know, and the machine's IP with the server's port
             _ => {
@@ -1965,7 +1993,7 @@ async fn linked_servers(state: State<'_, AppState>, id: String) -> CmdResult<Vec
         };
         if let Some(best) = addresses.best().filter(|_| !game_open) {
             if linked.address.as_deref() != Some(best) {
-                serverlist::upsert(&game_dir, linked.address.as_deref(), &linked.name, best).map_err(err)?;
+                serverlist::upsert(&game_dir, linked.address.as_deref(), &linked.name, best)?;
                 linked.address = Some(best.to_string());
                 changed = true;
             }
@@ -1982,7 +2010,7 @@ async fn linked_servers(state: State<'_, AppState>, id: String) -> CmdResult<Vec
     }
     if changed {
         inst.servers = keep;
-        instances::save(&state.paths, &inst).map_err(err)?;
+        instances::save(paths, &inst)?;
     }
     Ok(views)
 }

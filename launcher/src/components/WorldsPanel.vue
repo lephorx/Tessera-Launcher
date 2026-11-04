@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { Copy, FolderOpen, Globe, Loader2, Play, RefreshCw, RotateCw, Search, Server, Trash2 } from "lucide-vue-next";
 import { api, type Instance, type LinkedServer, type ServerEntry, type World } from "@/lib/api";
 import { relative } from "@/lib/format";
@@ -38,10 +38,16 @@ async function loadServers() {
 async function load() {
   worlds.value = await api.instances.worldsDetail(props.instance.id);
 }
+// servers someone linked to the shared pack arrive in the background
+const onServers = (e: Event) => {
+  if ((e as CustomEvent).detail === props.instance.id) void loadServers();
+};
 onMounted(() => {
   void load();
   void loadServers();
+  window.addEventListener("tessera-servers-changed", onServers);
 });
+onUnmounted(() => window.removeEventListener("tessera-servers-changed", onServers));
 
 // Horizon servers install Horizon themselves and get only the mods that run on servers
 const horizon = computed(() => props.instance.loader === "horizon");

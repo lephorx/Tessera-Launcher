@@ -26,11 +26,12 @@ pub struct SharedServer {
 /// when it changes.
 static PUBLISHED: LazyLock<Mutex<HashMap<String, Vec<SharedServer>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// The servers this copy shares: the ones linked to it whose address is known.
+/// The servers this copy shares: the ones linked to it with a public address (a LAN address
+/// is no use to the others).
 pub fn mine(inst: &Instance) -> Vec<SharedServer> {
     let mut out: Vec<SharedServer> = Vec::new();
     for s in &inst.servers {
-        if let Some(address) = s.address.as_deref().filter(|a| !a.is_empty()) {
+        if let Some(address) = s.public.as_deref().filter(|a| !a.is_empty()) {
             if !out.iter().any(|o| o.address.eq_ignore_ascii_case(address)) {
                 out.push(SharedServer { name: s.name.chars().take(64).collect(), address: address.to_string() });
             }
@@ -80,31 +81,50 @@ pub fn from_sync(entry: &Value) -> Option<Vec<SharedServer>> {
 }
 
 /// Puts the others' servers in the game's list: new ones added, renamed or moved ones
-/// updated, ones they took off removed. Entries this copy links itself are left alone. Only
-/// call it while the game is closed (the game rewrites the list from memory). Ok(true) when
-/// the list changed.
-pub fn apply(paths: &Paths, id: &str, remote: &[SharedServer]) -> Result<bool> {
+/// updated, ones they took off removed. Entries this copy links itself are left alone.
+/// While the game runs only new servers are added (Minecraft reads the list each time
+/// Multiplayer opens, so they show up right away) and nothing is recorded: the full round
+/// runs once it's closed, putting back anything the game wrote over. Returns the names of
+/// the servers that weren't in the list before.
+pub fn apply(paths: &Paths, id: &str, remote: &[SharedServer], game_running: bool) -> Result<Vec<String>> {
     let mut inst = instances::get(paths, id)?;
-    if inst.shared_servers == remote {
-        return Ok(false);
+    if inst.shared_servers == remote && !game_running {
+        return Ok(Vec::new());
     }
     let game = paths.game_dir(id);
     let own: Vec<String> = mine(&inst).into_iter().map(|s| s.address.to_ascii_lowercase()).collect();
     let is_own = |a: &str| own.contains(&a.to_ascii_lowercase());
+    let listed: Vec<String> = serverlist::list(&game).into_iter().map(|e| e.ip.to_ascii_lowercase()).collect();
+    let mut added = Vec::new();
+    if game_running {
+        for s in remote {
+            if !is_own(&s.address) && !inst.shared_servers.contains(s) && !listed.contains(&s.address.to_ascii_lowercase()) {
+                serverlist::upsert(&game, None, &s.name, &s.address)?;
+                added.push(s.name.clone());
+            }
+        }
+        return Ok(added);
+    }
     for old in &inst.shared_servers {
         if !remote.iter().any(|r| r.address.eq_ignore_ascii_case(&old.address)) && !is_own(&old.address) {
             serverlist::remove(&game, &old.address)?;
         }
     }
     for s in remote {
-        if is_own(&s.address) || inst.shared_servers.contains(s) {
+        if is_own(&s.address) {
             continue;
         }
-        serverlist::upsert(&game, None, &s.name, &s.address)?;
+        let missing = !listed.contains(&s.address.to_ascii_lowercase());
+        if missing || !inst.shared_servers.contains(s) {
+            serverlist::upsert(&game, None, &s.name, &s.address)?;
+        }
+        if missing {
+            added.push(s.name.clone());
+        }
     }
     inst.shared_servers = remote.to_vec();
     instances::save(paths, &inst)?;
-    Ok(true)
+    Ok(added)
 }
 
 /// Leaving a pack: its servers come off the game's list (not the ones this copy links).
@@ -137,19 +157,26 @@ mod tests {
 
         // a server of my own, and one I added by hand
         let mut me = instances::get(&paths, &inst.id).unwrap();
-        me.servers.push(serde_json::from_value(serde_json::json!({ "machine_id": "m", "server_id": 1, "name": "Mine", "address": "mine.example.com" })).unwrap());
+        me.servers.push(serde_json::from_value(serde_json::json!({ "machine_id": "m", "server_id": 1, "name": "Mine", "address": "mine.example.com", "public": "mine.example.com" })).unwrap());
         instances::save(&paths, &me).unwrap();
         serverlist::upsert(&game, None, "Mine", "mine.example.com").unwrap();
         serverlist::upsert(&game, None, "Hand", "hand.example.com").unwrap();
         assert_eq!(mine(&instances::get(&paths, &inst.id).unwrap()), vec![s("Mine", "mine.example.com")]);
 
-        assert!(apply(&paths, &inst.id, &[s("Owner SMP", "smp.example.com"), s("Also mine", "mine.example.com")]).unwrap());
+        // a new one while the game runs: added right away, nothing recorded yet
+        let both = [s("Owner SMP", "smp.example.com"), s("Also mine", "mine.example.com")];
+        assert_eq!(apply(&paths, &inst.id, &both, true).unwrap(), vec!["Owner SMP".to_string()]);
         assert!(names().contains(&"Owner SMP=smp.example.com".to_string()));
         assert!(names().contains(&"Mine=mine.example.com".to_string()), "my own entry isn't renamed");
-        assert!(!apply(&paths, &inst.id, &[s("Owner SMP", "smp.example.com"), s("Also mine", "mine.example.com")]).unwrap());
+        assert!(apply(&paths, &inst.id, &both, true).unwrap().is_empty());
+        // the game wrote over it; closing it puts it back
+        serverlist::remove(&game, "smp.example.com").unwrap();
+        assert_eq!(apply(&paths, &inst.id, &both, false).unwrap(), vec!["Owner SMP".to_string()]);
+        assert!(names().contains(&"Owner SMP=smp.example.com".to_string()));
+        assert!(apply(&paths, &inst.id, &both, false).unwrap().is_empty());
 
         // renamed, and the other one taken off: mine stays
-        apply(&paths, &inst.id, &[s("Owner's SMP", "smp.example.com")]).unwrap();
+        apply(&paths, &inst.id, &[s("Owner's SMP", "smp.example.com")], false).unwrap();
         assert!(names().contains(&"Owner's SMP=smp.example.com".to_string()));
         assert!(names().contains(&"Mine=mine.example.com".to_string()));
 

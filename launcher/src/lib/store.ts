@@ -94,9 +94,15 @@ export async function startEvents() {
     if (payload.state === "synced") toast.success(payload.message ?? "Server updated with the new mods");
     if (payload.state === "failed") toast.error(`Couldn't update the server: ${payload.message ?? "unknown error"}`);
   });
-  await listen<{ instance: string; name: string; state: SyncState | "review"; by: string | null; message: string | null }>(
+  await listen<{ instance: string; name: string; state: SyncState | "review" | "servers"; by: string | null; message: string | null }>(
     "share-sync",
     ({ payload: p }) => {
+      // servers someone linked to the pack, just put in this copy's server list
+      if (p.state === "servers") {
+        window.dispatchEvent(new CustomEvent("tessera-servers-changed", { detail: p.instance }));
+        toast.success(`${p.name}: ${p.message} added to your servers`);
+        return;
+      }
       // jars waiting for an answer: the popup asks, the Share tab lists them
       if (p.state === "review" || p.state === "paused") {
         void refreshReviews();
