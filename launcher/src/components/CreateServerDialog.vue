@@ -13,7 +13,7 @@ import AppDialog from "./AppDialog.vue";
  * it runs: pack built here, uploaded, set up by CSCM (container, tunnel, DNS), and the
  * modpack installed and started by the server itself.
  */
-const props = defineProps<{ instance: Instance }>();
+const props = defineProps<{ instance: Instance; machine?: string | null }>();
 const emit = defineEmits<{ close: [] }>();
 const router = useRouter();
 
@@ -31,7 +31,7 @@ const machine = computed(() => usable.value.find((m) => m.id === machineId.value
 
 onMounted(async () => {
   machines.value = await api.machines.list();
-  machineId.value = usable.value[0]?.id ?? "";
+  machineId.value = usable.value.find((m) => m.id === props.machine)?.id ?? usable.value[0]?.id ?? "";
   // modpacks need more memory than vanilla
   memGb.value = horizon.value ? 2 : props.instance.mods.length > 50 ? 6 : props.instance.loader === "vanilla" ? 2 : 4;
 });

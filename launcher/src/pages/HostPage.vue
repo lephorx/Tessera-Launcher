@@ -16,12 +16,17 @@ const step = ref<Path>(null);
 const instance = ref<Instance | null>(null);
 const machines = ref<Machine[]>([]);
 const onMachine = ref(false);
+/** The machine picked on the Advanced step, for the dialog to start with. */
+const pickedMachine = ref<string | null>(null);
 const signedIn = computed(() => machines.value.filter((m) => m.signed_in));
 // Horizon: Minecraft 26.3 in Rust (on Tessera machines from 1.18)
 const horizon = computed(() => instance.value?.loader === "horizon");
 
 onMounted(async () => {
-  if (!props.instanceId) return;
+  if (!props.instanceId) {
+    machines.value = await api.machines.list();
+    return;
+  }
   [instance.value, machines.value] = await Promise.all([api.instances.get(props.instanceId), api.machines.list()]);
 });
 const easyLink = computed(() => (props.instanceId ? `/servers/new?instance=${props.instanceId}` : "/servers/new"));
@@ -81,6 +86,24 @@ const easyLink = computed(() => (props.instanceId ? `/servers/new?instance=${pro
 
     <!-- 2. where -->
     <div v-else-if="step === 'diy'" class="stack">
+      <!-- the Tessera machines you already have come first -->
+      <template v-if="machines.length">
+        <span class="label">Your Tessera machines</span>
+        <template v-for="m in machines" :key="m.id">
+          <button v-if="instance && m.signed_in" class="card card-hover option" @click="(pickedMachine = m.id), (onMachine = true)">
+            <span class="icon"><Server /></span>
+            <span><h3>On {{ m.name }}</h3><span class="hint mono">{{ m.url }}</span></span>
+          </button>
+          <RouterLink v-else :to="`/servers/${m.id}`" class="card card-hover option" style="color: inherit">
+            <span class="icon"><Server /></span>
+            <span>
+              <h3>On {{ m.name }}</h3>
+              <span class="hint">{{ m.signed_in ? "Open it and choose New server." : "Sign in again first." }} <span class="mono">{{ m.url }}</span></span>
+            </span>
+          </RouterLink>
+        </template>
+        <span class="label" style="margin-top: 8px">Or set up another one</span>
+      </template>
       <button class="card card-hover option" @click="step = 'here'">
         <span class="icon"><Laptop /></span>
         <span><h3>On this computer, with Docker</h3><span class="hint">One click installs Tessera and Docker here; then you set it up. Servers run while this computer is on.</span></span>
@@ -124,6 +147,6 @@ const easyLink = computed(() => (props.instanceId ? `/servers/new?instance=${pro
       <AddMachineForm />
       <button class="btn btn-ghost" style="align-self: flex-start" @click="step = 'diy'">Back</button>
     </div>
-    <CreateServerDialog v-if="onMachine && instance" :instance="instance" @close="onMachine = false" />
+    <CreateServerDialog v-if="onMachine && instance" :instance="instance" :machine="pickedMachine" @close="(onMachine = false), (pickedMachine = null)" />
   </div>
 </template>
