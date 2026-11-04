@@ -39,6 +39,7 @@ const easyLink = computed(() => (props.instanceId ? `/servers/new?instance=${pro
         <p class="page-sub">
           <template v-if="instance">Same Minecraft version, loader and server-side mods. Where should it run?</template>
           <template v-else>A Minecraft server for you and your friends, managed from here.</template>
+        </p>
       </div>
     </div>
 
