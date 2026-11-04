@@ -1819,6 +1819,10 @@ async fn sync_instance_servers(app: AppHandle, id: String) -> CmdResult<()> {
 /// Ok(true): it's running and installs them once restarted.
 #[tauri::command]
 async fn sync_instance_server(app: AppHandle, id: String, server_id: i64) -> CmdResult<bool> {
+    let state = app.state::<AppState>();
+    if instances::get(&state.paths, &id).is_ok_and(|i| i.loader == loaders::Loader::Horizon) {
+        return Err("Horizon servers set Horizon up themselves: there are no mods to send".into());
+    }
     match sync_servers(&app, &id, true, Some(server_id)).await.pop() {
         Some((_, result)) => result,
         None => Err("That server isn't linked to this instance anymore".into()),
