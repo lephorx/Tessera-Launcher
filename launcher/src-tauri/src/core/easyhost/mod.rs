@@ -186,7 +186,7 @@ fn free_port(paths: &Paths) -> u16 {
 
 // ── creating ──
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct NewServer {
     pub name: String,
     pub kind: Kind,
@@ -199,7 +199,45 @@ pub struct NewServer {
     pub eula: bool,
 }
 
+/// Written into a server's folder while it's being made, removed once it's done: a setup
+/// the launcher was closed in the middle of (an update, a crash) carries on at the next
+/// start (`unfinished`, `resume`).
+const CREATING: &str = "creating.json";
+
 pub async fn create(client: &reqwest::Client, paths: &Paths, new: NewServer, progress: Progress<'_>) -> Result<View> {
+    let id = format!("s{}", chrono::Utc::now().timestamp_millis());
+    make(client, paths, new, &id, progress).await
+}
+
+/// Servers whose setup didn't finish: (id, name).
+pub fn unfinished(paths: &Paths) -> Vec<(String, String)> {
+    std::fs::read_dir(root(paths))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let id = e.file_name().to_string_lossy().into_owned();
+            let d = e.path();
+            if !valid_id(&id) || d.join("server.json").is_file() {
+                return None;
+            }
+            let new: NewServer = serde_json::from_slice(&std::fs::read(d.join(CREATING)).ok()?).ok()?;
+            Some((id, new.name))
+        })
+        .collect()
+}
+
+/// Carries on with a setup that was cut off: the same server, from what's already there
+/// (downloads that finished aren't fetched again).
+pub async fn resume(client: &reqwest::Client, paths: &Paths, id: &str, progress: Progress<'_>) -> Result<View> {
+    if !valid_id(id) {
+        bail!("Unknown server");
+    }
+    let new: NewServer = serde_json::from_slice(&std::fs::read(dir(paths, id).join(CREATING)).map_err(|_| anyhow!("Nothing to resume"))?)?;
+    make(client, paths, new, id, progress).await
+}
+
+async fn make(client: &reqwest::Client, paths: &Paths, new: NewServer, id: &str, progress: Progress<'_>) -> Result<View> {
     if !new.eula {
         bail!("Agree to the Minecraft EULA to run a server");
     }
@@ -230,9 +268,10 @@ pub async fn create(client: &reqwest::Client, paths: &Paths, new: NewServer, pro
         game = versions::manifest(client).await?.latest.release;
     }
 
-    let id = format!("s{}", chrono::Utc::now().timestamp_millis());
+    let id = id.to_string();
     let data = data_dir(paths, &id);
     std::fs::create_dir_all(&data)?;
+    std::fs::write(dir(paths, &id).join(CREATING), serde_json::to_vec(&new)?)?;
     let made: Result<EasyServer> = async {
         let installed = install(client, paths, &data, kind, &game, loader_version, progress).await?;
         // a Horizon server gets the instance's content mods that run on servers (native mods
@@ -267,7 +306,10 @@ pub async fn create(client: &reqwest::Client, paths: &Paths, new: NewServer, pro
     }
     .await;
     match made {
-        Ok(s) => Ok(view(paths, s)),
+        Ok(s) => {
+            let _ = std::fs::remove_file(dir(paths, &id).join(CREATING));
+            Ok(view(paths, s))
+        }
         Err(e) => {
             let _ = std::fs::remove_dir_all(dir(paths, &id));
             Err(e)
@@ -779,6 +821,25 @@ pub async fn delete(paths: &Paths, id: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_setup_cut_off_is_found_again() {
+        let root = std::env::temp_dir().join(format!("tessera-easy-unfinished-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let paths = Paths::new(root.clone());
+        let new = NewServer { name: "Survival".into(), kind: Kind::Paper, game_version: "1.21.4".into(), memory_mb: 2048, instance: None, eula: true };
+        // cut off halfway: the marker, no server.json
+        std::fs::create_dir_all(data_dir(&paths, "s1")).unwrap();
+        std::fs::write(dir(&paths, "s1").join(CREATING), serde_json::to_vec(&new).unwrap()).unwrap();
+        // finished: server.json there, so not unfinished even with a stale marker
+        std::fs::create_dir_all(data_dir(&paths, "s2")).unwrap();
+        std::fs::write(dir(&paths, "s2").join(CREATING), serde_json::to_vec(&new).unwrap()).unwrap();
+        std::fs::write(dir(&paths, "s2").join("server.json"), b"{}").unwrap();
+        // a folder from before markers existed: left alone
+        std::fs::create_dir_all(data_dir(&paths, "s3")).unwrap();
+        assert_eq!(unfinished(&paths), vec![("s1".to_string(), "Survival".to_string())]);
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn edits_server_properties() {

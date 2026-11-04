@@ -80,6 +80,12 @@ export async function startEvents() {
   await listen<{ stage: string; done: number; total: number }>("pack-progress", ({ payload }) => {
     Object.assign(packProgress, payload);
   });
+  // a server on this computer whose setup the launcher was closed in the middle of
+  await listen<{ name: string; state: "resuming" | "done" | "failed"; message: string | null }>("server-setup", ({ payload }) => {
+    if (payload.state === "resuming") toast.success(`Continuing to set up ${payload.name}`);
+    else if (payload.state === "done") toast.success(`${payload.name} is set up`);
+    else toast.error(`Setting up ${payload.name} failed: ${payload.message ?? "unknown error"}`);
+  });
   await listen<{ instance: string; server_id: number; state: "syncing" | "synced" | "failed"; message: string | null; needs_restart: boolean }>("server-sync", ({ payload }) => {
     const key = `${payload.instance}:${payload.server_id}`;
     // still waiting for a restart while the next change is sent

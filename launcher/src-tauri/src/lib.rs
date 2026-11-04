@@ -756,8 +756,67 @@ fn easy_server(state: State<AppState>, id: String) -> CmdResult<core::easyhost::
     core::easyhost::get_view(&state.paths, &id).map_err(err)
 }
 
+/// Server setups running right now (by name): installing an update waits for them, since it
+/// restarts the launcher (`setups_running`).
+static SETUPS: std::sync::LazyLock<Mutex<Vec<String>>> = std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
+
+/// Holds a setup's place in SETUPS until it's dropped (finished, failed or cancelled).
+struct SetupRunning(String);
+
+impl SetupRunning {
+    fn new(name: &str) -> Self {
+        SETUPS.lock().unwrap().push(name.to_string());
+        SetupRunning(name.to_string())
+    }
+}
+
+impl Drop for SetupRunning {
+    fn drop(&mut self) {
+        let mut list = SETUPS.lock().unwrap();
+        if let Some(i) = list.iter().position(|n| *n == self.0) {
+            list.remove(i);
+        }
+    }
+}
+
+#[tauri::command]
+fn setups_running() -> Vec<String> {
+    SETUPS.lock().unwrap().clone()
+}
+
+#[derive(Serialize, Clone)]
+struct SetupEvent {
+    name: String,
+    /// "resuming" | "done" | "failed"
+    state: &'static str,
+    message: Option<String>,
+}
+
+/// Local servers whose setup the launcher was closed in the middle of (an update, a crash):
+/// carried on in the background, one after another.
+fn resume_setups(app: AppHandle, paths: Paths) {
+    let unfinished = core::easyhost::unfinished(&paths);
+    if unfinished.is_empty() {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        let client = http_client();
+        for (id, name) in unfinished {
+            let _running = SetupRunning::new(&name);
+            let _ = app.emit("server-setup", SetupEvent { name: name.clone(), state: "resuming", message: None });
+            let result = core::easyhost::resume(&client, &paths, &id, &|_, _, _| {}).await;
+            let (state, message) = match result {
+                Ok(_) => ("done", None),
+                Err(e) => ("failed", Some(format!("{e:#}"))),
+            };
+            let _ = app.emit("server-setup", SetupEvent { name, state, message });
+        }
+    });
+}
+
 #[tauri::command]
 async fn easy_create(app: AppHandle, state: State<'_, AppState>, server: core::easyhost::NewServer) -> CmdResult<core::easyhost::View> {
+    let _running = SetupRunning::new(&server.name);
     let progress = |stage: &str, done: usize, total: usize| {
         let _ = app.emit("pack-progress", PackProgress { stage, done, total });
     };
@@ -1652,6 +1711,8 @@ async fn create_server_from_instance(
     if !eula {
         return Err("Accept the Minecraft EULA to create a server.".into());
     }
+    // until the pack is up: then the machine carries on by itself
+    let _running = SetupRunning::new(&name);
     let progress = pack_progress(&app);
     let result = async {
         let built = serverpack::build(&state.client, &state.paths, &instance_id, &progress).await?;
@@ -2249,6 +2310,7 @@ pub fn run() {
                     }
                 });
             }
+            resume_setups(app.handle().clone(), Paths::new(root.clone()));
             app.manage(AppState {
                 paths: Paths::new(root),
                 client: http_client(),
@@ -2258,6 +2320,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            setups_running,
             get_settings,
             save_settings,
             game_versions,

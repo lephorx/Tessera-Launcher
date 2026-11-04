@@ -27,7 +27,26 @@ export const updater = reactive({
   installing: false,
   /** 0–1 while downloading */
   progress: 0,
+  /** Server setups the update waits for (it restarts the launcher) */
+  waitingFor: [] as string[],
 });
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Waits until no server is being set up: restarting would cut it off (it'd resume, slower). */
+async function setupsDone() {
+  let told = false;
+  for (;;) {
+    const running = await invoke<string[]>("setups_running").catch(() => []);
+    updater.waitingFor = running;
+    if (!running.length) return;
+    if (!told) {
+      toast.success(`The update installs once ${running.join(", ")} ${running.length === 1 ? "is" : "are"} set up`);
+      told = true;
+    }
+    await sleep(2000);
+  }
+}
 
 let pending: Update | null = null;
 let downloading: Promise<void> | null = null;
@@ -86,6 +105,7 @@ export async function installUpdate() {
   if (!pending || updater.installing) return;
   updater.installing = true;
   try {
+    await setupsDone();
     if ((await updateKind()) === "pacman") {
       await invoke("install_pacman_update");
       await relaunch();

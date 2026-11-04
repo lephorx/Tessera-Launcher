@@ -142,7 +142,15 @@ const nav = [
           @click="installUpdate"
         >
           <Loader2 v-if="updater.installing" class="spin" :size="16" /><RefreshCw v-else :size="16" />
-          {{ updater.installing ? (updater.progress && !updater.ready ? `Updating ${Math.round(updater.progress * 100)}%` : "Updating…") : "Reload to update" }}
+          {{
+            updater.waitingFor.length
+              ? "Waiting for server setup…"
+              : updater.installing
+                ? updater.progress && !updater.ready
+                  ? `Updating ${Math.round(updater.progress * 100)}%`
+                  : "Updating…"
+                : "Reload to update"
+          }}
         </button>
         <button
           v-else
