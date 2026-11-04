@@ -113,7 +113,7 @@ jobs:
           scripts/arch-package.sh "$deb" "${GITHUB_REF_NAME#v}" arch
           pkg=$PWD/$(ls arch/*.pkg.tar.zst)
           pnpm --dir launcher tauri signer sign "$pkg"
-          gh release upload "${GITHUB_REF_NAME}" "$pkg" "$pkg.sig" --clobber -R "${GITHUB_REPOSITORY}"
+          scripts/retry.sh gh release upload "${GITHUB_REF_NAME}" "$pkg" "$pkg.sig" --clobber -R "${GITHUB_REPOSITORY}"
 
   publish-release:
     needs: [create-release, build]
@@ -125,8 +125,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          python3 scripts/updater-json.py "${GITHUB_REF_NAME}" > latest.json
-          gh release upload "${GITHUB_REF_NAME}" latest.json --clobber -R "${GITHUB_REPOSITORY}"
+          scripts/retry.sh sh -c 'python3 scripts/updater-json.py "${GITHUB_REF_NAME}" > latest.json'
+          scripts/retry.sh gh release upload "${GITHUB_REF_NAME}" latest.json --clobber -R "${GITHUB_REPOSITORY}"
       - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
         with:
           script: |

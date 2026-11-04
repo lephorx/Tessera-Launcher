@@ -151,7 +151,7 @@ jobs:
           scripts/arch-package.sh "$deb" "$VERSION" arch tessera-launcher-nightly
           pkg=$PWD/$(ls arch/*.pkg.tar.zst)
           pnpm --dir launcher tauri signer sign "$pkg"
-          gh release upload "${{ needs.create-release.outputs.tag }}" "$pkg" "$pkg.sig" --clobber -R "${GITHUB_REPOSITORY}"
+          scripts/retry.sh gh release upload "${{ needs.create-release.outputs.tag }}" "$pkg" "$pkg.sig" --clobber -R "${GITHUB_REPOSITORY}"
 
   publish-release:
     needs: [create-release, build]
@@ -163,17 +163,17 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Publish the build
         run: |
-          gh release edit "$TAG" --draft=false --prerelease -R "$GITHUB_REPOSITORY"
-          python3 scripts/updater-json.py "$TAG" "${{ needs.create-release.outputs.version }}" > latest.json
+          scripts/retry.sh gh release edit "$TAG" --draft=false --prerelease -R "$GITHUB_REPOSITORY"
+          scripts/retry.sh sh -c 'python3 scripts/updater-json.py "$TAG" "${{ needs.create-release.outputs.version }}" > latest.json'
       # the feed: the "nightly" release (made once), whose latest.json now points at this build
       - name: Point Tessera Launcher Nightly's updates at it
         run: |
-          if ! gh release view nightly -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          if ! scripts/retry.sh gh release view nightly -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create nightly --prerelease --target "$GITHUB_SHA" -R "$GITHUB_REPOSITORY" \
               --title "Tessera Launcher Nightly (update feed)" \
               --notes "Tessera Launcher Nightly reads its updates from here. The builds themselves are the \"Tessera Launcher Nightly …\" prereleases."
           fi
-          gh release upload nightly latest.json --clobber -R "$GITHUB_REPOSITORY"
+          scripts/retry.sh gh release upload nightly latest.json --clobber -R "$GITHUB_REPOSITORY"
       - name: Keep the last 5 builds
         run: |
           gh release list -R "$GITHUB_REPOSITORY" --limit 200 --json tagName,createdAt \
