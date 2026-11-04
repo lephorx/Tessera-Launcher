@@ -79,7 +79,7 @@ async function create() {
 
 <template>
   <div class="page page-narrow enter">
-    <RouterLink to="/servers/host" class="row hint" style="margin-bottom: 14px; color: var(--tint); font-weight: 600"><ArrowLeft :size="14" /> Host a server</RouterLink>
+    <RouterLink :to="instanceId ? `/servers/host?instance=${instanceId}` : '/servers/host'" class="row hint" style="margin-bottom: 14px; color: var(--tint); font-weight: 600"><ArrowLeft :size="14" /> Host a server</RouterLink>
     <div class="page-header">
       <div>
         <h1 class="page-title">New server on this computer</h1>

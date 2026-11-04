@@ -38,18 +38,80 @@ impl From<&Machine> for MachineView {
     }
 }
 
+/// The machine list. Tessera Launcher Nightly shares the released launcher's (when that is
+/// installed), so a machine added in one shows up in both; everything else stays apart.
+fn machines_file(paths: &Paths) -> std::path::PathBuf {
+    if super::NIGHTLY {
+        if let Some(stable) = paths.root.parent().map(|p| p.join("dev.tessera.launcher")).filter(|p| p.is_dir()) {
+            merge_into(paths, &stable.join("servers.json"));
+            return stable.join("servers.json");
+        }
+    }
+    paths.file("servers.json")
+}
+
+fn read(file: &std::path::Path) -> Vec<Machine> {
+    std::fs::read(file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+/// Once: the machines Nightly had on its own move into the shared list. One that is there
+/// already keeps its id there (with Nightly's login if it has none), and Nightly's instances
+/// that create servers on it follow the new id.
+fn merge_into(paths: &Paths, shared: &std::path::Path) {
+    let own = paths.file("servers.json");
+    if !own.is_file() {
+        return;
+    }
+    let mut list = read(shared);
+    let mut renamed = Vec::new();
+    for m in read(&own) {
+        match list.iter_mut().find(|s| s.url == m.url && s.username == m.username) {
+            Some(s) => {
+                if s.token.is_none() {
+                    s.token = m.token;
+                }
+                if s.id != m.id {
+                    renamed.push((m.id, s.id.clone()));
+                }
+            }
+            None => list.push(m),
+        }
+    }
+    if write(shared, &list).is_err() {
+        return;
+    }
+    for mut inst in super::instances::list(paths).unwrap_or_default() {
+        let mut changed = false;
+        for l in &mut inst.servers {
+            if let Some((_, to)) = renamed.iter().find(|(from, _)| *from == l.machine_id) {
+                l.machine_id = to.clone();
+                changed = true;
+            }
+        }
+        if changed {
+            let _ = super::instances::save(paths, &inst);
+        }
+    }
+    let _ = std::fs::rename(&own, paths.file("servers.json.merged"));
+}
+
 fn load(paths: &Paths) -> Vec<Machine> {
-    std::fs::read(paths.file("servers.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    read(&machines_file(paths))
 }
 
 fn store(paths: &Paths, machines: &[Machine]) -> Result<()> {
-    std::fs::create_dir_all(&paths.root)?;
-    let file = paths.file("servers.json");
-    std::fs::write(&file, serde_json::to_vec_pretty(machines)?)?;
+    write(&machines_file(paths), machines)
+}
+
+fn write(file: &std::path::Path, machines: &[Machine]) -> Result<()> {
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(file, serde_json::to_vec_pretty(machines)?)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600))?;
+        std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o600))?;
     }
     Ok(())
 }
@@ -359,4 +421,36 @@ pub async fn create_from_pack(
         bail!("{msg}");
     }
     body["server_id"].as_i64().ok_or_else(|| anyhow!("CSCM sent no server id"))
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+
+    /// Nightly's own machines join the shared list once; a duplicate keeps the shared id and
+    /// Nightly's instances follow it.
+    #[test]
+    fn nightly_machines_join_the_shared_list() {
+        let base = std::env::temp_dir().join(format!("tessera-merge-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let nightly = Paths::new(base.join("dev.tessera.launcher.nightly"));
+        let shared = base.join("dev.tessera.launcher").join("servers.json");
+        let m = |id: &str, url: &str, token: Option<&str>| Machine { id: id.into(), name: url.into(), url: url.into(), username: "admin".into(), token: token.map(Into::into), added_at: Utc::now() };
+        write(&shared, &[m("s1", "http://a:3000", None)]).unwrap();
+        write(&nightly.file("servers.json"), &[m("n1", "http://a:3000", Some("t")), m("n2", "http://b:3000", None)]).unwrap();
+        let inst: super::super::instances::Instance = serde_json::from_value(serde_json::json!({
+            "id": "i1", "name": "I", "game_version": "1.21.1", "loader": "vanilla", "created_at": "2026-11-04T00:00:00Z",
+            "servers": [{ "machine_id": "n1", "server_id": 7, "name": "S" }]
+        }))
+        .unwrap();
+        super::super::instances::save(&nightly, &inst).unwrap();
+
+        merge_into(&nightly, &shared);
+        let list = read(&shared);
+        assert_eq!(list.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["s1", "n2"]);
+        assert_eq!(list[0].token.as_deref(), Some("t"));
+        assert!(!nightly.file("servers.json").exists());
+        assert_eq!(super::super::instances::get(&nightly, "i1").unwrap().servers[0].machine_id, "s1");
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }

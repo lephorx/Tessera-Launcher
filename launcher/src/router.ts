@@ -14,7 +14,7 @@ export const router = createRouter({
     // a Modrinth project (id or slug): versions, what's in a modpack; ?instance= from "Add content"
     { path: "/project/:id", component: () => import("./pages/ProjectPage.vue"), props: (r) => ({ id: r.params.id, instanceId: r.query.instance ?? null }) },
     { path: "/servers", component: () => import("./pages/ServersPage.vue") },
-    { path: "/servers/host", component: () => import("./pages/HostPage.vue") },
+    { path: "/servers/host", component: () => import("./pages/HostPage.vue"), props: (r) => ({ instanceId: r.query.instance ?? null }) },
     // easy servers, run by the launcher itself (no Docker)
     { path: "/servers/new", component: () => import("./pages/EasyCreatePage.vue"), props: (r) => ({ instanceId: r.query.instance ?? null }) },
     { path: "/servers/local/:id", component: () => import("./pages/EasyServerPage.vue"), props: true },

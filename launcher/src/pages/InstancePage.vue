@@ -3,7 +3,6 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { RouterLink, useRouter } from "vue-router";
 import { ArrowLeft, FolderOpen, Globe, Package, PackageCheck, Pencil, Plus, Search, Server, Settings2, SquareTerminal, Trash2, UserPlus } from "lucide-vue-next";
 import AppDialog from "@/components/AppDialog.vue";
-import CreateServerDialog from "@/components/CreateServerDialog.vue";
 import ExportDialog from "@/components/ExportDialog.vue";
 import InstanceOptions from "@/components/InstanceOptions.vue";
 import ModpackPanel from "@/components/ModpackPanel.vue";
@@ -35,7 +34,6 @@ const kindFilter = ref<"all" | ContentFile["kind"]>("all");
 const contentQuery = ref("");
 const editingIcon = ref(false);
 const exporting = ref(false);
-const creatingServer = ref(false);
 type KindId = "all" | ContentFile["kind"];
 const KINDS = computed<{ id: KindId; label: string }[]>(() =>
   isHorizon.value
@@ -222,7 +220,7 @@ async function openFolder() {
       <div class="row">
         <button class="btn btn-lg" title="Open folder" @click="openFolder"><FolderOpen /> Folder</button>
         <button v-if="!isHorizon" class="btn btn-lg" title="Export as .tapack" @click="exporting = true"><PackageCheck /> Export</button>
-        <button class="btn btn-lg" :title="isHorizon ? 'Create a Horizon server' : 'Create a server with these mods'" @click="isHorizon ? router.push(`/servers/new?instance=${inst.id}`) : (creatingServer = true)"><Server /> Create server</button>
+        <button class="btn btn-lg" :title="isHorizon ? 'Create a Horizon server' : 'Create a server with these mods'" @click="router.push(`/servers/host?instance=${inst.id}`)"><Server /> Create server</button>
         <PlayButton :id="inst.id" large />
       </div>
     </div>
@@ -325,7 +323,6 @@ async function openFolder() {
     </Transition>
     </div>
 
-    <CreateServerDialog v-if="creatingServer" :instance="inst" @close="creatingServer = false" />
     <ExportDialog v-if="exporting" :instance="inst" @close="exporting = false" />
     <IconEditor v-if="editingIcon" :icon="inst.icon" @close="editingIcon = false" @save="saveIcon" />
 

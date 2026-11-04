@@ -1,22 +1,44 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { RouterLink } from "vue-router";
-import { ArrowLeft, CreditCard, Laptop, Network, PlugZap, Sparkles, Wrench } from "lucide-vue-next";
+import { ArrowLeft, CreditCard, Laptop, Network, PlugZap, Server, Sparkles, Wrench } from "lucide-vue-next";
 import AddMachineForm from "@/components/AddMachineForm.vue";
+import CreateServerDialog from "@/components/CreateServerDialog.vue";
 import HostLocal from "@/components/HostLocal.vue";
 import LinuxInstall from "@/components/LinuxInstall.vue";
+import { api, type Instance, type Machine } from "@/lib/api";
+
+/** Where a new server runs. From an instance's "Create server" it's for that instance. */
+const props = defineProps<{ instanceId?: string | null }>();
 
 type Path = null | "diy" | "here" | "other" | "existing";
 const step = ref<Path>(null);
+const instance = ref<Instance | null>(null);
+const machines = ref<Machine[]>([]);
+const onMachine = ref(false);
+const signedIn = computed(() => machines.value.filter((m) => m.signed_in));
+// Horizon servers only run in the launcher for now
+const horizon = computed(() => instance.value?.loader === "horizon");
+
+onMounted(async () => {
+  if (!props.instanceId) return;
+  [instance.value, machines.value] = await Promise.all([api.instances.get(props.instanceId), api.machines.list()]);
+});
+const easyLink = computed(() => (props.instanceId ? `/servers/new?instance=${props.instanceId}` : "/servers/new"));
 </script>
 
 <template>
   <div class="page page-narrow enter">
-    <RouterLink to="/servers" class="row hint" style="margin-bottom: 14px; color: var(--tint); font-weight: 600"><ArrowLeft :size="14" /> Servers</RouterLink>
+    <RouterLink v-if="instanceId" :to="`/instance/${instanceId}`" class="row hint" style="margin-bottom: 14px; color: var(--tint); font-weight: 600">
+      <ArrowLeft :size="14" /> {{ instance?.name ?? "Back" }}
+    </RouterLink>
+    <RouterLink v-else to="/servers" class="row hint" style="margin-bottom: 14px; color: var(--tint); font-weight: 600"><ArrowLeft :size="14" /> Servers</RouterLink>
     <div class="page-header">
       <div>
-        <h1 class="page-title">Host a server</h1>
-        <p class="page-sub">A Minecraft server for you and your friends, managed from here.</p>
+        <h1 class="page-title">{{ instance ? `Create a server from ${instance.name}` : "Host a server" }}</h1>
+        <p class="page-sub">
+          <template v-if="instance">Same Minecraft version, loader and server-side mods. Where should it run?</template>
+          <template v-else>A Minecraft server for you and your friends, managed from here.</template>
       </div>
     </div>
 
@@ -29,18 +51,28 @@ const step = ref<Path>(null);
           <span class="hint">Click, pay, play. Runs on our machines, sleeps when nobody is online.</span>
         </span>
       </button>
-      <RouterLink to="/servers/new" class="card card-hover option" style="color: inherit">
+      <RouterLink :to="easyLink" class="card card-hover option" style="color: inherit">
         <span class="icon"><Sparkles /></span>
         <span>
           <h3>On this computer, easy <span class="pill">Recommended</span></h3>
           <span class="hint">A few clicks and it runs. The launcher sets up everything itself, no Docker or other programs. Great to start with.</span>
         </span>
       </RouterLink>
-      <button class="card card-hover option" @click="step = 'diy'">
+      <button v-if="instance && signedIn.length && !horizon" class="card card-hover option" @click="onMachine = true">
+        <span class="icon"><Server /></span>
+        <span>
+          <h3>On one of my Tessera machines</h3>
+          <span class="hint">{{ signedIn.map((m) => m.name).join(", ") }}. The server keeps this instance's server-side mods in sync.</span>
+        </span>
+      </button>
+      <button class="card card-hover option" :disabled="horizon" @click="step = 'diy'">
         <span class="icon"><Wrench /></span>
         <span>
           <h3>Advanced: with Tessera <span class="pill">Free</span></h3>
-          <span class="hint">Tessera's dashboard with backups, your own domain and several users, on this computer (with Docker), another machine, or one you already have.</span>
+          <span class="hint">
+            <template v-if="horizon">Horizon servers only run in the launcher for now.</template>
+            <template v-else>Tessera's dashboard with backups, your own domain and several users, on this computer (with Docker), another machine, or one you already have.</template>
+          </span>
         </span>
       </button>
     </div>
@@ -90,5 +122,6 @@ const step = ref<Path>(null);
       <AddMachineForm />
       <button class="btn btn-ghost" style="align-self: flex-start" @click="step = 'diy'">Back</button>
     </div>
+    <CreateServerDialog v-if="onMachine && instance" :instance="instance" @close="onMachine = false" />
   </div>
 </template>
