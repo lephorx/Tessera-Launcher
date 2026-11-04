@@ -1667,6 +1667,46 @@ async fn create_server_from_instance(
     result
 }
 
+/// A Horizon server on a Tessera machine for a Horizon instance (Tessera 1.18 or newer runs
+/// them): the same Horizon build as the instance (or its newest Nightly), linked to the
+/// instance so it's in its server list. Horizon servers get no server pack.
+#[tauri::command]
+async fn create_horizon_server(state: State<'_, AppState>, instance_id: String, machine_id: String, name: String, mem_gb: u32, eula: bool) -> CmdResult<i64> {
+    if !eula {
+        return Err("Accept the Minecraft EULA to create a server".into());
+    }
+    let inst = instances::get(&state.paths, &instance_id).map_err(err)?;
+    if inst.loader != loaders::Loader::Horizon {
+        return Err("That isn't a Horizon instance".into());
+    }
+    let build = inst.loader_version.clone().filter(|b| b.starts_with("nightly-")).unwrap_or_else(|| core::horizon::LATEST.into());
+    // no Playit set up there: the server stays on the local network, like Tessera's own form
+    let setup = servers::request(&state.client, &state.paths, &machine_id, "GET", "/setup", None).await.ok();
+    let local_only = setup.is_some_and(|r| r.status == 200 && r.body.get("public_available").and_then(|v| v.as_bool()) == Some(false));
+    let body = serde_json::json!({
+        "local_only": local_only,
+        "eula": true,
+        "name": name,
+        "type": "horizon",
+        "loader_version": build,
+        "mem_min": 1,
+        "mem_max": mem_gb.clamp(1, 64),
+    });
+    let res = servers::request(&state.client, &state.paths, &machine_id, "POST", "/servers", Some(body)).await.map_err(err)?;
+    if res.status == 400 && res.body.to_string().contains("Invalid server type") {
+        return Err("This Tessera can't run Horizon servers yet: update it to 1.18 or newer (the update banner in its dashboard)".into());
+    }
+    if res.status >= 400 {
+        let msg = ["message", "error"].iter().find_map(|k| res.body.get(*k).and_then(|v| v.as_str()).map(String::from));
+        return Err(msg.unwrap_or_else(|| format!("Tessera answered {}", res.status)));
+    }
+    let server_id = res.body.get("server_id").and_then(|v| v.as_i64()).ok_or("Tessera didn't say which server it made")?;
+    let mut inst = instances::get(&state.paths, &instance_id).map_err(err)?;
+    inst.servers.push(instances::LinkedServer { machine_id, server_id, name, pack_hash: None, address: None, port: None });
+    instances::save(&state.paths, &inst).map_err(err)?;
+    Ok(server_id)
+}
+
 // ── servers made from an instance: server list entry and keeping their mods in sync ──
 
 #[derive(Serialize, Clone)]
@@ -1711,6 +1751,10 @@ async fn sync_servers(app: &AppHandle, id: &str, force: bool, only: Option<i64>)
     let state = app.state::<AppState>();
     let mut results = Vec::new();
     let Ok(mut inst) = instances::get(&state.paths, id) else { return results };
+    // Horizon servers install Horizon themselves; there's no server pack to send
+    if inst.loader == loaders::Loader::Horizon {
+        return results;
+    }
     inst.servers.retain(|s| only.is_none_or(|o| s.server_id == o));
     if inst.servers.is_empty() {
         return results;
@@ -2318,6 +2362,7 @@ pub fn run() {
             host_local_start_docker,
             host_local_open_setup,
             create_server_from_instance,
+            create_horizon_server,
             ms_accounts,
             ms_sign_in,
             ms_remove,

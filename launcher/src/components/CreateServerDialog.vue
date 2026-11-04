@@ -25,13 +25,15 @@ const memGb = ref(4);
 const eula = ref(false);
 const error = ref("");
 const usable = computed(() => (machines.value ?? []).filter((m) => m.signed_in));
+// Horizon: Tessera installs Horizon itself, so there's no server pack to build or upload
+const horizon = computed(() => props.instance.loader === "horizon");
 const machine = computed(() => usable.value.find((m) => m.id === machineId.value));
 
 onMounted(async () => {
   machines.value = await api.machines.list();
   machineId.value = usable.value[0]?.id ?? "";
   // modpacks need more memory than vanilla
-  memGb.value = props.instance.mods.length > 50 ? 6 : props.instance.loader === "vanilla" ? 2 : 4;
+  memGb.value = horizon.value ? 2 : props.instance.mods.length > 50 ? 6 : props.instance.loader === "vanilla" ? 2 : 4;
 });
 
 // ── progress ──
@@ -50,12 +52,19 @@ let timer: ReturnType<typeof setInterval> | undefined;
 let clock: ReturnType<typeof setInterval> | undefined;
 let stoppedPolls = 0;
 
-const steps = computed(() => [
-  { key: "build" as const, label: "Building the server pack", hint: "Server-side mods and configs from this instance" },
-  { key: "upload" as const, label: `Uploading to ${machine.value?.name ?? "the machine"}`, hint: "" },
-  { key: "setup" as const, label: `Setting up on ${machine.value?.name ?? "the machine"}`, hint: "Container, ports and address" },
-  { key: "start" as const, label: "Installing the modpack and starting", hint: "The server downloads Minecraft, the loader and the mods" },
-]);
+const steps = computed(() =>
+  horizon.value
+    ? [
+        { key: "setup" as const, label: `Setting up on ${machine.value?.name ?? "the machine"}`, hint: "Container, ports and address" },
+        { key: "start" as const, label: "Installing Horizon and starting", hint: "The first Horizon server there downloads Minecraft's files and prepares Horizon's: a few minutes" },
+      ]
+    : [
+        { key: "build" as const, label: "Building the server pack", hint: "Server-side mods and configs from this instance" },
+        { key: "upload" as const, label: `Uploading to ${machine.value?.name ?? "the machine"}`, hint: "" },
+        { key: "setup" as const, label: `Setting up on ${machine.value?.name ?? "the machine"}`, hint: "Container, ports and address" },
+        { key: "start" as const, label: "Installing the modpack and starting", hint: "The server downloads Minecraft, the loader and the mods" },
+      ],
+);
 const order: StepKey[] = ["build", "upload", "setup", "start"];
 const stateOf = (key: StepKey) => {
   if (phase.value === "done") return "done";
@@ -93,6 +102,7 @@ const detail = computed(() => {
 const uploading = computed(() => packProgress.stage === "Uploading");
 
 async function create() {
+  if (horizon.value) return createHorizon();
   phase.value = "working";
   step.value = "build";
   error.value = "";
@@ -111,6 +121,21 @@ async function create() {
     phase.value = "failed";
   } finally {
     clearInterval(watch);
+  }
+}
+
+async function createHorizon() {
+  phase.value = "working";
+  step.value = "setup";
+  error.value = "";
+  try {
+    serverId.value = await api.createHorizonServer(props.instance.id, machineId.value, name.value.trim() || props.instance.name, memGb.value, eula.value);
+    summary.value = "It runs Horizon on Tessera, Minecraft 26.3 in Rust. Horizon's native mods stay in the game; servers don't run them yet.";
+    timer = setInterval(poll, 1500);
+    void poll();
+  } catch (e) {
+    error.value = errorText(e);
+    phase.value = "failed";
   }
 }
 
@@ -195,7 +220,11 @@ onUnmounted(stopPolling);
 <template>
   <AppDialog :title="phase === 'form' ? 'Create a server from this instance' : name" :width="520" @close="close">
     <div v-if="phase === 'form'" class="stack" style="gap: 16px">
-      <p class="hint">
+      <p v-if="horizon" class="hint">
+        A Horizon server on your Tessera machine: Minecraft 26.3 in Rust, on the same Horizon build as this instance. It needs
+        Tessera 1.18 or newer there. Horizon's native mods don't run on servers yet.
+      </p>
+      <p v-else class="hint">
         The server gets the same Minecraft version, loader and server-side mods. Client-only mods (shaders, minimaps,
         performance mods like Sodium) and your options stay out. Configs come along.
       </p>
@@ -215,7 +244,7 @@ onUnmounted(stopPolling);
           <input id="cs-name" v-model="name" class="input" maxlength="64" />
         </div>
         <div class="field">
-          <span class="label">Memory</span>
+          <span class="label">{{ horizon ? "Memory limit" : "Memory" }}</span>
           <div class="row">
             <input v-model.number="memGb" class="range" type="range" min="2" max="16" step="1" :style="{ '--range-fill': `${((memGb - 2) / 14) * 100}%` }" />
             <span class="mono num" style="width: 56px; text-align: right; font-weight: 600">{{ memGb }} GB</span>

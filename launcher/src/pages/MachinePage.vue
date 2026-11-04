@@ -2,8 +2,9 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { RouterLink, useRouter } from "vue-router";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { ArrowLeft, Copy, ExternalLink, KeyRound, Loader2, PackagePlus, Play, RefreshCw, RotateCw, ShieldCheck, Square, Trash2 } from "lucide-vue-next";
+import { ArrowLeft, Copy, ExternalLink, KeyRound, Loader2, PackagePlus, Play, Plus, RefreshCw, RotateCw, ShieldCheck, Square, Trash2 } from "lucide-vue-next";
 import AppDialog from "@/components/AppDialog.vue";
+import NewMachineServerDialog from "@/components/NewMachineServerDialog.vue";
 import { api, type Machine } from "@/lib/api";
 import { serverAddresses } from "@/lib/serverAddress";
 import { errorText, toast } from "@/lib/toast";
@@ -22,7 +23,7 @@ interface CscmServer {
 }
 
 const TYPE_COLORS: Record<string, string> = {
-  paper: "#eeaaaa", purpur: "#c39dff", fabric: "#dbb69b", forge: "#959eef", vanilla: "#7dd87d", bedrock: "#6fd2c3",
+  paper: "#eeaaaa", purpur: "#c39dff", fabric: "#dbb69b", forge: "#959eef", vanilla: "#7dd87d", bedrock: "#6fd2c3", horizon: "#f0795a",
 };
 
 const props = defineProps<{ id: string }>();
@@ -36,6 +37,7 @@ const otp = ref("");
 const signingIn = ref(false);
 const confirmRemove = ref(false);
 const packing = ref<number | null>(null);
+const creating = ref(false);
 
 /** "Get local pack": an instance with the server's version and mods, with the server in its list. */
 async function localPack(s: CscmServer) {
@@ -136,6 +138,7 @@ async function copy(text: string) {
         <p class="page-sub mono">{{ machine.url }} · {{ machine.username }}</p>
       </div>
       <div class="row">
+        <button v-if="signedIn" class="btn btn-primary btn-lg" @click="creating = true"><Plus /> New server</button>
         <button class="btn btn-lg" title="Refresh" aria-label="Refresh" @click="load"><RefreshCw /></button>
         <button class="btn btn-lg" @click="openUrl(machine.url)"><ExternalLink /> Dashboard</button>
         <button class="btn btn-lg btn-danger" title="Remove from launcher" aria-label="Remove from launcher" @click="confirmRemove = true"><Trash2 /></button>
@@ -164,7 +167,7 @@ async function copy(text: string) {
             </div>
           </div>
           <div class="row" style="flex-wrap: wrap">
-            <span class="chip" :style="{ color: TYPE_COLORS[s.type] }">{{ s.type[0]?.toUpperCase() + s.type.slice(1) }}</span>
+            <span class="chip" :style="{ color: TYPE_COLORS[s.type] }">{{ s.type === "horizon" ? "Horizon (Rust)" : s.type[0]?.toUpperCase() + s.type.slice(1) }}</span>
             <span class="chip num">{{ s.version === "LATEST" ? "Latest" : s.version }}</span>
             <span class="chip num">Port {{ s.port }}</span>
           </div>
@@ -194,7 +197,7 @@ async function copy(text: string) {
             </template>
             <span class="spacer" />
             <button
-              v-if="s.type !== 'bedrock'"
+              v-if="s.type !== 'bedrock' && s.type !== 'horizon'"
               class="btn"
               :disabled="packing !== null"
               title="Make an instance with this server's Minecraft version and mods"
@@ -207,10 +210,12 @@ async function copy(text: string) {
       </div>
       <div v-else-if="servers" class="card empty">
         <h3>No servers on this machine</h3>
-        <p>Create one in its dashboard. Creating servers from the launcher comes with modpack sync.</p>
+        <p>Create one with New server, or from an instance (Create server) to keep its mods in sync.</p>
       </div>
       <div v-else class="empty"><Loader2 class="spin" /></div>
     </template>
+
+    <NewMachineServerDialog v-if="creating" :machine-id="id" :machine-name="machine.name" @close="creating = false" @created="(creating = false), load()" />
 
     <AppDialog v-if="confirmRemove" title="Remove from the launcher?" @close="confirmRemove = false">
       <p class="muted">{{ machine.name }} and its servers keep running. You can add it again any time.</p>

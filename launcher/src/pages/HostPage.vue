@@ -17,7 +17,7 @@ const instance = ref<Instance | null>(null);
 const machines = ref<Machine[]>([]);
 const onMachine = ref(false);
 const signedIn = computed(() => machines.value.filter((m) => m.signed_in));
-// Horizon servers only run in the launcher for now
+// Horizon: Minecraft 26.3 in Rust (on Tessera machines from 1.18)
 const horizon = computed(() => instance.value?.loader === "horizon");
 
 onMounted(async () => {
@@ -59,20 +59,21 @@ const easyLink = computed(() => (props.instanceId ? `/servers/new?instance=${pro
           <span class="hint">A few clicks and it runs. The launcher sets up everything itself, no Docker or other programs. Great to start with.</span>
         </span>
       </RouterLink>
-      <button v-if="instance && signedIn.length && !horizon" class="card card-hover option" @click="onMachine = true">
+      <button v-if="instance && signedIn.length" class="card card-hover option" @click="onMachine = true">
         <span class="icon"><Server /></span>
         <span>
           <h3>On one of my Tessera machines</h3>
-          <span class="hint">{{ signedIn.map((m) => m.name).join(", ") }}. The server keeps this instance's server-side mods in sync.</span>
+          <span v-if="horizon" class="hint">{{ signedIn.map((m) => m.name).join(", ") }}. A Horizon server, run by Tessera (1.18 or newer).</span>
+          <span v-else class="hint">{{ signedIn.map((m) => m.name).join(", ") }}. The server keeps this instance's server-side mods in sync.</span>
         </span>
       </button>
-      <button class="card card-hover option" :disabled="horizon" @click="step = 'diy'">
+      <button class="card card-hover option" @click="step = 'diy'">
         <span class="icon"><Wrench /></span>
         <span>
           <h3>Advanced: with Tessera <span class="pill">Free</span></h3>
           <span class="hint">
-            <template v-if="horizon">Horizon servers only run in the launcher for now.</template>
-            <template v-else>Tessera's dashboard with backups, your own domain and several users, on this computer (with Docker), another machine, or one you already have.</template>
+            Tessera's dashboard with backups, your own domain and several users, on this computer (with Docker), another machine, or one you already have.
+            <template v-if="horizon"> It runs Horizon servers too.</template>
           </span>
         </span>
       </button>

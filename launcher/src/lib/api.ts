@@ -854,6 +854,9 @@ export const api = {
     saveTexture: (hash: string, name: string, model: "classic" | "slim") =>
       call<Omit<Skin, "texture" | "default">>("skins_save_texture", { hash, name, model }),
   },
+  /** A Horizon server on a Tessera machine (1.18+) for a Horizon instance; its id there. */
+  createHorizonServer: (instanceId: string, machineId: string, name: string, memGb: number, eula: boolean) =>
+    call<number>("create_horizon_server", { instanceId, machineId, name, memGb, eula }),
   /** `eula`: the user accepted the Minecraft EULA for this server. */
   createServer: (instanceId: string, machineId: string, name: string, memGb: number, eula: boolean) =>
     call<{ server_id: number; linked: number; embedded: number; client_only: number }>("create_server_from_instance", {
