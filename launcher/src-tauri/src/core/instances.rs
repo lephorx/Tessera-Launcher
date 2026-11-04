@@ -76,6 +76,9 @@ pub struct Instance {
     /// Live sync state of the share this instance is on (as owner or member).
     #[serde(default)]
     pub share_sync: Option<ShareSync>,
+    /// Servers the others on its share linked, as last put in the game's server list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shared_servers: Vec<super::shareservers::SharedServer>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -238,6 +241,7 @@ pub fn create(
         servers: Vec::new(),
         joined: None,
         share_sync: None,
+        shared_servers: Vec::new(),
     };
     save(paths, &inst)?;
     Ok(inst)

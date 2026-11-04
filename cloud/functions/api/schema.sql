@@ -193,3 +193,14 @@ create table if not exists verified_users (
   first_at timestamptz not null default now()
 );
 insert into verified_users (user_id) select id from neon_auth."user" where "emailVerified" on conflict do nothing;
+
+-- Servers linked to a shared pack (2026-11-04): each person on it publishes the servers they
+-- linked to their copy, and everyone else's launcher puts them in the game's server list.
+create table if not exists share_servers (
+  code     text not null references shares(code) on delete cascade,
+  added_by uuid not null references neon_auth."user"(id) on delete cascade,
+  name     text not null check (char_length(name) between 1 and 64),
+  address  text not null check (char_length(address) between 1 and 260),
+  added_at timestamptz not null default now(),
+  primary key (code, added_by, address)
+);

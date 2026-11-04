@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from "vue";
-import { Crown, Loader2, LogIn, LogOut, RefreshCw, Trash2, UserPlus, Users, X } from "lucide-vue-next";
+import { useRouter } from "vue-router";
+import { Crown, Loader2, LogIn, LogOut, RefreshCw, Server, Trash2, Unlink, UserPlus, Users, X } from "lucide-vue-next";
 import { api, type Instance, type MemberStatus, type Share, type ShareRole } from "@/lib/api";
 import { relative } from "@/lib/format";
 import { shareSync } from "@/lib/store";
@@ -13,6 +14,7 @@ import ShareHeld from "./ShareHeld.vue";
 import ShareUploadDialog from "./ShareUploadDialog.vue";
 
 const props = defineProps<{ instance: Instance }>();
+const router = useRouter();
 /** The instance changed (pulled an update, left, ownership moved): the page reloads it. */
 const emit = defineEmits<{ changed: [] }>();
 const member = ref<MemberStatus | null>(null);
@@ -105,12 +107,19 @@ async function syncNow() {
 
 
 
-async function leave() {
+/** Off the pack; with `remove`, this copy goes too. */
+async function leave(remove = false) {
   busy.value = "leave";
   try {
     await api.share.leave(props.instance.id);
     confirmLeave.value = false;
-    toast.success("Left the shared pack. Your copy stays.");
+    if (remove) {
+      await api.instances.remove(props.instance.id);
+      toast.success(`Left ${props.instance.name} and deleted your copy`);
+      await router.push("/");
+      return;
+    }
+    toast.success(member.value?.removed ? "Unlinked. Your copy stays as your own instance." : "Left the shared pack. Your copy stays.");
     emit("changed");
   } catch (e) {
     toast.error(errorText(e));
@@ -212,12 +221,23 @@ async function transfer() {
             </span>
           </div>
           <ShareHeld :id="instance.id" @changed="emit('changed')" @paused="paused = $event" />
+          <div v-if="instance.shared_servers?.length" class="stack" style="gap: 6px">
+            <span class="hint">Servers on this pack, in your game's server list:</span>
+            <div v-for="s in instance.shared_servers" :key="s.address" class="row" style="gap: 8px">
+              <Server :size="14" /><span style="font-weight: 600">{{ s.name }}</span><span class="hint mono">{{ s.address }}</span>
+            </div>
+          </div>
           <div class="row">
             <button class="btn" :disabled="busy !== ''" @click="syncNow"><Loader2 v-if="busy === 'pull'" class="spin" /><RefreshCw v-else /> Sync now</button>
             <span class="spacer" />
             <button class="btn btn-danger" :disabled="busy !== ''" @click="confirmLeave = true"><LogOut /> Leave</button>
           </div>
         </template>
+        <div v-else class="row">
+          <span class="hint" style="flex: 1">Unlink it to keep it as your own instance, or delete it.</span>
+          <button class="btn" :disabled="busy !== ''" @click="leave(false)"><Loader2 v-if="busy === 'leave'" class="spin" /><Unlink v-else /> Unlink</button>
+          <button class="btn btn-danger" :disabled="busy !== ''" @click="confirmLeave = true"><Trash2 /> Delete</button>
+        </div>
       </div>
     </template>
 
@@ -277,6 +297,10 @@ async function transfer() {
           </span>
         </div>
         <ShareHeld :id="instance.id" @changed="emit('changed')" @paused="paused = $event" />
+        <span class="hint">Servers linked to it (Create server, or one of your Tessera machines) go into everyone's server list.</span>
+        <div v-for="s in instance.shared_servers ?? []" :key="s.address" class="row" style="gap: 8px">
+          <Server :size="14" /><span style="font-weight: 600">{{ s.name }}</span><span class="hint mono">{{ s.address }}</span>
+        </div>
         <div class="row">
           <button class="btn" :disabled="busy !== ''" @click="syncNow"><Loader2 v-if="busy === 'pull'" class="spin" /><RefreshCw v-else /> Sync now</button>
           <span class="spacer" />
@@ -308,11 +332,16 @@ async function transfer() {
       </div>
     </AppDialog>
 
-    <AppDialog v-if="confirmLeave" title="Leave this shared pack?" @close="confirmLeave = false">
-      <p class="muted">You stop getting updates{{ instance.joined?.role === "editor" ? " and can't publish changes" : "" }}. Your copy stays and keeps working.</p>
+    <AppDialog v-if="confirmLeave" :title="member?.removed ? `Delete ${instance.name}?` : 'Leave this shared pack?'" @close="confirmLeave = false">
+      <p v-if="member?.removed" class="muted">Your copy, with its worlds, is deleted from this computer.</p>
+      <p v-else class="muted">
+        You stop getting updates{{ instance.joined?.role === "editor" ? " and can't publish changes" : "" }}, and the pack's servers leave your server list. Keep your copy
+        as your own instance, or delete it with its worlds.
+      </p>
       <div class="dialog-footer">
         <button class="btn" @click="confirmLeave = false">Cancel</button>
-        <button class="btn btn-danger" :disabled="busy === 'leave'" @click="leave">Leave</button>
+        <button v-if="!member?.removed" class="btn" :disabled="busy === 'leave'" @click="leave(false)"><LogOut /> Leave, keep my copy</button>
+        <button class="btn btn-danger" :disabled="busy === 'leave'" @click="leave(true)"><Trash2 /> {{ member?.removed ? "Delete" : "Leave and delete" }}</button>
       </div>
     </AppDialog>
 

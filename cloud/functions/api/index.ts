@@ -29,7 +29,10 @@
  *   POST   /v1/shares/:code/transfer  {user_id}  hand the share to a friend; you stay as editor
  *   GET    /v1/shares/:code                     public: pack info for an invite link
  *   GET    /v1/shares/:code/download            owner or a friend on it: short-lived download URL
- *   GET    /v1/shares/sync?codes=a,b            live sync: revision of each share I'm on
+ *   GET    /v1/shares/sync?codes=a,b            live sync: revision of each share I'm on, and the
+ *                                               servers the others on it linked
+ *   PUT    /v1/shares/:code/servers  {servers: [{name, address}]}   the servers I linked to my copy
+ *                                               (replaces mine; everyone else gets them in their list)
  *   GET    /v1/friends                          friends + incoming and outgoing requests
  *   POST   /v1/friends           {username}    send a request (accepts theirs if they asked first)
  *   POST   /v1/friends/:userId/accept
@@ -944,7 +947,12 @@ app.get("/shares/sync", async (c) => {
   if (!codes.length) return c.json({ shares: [] });
   const { rows } = await pool.query(
     `select s.code, s.revision, s.updated_at, (s.updated_by = $2) as mine, up.username as updated_by,
-       case when s.owner_id = $2 then 'owner' else m.role end as role
+       case when s.owner_id = $2 then 'owner' else m.role end as role,
+       coalesce((select json_agg(json_build_object('name', ss.name, 'address', ss.address, 'by', bp.username) order by ss.added_at)
+                 from share_servers ss left join profiles bp on bp.user_id = ss.added_by
+                 where ss.code = s.code and ss.added_by <> $2
+                   and (ss.added_by = s.owner_id or exists (select 1 from share_members m2
+                        where m2.code = s.code and m2.user_id = ss.added_by and m2.accepted_at is not null))), '[]') as servers
      from shares s
      left join share_members m on m.code = s.code and m.user_id = $2 and m.accepted_at is not null
      left join profiles up on up.user_id = s.updated_by
@@ -1064,7 +1072,45 @@ app.delete("/shares/:code/members/:userId", async (c) => {
   const share = userId === c.var.userId ? await access(c) : await owned(c);
   if (!share) return err(c, 404, "not_found");
   await pool.query(`delete from share_members where code = $1 and user_id = $2`, [share.code, userId]);
+  await pool.query(`delete from share_servers where code = $1 and added_by = $2`, [share.code, userId]);
   return c.json({ ok: true });
+});
+
+// The servers someone linked to their copy of a shared pack. Each person's list replaces their
+// own; the others get them in /shares/sync and their launchers add them to the game's list.
+const SharedServers = z.object({
+  servers: z
+    .array(
+      z.object({
+        name: z.string().trim().min(1).max(64),
+        address: z.string().trim().regex(/^[A-Za-z0-9.-]{1,253}(:\d{1,5})?$/),
+      }),
+    )
+    .max(10),
+});
+
+app.put("/shares/:code/servers", async (c) => {
+  const share = await access(c);
+  if (!share || !share.role) return err(c, 404, "not_found");
+  if (share.expired && share.role !== "owner") return err(c, 410, "expired", EXPIRED_MESSAGE);
+  const body = SharedServers.safeParse(await c.req.json().catch(() => null));
+  if (!body.success) return err(c, 400, "invalid_servers", "Up to 10 servers, each with a name and an address like play.example.com or host:25565.");
+  const servers = [...new Map(body.data.servers.map((s) => [s.address.toLowerCase(), s])).values()];
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    await client.query(`delete from share_servers where code = $1 and added_by = $2`, [share.code, c.var.userId]);
+    for (const s of servers) {
+      await client.query(`insert into share_servers (code, added_by, name, address) values ($1, $2, $3, $4)`, [share.code, c.var.userId, s.name, s.address]);
+    }
+    await client.query("commit");
+  } catch (e) {
+    await client.query("rollback");
+    throw e;
+  } finally {
+    client.release();
+  }
+  return c.json({ ok: true, servers: servers.length });
 });
 
 app.patch("/shares/:code/members/:userId", async (c) => {

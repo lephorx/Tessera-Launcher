@@ -28,6 +28,7 @@ pub mod serverpack;
 pub mod servers;
 pub mod settings;
 pub mod share;
+pub mod shareservers;
 pub mod sharetrust;
 pub mod skinlib;
 pub mod skins;

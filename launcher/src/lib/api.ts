@@ -37,6 +37,8 @@ export interface Instance {
   share_code?: string | null;
   /** Installed from someone else's share. */
   joined?: { code: string; role: ShareRole; owner: string | null; updated_at: string | null } | null;
+  /** Servers the others on its share linked, as put in the game's server list */
+  shared_servers?: { name: string; address: string }[];
   /** CSCM servers made from this instance. */
   servers?: { machine_id: string; server_id: number; name: string; address: string | null }[];
 }

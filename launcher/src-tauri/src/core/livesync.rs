@@ -229,6 +229,15 @@ pub async fn tick(client: &reqwest::Client, paths: &Paths, running: &HashSet<Str
 
     for (inst, code, can_write) in linked {
         let Some(r) = remote.get(&code) else { continue }; // removed from the share, or it's gone
+        // the servers linked to the pack: mine go up, the others' into the game's list
+        super::shareservers::publish(client, &inst, &code).await;
+        if !running.contains(&inst.id) {
+            if let Some(servers) = super::shareservers::from_sync(r) {
+                if let Err(e) = super::shareservers::apply(paths, &inst.id, &servers) {
+                    events.push(SyncEvent { instance: inst.id.clone(), name: inst.name.clone(), state: "error", by: None, message: Some(format!("adding the pack's servers: {e:#}")) });
+                }
+            }
+        }
         if !BUSY.lock().unwrap().insert(inst.id.clone()) {
             continue;
         }

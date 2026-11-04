@@ -272,11 +272,29 @@ pub async fn publish(client: &reqwest::Client, paths: &Paths, id: &str, progress
 /// Leave a share you were added to; the installed copy stays as a normal instance.
 pub async fn leave(client: &reqwest::Client, paths: &Paths, id: &str) -> Result<()> {
     let mut inst = instances::get(paths, id)?;
-    let Some(joined) = inst.joined.take() else { return Ok(()) };
+    let Some(joined) = inst.joined.clone() else { return Ok(()) };
     let me = super::account::current(client).await.ok_or_else(|| anyhow!("Sign in first"))?;
-    let _ = api(client, Method::DELETE, &format!("/shares/{}/members/{}", joined.code, me.id), None, None).await;
+    match api(client, Method::DELETE, &format!("/shares/{}/members/{}", joined.code, me.id), None, None).await {
+        Ok(_) => {}
+        // already off it, or the pack was deleted: only this copy is left to unlink
+        Err(e) if e.to_string().contains("not_found") => {}
+        Err(e) => return Err(e.context("Couldn't leave the pack")),
+    }
+    inst.joined = None;
+    inst.share_sync = None;
+    super::shareservers::clear(paths, &mut inst)?;
     instances::save(paths, &inst)?;
     Ok(())
+}
+
+/// Before a joined instance is deleted: off the pack too, so its owner doesn't keep a member
+/// who has nothing to sync. Offline or signed out, the instance goes anyway.
+pub async fn leave_quietly(client: &reqwest::Client, paths: &Paths, id: &str) {
+    let Ok(inst) = instances::get(paths, id) else { return };
+    let Some(joined) = inst.joined else { return };
+    if let Some(me) = super::account::current(client).await {
+        let _ = api(client, Method::DELETE, &format!("/shares/{}/members/{}", joined.code, me.id), None, None).await;
+    }
 }
 
 /// Hands your share to a friend on it; your instance stays linked as an editor.

@@ -286,10 +286,12 @@ fn delete_world(state: State<AppState>, id: String, folder: String) -> CmdResult
 }
 
 #[tauri::command]
-fn delete_instance(state: State<AppState>, id: String) -> CmdResult<()> {
+async fn delete_instance(state: State<'_, AppState>, id: String) -> CmdResult<()> {
     if state.running.lock().unwrap().contains_key(&id) {
         return Err("Stop the game first".into());
     }
+    // a copy of a friend's pack: off the pack too
+    share::leave_quietly(&state.client, &state.paths, &id).await;
     instances::delete(&state.paths, &id).map_err(err)
 }
 
@@ -351,10 +353,11 @@ fn set_group(state: State<AppState>, ids: Vec<String>, name: String, member: boo
 
 /// Deletes several instances; running ones are skipped. Returns how many were deleted.
 #[tauri::command]
-fn delete_instances(state: State<AppState>, ids: Vec<String>) -> CmdResult<usize> {
+async fn delete_instances(state: State<'_, AppState>, ids: Vec<String>) -> CmdResult<usize> {
     let running: Vec<String> = state.running.lock().unwrap().keys().cloned().collect();
     let mut deleted = 0;
     for id in ids.iter().filter(|id| !running.contains(id)) {
+        share::leave_quietly(&state.client, &state.paths, id).await;
         instances::delete(&state.paths, id).map_err(err)?;
         deleted += 1;
     }
