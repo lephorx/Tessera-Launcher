@@ -286,7 +286,10 @@ pub fn addresses(server: &Value, machine_url: &str) -> Addresses {
             _ => addr.to_string(),
         })
     });
-    let custom = cname.filter(|_| srv_ready).map(String::from);
+    // Horizon's game doesn't look up SRV records: on the custom domain it would knock on port
+    // 25565, where Playit resets the connection. Its players get the Playit address.
+    let horizon = server["type"] == "horizon";
+    let custom = cname.filter(|_| srv_ready && !(horizon && playit.is_some())).map(String::from);
     let host = reqwest::Url::parse(machine_url).ok().and_then(|u| u.host_str().map(String::from));
     let lan = host.zip(server["port"].as_i64()).map(|(h, p)| if p == 25565 { h } else { format!("{h}:{p}") });
     Addresses { playit: custom.as_ref().and(playit.clone()), public: custom.or(playit), lan }
@@ -363,6 +366,11 @@ mod tests {
         let s = serde_json::json!({ "type": "modpack", "port": 25567, "tunnels": [{ "address": "domination-trifle.tun.ply.gg", "external_port": 44596 }], "dns_records": [] });
         assert_eq!(addresses(&s, "http://192.168.20.27:3000").public.as_deref(), Some("domination-trifle.tun.ply.gg:44596"));
         // local only
+        // Horizon can't follow the SRV record: the Playit address, with its port
+        let s = serde_json::json!({ "type": "horizon", "port": 25568, "tunnels": [{ "address": "jensen-unkind.tun.ply.gg", "external_port": 2623 }], "dns_records": [{ "type": "CNAME", "name": "fastpack.example.com" }, { "type": "SRV", "name": "_minecraft._tcp.fastpack.example.com" }] });
+        let a = addresses(&s, "http://192.168.20.27:3000");
+        assert_eq!(a.public.as_deref(), Some("jensen-unkind.tun.ply.gg:2623"));
+        assert_eq!(a.playit, None);
         let a = addresses(&serde_json::json!({ "type": "modpack", "port": 25566 }), "http://my-pc:3000");
         assert_eq!(a.best(), Some("my-pc:25566"));
     }
