@@ -361,7 +361,7 @@ pub async fn ensure(client: &reqwest::Client, paths: &Paths, game_dir: &Path, bu
     cmd.args(["-p", "horizon-client", "--bin", "horizon-client"]).env("CARGO_TARGET_DIR", &target).env("CARGO_TERM_PROGRESS_WHEN", "always").env("CARGO_TERM_PROGRESS_WIDTH", "100");
     progress("Compiling the game with its mods", 0, 0);
     let (mut done, mut total, mut name) = (0usize, 0usize, String::new());
-    run(cmd, "Compiling the game", &log_file, |line| {
+    let compiled = run(cmd, "Compiling the game", &log_file, |line| {
         if let Some(rest) = line.trim_start().strip_prefix("Compiling ") {
             done += 1;
             name = rest.split_whitespace().next().unwrap_or_default().to_string();
@@ -373,7 +373,15 @@ pub async fn ensure(client: &reqwest::Client, paths: &Paths, game_dir: &Path, bu
         }
         progress(&format!("Compiling the game with its mods: {name}"), done, total.max(done));
     })
-    .await?;
+    .await;
+    if let Err(e) = compiled {
+        let output = std::fs::read_to_string(&log_file).unwrap_or_default();
+        let failed = culprits(&stage, &output, &mods);
+        return Err(match explain(&failed, &mods, &revision) {
+            Some(why) => anyhow!("{why} The whole output is in {}", log_file.display()),
+            None => e,
+        });
+    }
 
     let partial = root.join("builds").join(format!(".{key}.partial"));
     let _ = std::fs::remove_dir_all(&partial);
@@ -391,6 +399,73 @@ pub async fn ensure(client: &reqwest::Client, paths: &Paths, game_dir: &Path, bu
     prune(&root, &key);
     log(&format!("[Tessera] Built in {} s", started.elapsed().as_secs()));
     Ok(Some(binary))
+}
+
+/// The mods whose code the compiler's errors point into. horizon-mixins puts each `[[module]]`
+/// of a mod into its file as `mod <name> { … }`, so an error's `--> file:line` inside one of
+/// those names its mod.
+fn culprits<'a>(stage: &Path, output: &str, mods: &'a [Bundle]) -> Vec<&'a Bundle> {
+    let modules: Vec<(String, &Bundle)> = mods
+        .iter()
+        .flat_map(|b| {
+            let table: toml::Table = std::fs::read_to_string(b.dir.join(MANIFEST)).ok().and_then(|t| t.parse().ok()).unwrap_or_default();
+            let names: Vec<String> = table.get("module").and_then(|m| m.as_array()).into_iter().flatten().filter_map(|m| m.get("name")?.as_str().map(str::to_string)).collect();
+            names.into_iter().map(move |n| (n, b))
+        })
+        .collect();
+    let mut files: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    let mut found: Vec<&Bundle> = Vec::new();
+    for at in output.lines().filter_map(|l| l.trim_start().strip_prefix("--> ")) {
+        let mut parts = at.trim().rsplitn(3, ':');
+        let (Some(_col), Some(line), Some(file)) = (parts.next(), parts.next(), parts.next()) else { continue };
+        let Ok(line) = line.parse::<usize>() else { continue };
+        let lines = files.entry(file.to_string()).or_insert_with(|| std::fs::read_to_string(stage.join(file)).unwrap_or_default().lines().map(str::to_string).collect());
+        if let Some(b) = enclosing(lines, line, &modules) {
+            if !found.iter().any(|f| f.id == b.id) {
+                found.push(b);
+            }
+        }
+    }
+    found
+}
+
+/// The mod whose `mod <name> {` holds 1-based `line`: the nearest one above it whose braces
+/// haven't closed by then.
+fn enclosing<'a>(lines: &[String], line: usize, modules: &[(String, &'a Bundle)]) -> Option<&'a Bundle> {
+    let upto = line.min(lines.len());
+    for start in (0..upto).rev() {
+        let l = lines[start].trim_start();
+        let l = l.strip_prefix("pub(crate) ").or_else(|| l.strip_prefix("pub ")).unwrap_or(l);
+        let Some(name) = l.strip_prefix("mod ").and_then(|r| r.split(|c: char| !(c.is_alphanumeric() || c == '_')).next()) else { continue };
+        let Some((_, b)) = modules.iter().find(|(n, _)| n == name) else { continue };
+        let mut depth = 0i64;
+        for l in &lines[start..upto - 1] {
+            depth += l.matches('{').count() as i64 - l.matches('}').count() as i64;
+        }
+        return (depth > 0).then_some(*b);
+    }
+    None
+}
+
+/// Why the build failed, in words, when it's a mod made for another Horizon than the one built.
+fn explain(failed: &[&Bundle], mods: &[Bundle], revision: &str) -> Option<String> {
+    let short = |r: &str| r.chars().take(7).collect::<String>();
+    let names = |list: &[&Bundle]| list.iter().map(|b| format!("{} {}", b.id, b.version)).collect::<Vec<_>>().join(", ");
+    let pinners: Vec<&Bundle> = mods.iter().filter(|b| b.hooks.is_none() && b.horizon.as_deref() == Some(revision)).collect();
+    let by = if pinners.is_empty() { String::new() } else { format!(" (the version {} needs)", names(&pinners)) };
+    let older: Vec<&Bundle> = failed.iter().copied().filter(|b| b.hooks.is_none() && b.horizon.as_deref().is_some_and(|r| r != revision)).collect();
+    if !older.is_empty() {
+        let made = older.iter().map(|b| format!("{} for {}", b.id, short(b.horizon.as_deref().unwrap_or_default()))).collect::<Vec<_>>().join(", ");
+        let them = if older.len() == 1 { "it" } else { "them" };
+        return Some(format!(
+            "{} doesn't compile on Horizon {}{by}: it was made for another Horizon version ({made}). These mods can't be built together until {them} get an update: turn {} off in the instance's mods to play the others.",
+            names(&older), short(revision), names(&older)
+        ));
+    }
+    if !failed.is_empty() {
+        return Some(format!("The code of {} doesn't compile on Horizon {}. Turn it off in the instance's mods, or wait for an update.", names(failed), short(revision)));
+    }
+    None
 }
 
 /// "Building [=====>   ] 123/456: crate…" → (123, 456).
@@ -643,6 +718,49 @@ fn prune(root: &Path, keep: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_compile_error_names_the_mod_made_for_another_horizon() {
+        let dir = std::env::temp_dir().join(format!("tessera-culprit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let bundle = |id: &str, horizon: &str, module: &str| {
+            let d = dir.join("mixins").join(id);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join(MANIFEST), format!("[mod]\nid = \"{id}\"\n[[module]]\nid = \"m\"\nfile = \"crates/a/src/game.rs\"\nname = \"{module}\"\nsource = \"m.rs\"\n")).unwrap();
+            Bundle { id: id.into(), version: "1.0".into(), dir: d, horizon: Some(horizon.into()), mixins: None, hooks: None, mixins_content: true, digest: String::new() }
+        };
+        let new = "9d979caa48a3bb58203319b9ea044db58c38e0d8";
+        let mods = vec![bundle("carryblock", "142388e1c136e622652ec7505af15d8ad195e041", "carryblock_native"), bundle("mod_menu", new, "mod_menu")];
+        let stage = dir.join("stage");
+        std::fs::create_dir_all(stage.join("crates/a/src")).unwrap();
+        // line 1..: game code, then carryblock's module (lines 4-8), then game code again (10)
+        std::fs::write(stage.join("crates/a/src/game.rs"), "fn a() {}\n\n\npub(crate) mod carryblock_native {\n    fn b() {\n        broken();\n    }\n}\n\nfn c() { other(); }\n").unwrap();
+        let output = "error[E0599]: no method\n --> crates/a/src/game.rs:6:9\nerror: x\n --> crates/a/src/game.rs:10:10\n";
+        let failed = culprits(&stage, output, &mods);
+        assert_eq!(failed.iter().map(|b| b.id.as_str()).collect::<Vec<_>>(), ["carryblock"]);
+        let why = explain(&failed, &mods, new).unwrap();
+        assert!(why.starts_with("carryblock 1.0 doesn't compile on Horizon 9d979ca (the version mod_menu 1.0 needs): it was made for another Horizon version (carryblock for 142388e)"), "{why}");
+        // an error outside every mod's module blames none
+        assert!(culprits(&stage, " --> crates/a/src/game.rs:10:10\n", &mods).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The last real failed build on this computer: cargo test real_build_failure -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn real_build_failure() {
+        let root = PathBuf::from(std::env::var("HOME").unwrap()).join("Library/Application Support/dev.tessera.launcher.nightly/horizon/native");
+        let output = std::fs::read_to_string(root.join("build.log")).unwrap();
+        let revision = output.split_whitespace().nth(1).unwrap().trim_end_matches(',').to_string();
+        let mut mods = Vec::new();
+        for d in std::fs::read_dir(root.join("mods.incoming")).into_iter().flatten().flatten() {
+            let table: toml::Table = std::fs::read_to_string(d.path().join(MANIFEST)).unwrap().parse().unwrap();
+            let horizon = table.get("compatibility").and_then(|c| c.get("horizon_revision")).and_then(|v| v.as_str()).map(String::from);
+            mods.push(Bundle { id: d.file_name().to_string_lossy().into(), version: "?".into(), dir: d.path(), horizon, mixins: None, hooks: None, mixins_content: true, digest: String::new() });
+        }
+        let failed = culprits(&root.join("stage"), &output, &mods);
+        println!("{:?}", explain(&failed, &mods, &revision));
+    }
 
     #[test]
     fn reads_cargo_progress() {
