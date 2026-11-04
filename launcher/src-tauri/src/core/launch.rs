@@ -28,10 +28,8 @@ pub struct LaunchPlan {
 }
 
 /// A version's own files (libraries, client jar, assets) and the Java Mojang names for it,
-/// downloaded where missing: what Horizon prepares its resources from. The client jar's path.
-pub async fn vanilla_files(client: &reqwest::Client, paths: &Paths, game_version: &str, progress: Progress<'_>) -> Result<(super::versions::VersionJson, PathBuf, PathBuf)> {
-    progress("Reading version", 0, 0);
-    let vanilla = version_json(client, paths, game_version).await?;
+/// downloaded where missing: what Horizon prepares its resources from. The client jar's and Java's paths.
+pub async fn vanilla_files(client: &reqwest::Client, paths: &Paths, vanilla: &super::versions::VersionJson, progress: Progress<'_>) -> Result<(PathBuf, PathBuf)> {
     let component = vanilla.java_version.as_ref().map(|j| j.component.clone()).unwrap_or_else(|| "jre-legacy".into());
     let java = ensure_java(client, paths, &component, &|d, t| progress("Downloading Java", d, t)).await?;
     let mut libs = resolve_libraries(paths, &vanilla.libraries)?;
@@ -42,7 +40,7 @@ pub async fn vanilla_files(client: &reqwest::Client, paths: &Paths, game_version
     let asset_index = vanilla.asset_index.as_ref().ok_or_else(|| anyhow!("Version has no assets"))?;
     let assets = asset_downloads(client, paths, asset_index).await?;
     download_all(client, assets, |d, t| progress("Downloading assets", d, t)).await?;
-    Ok((vanilla, client_jar, java))
+    Ok((client_jar, java))
 }
 
 pub struct Player {

@@ -409,6 +409,21 @@ fn java_home(java: &Path) -> Option<PathBuf> {
     java.parent()?.parent().map(Path::to_path_buf)
 }
 
+/// The 26.3 version JSON `build` pins (research-lock.json's `minecraft.manifest_sha1`), from
+/// Mojang's content-addressed URL. Mojang republishes 26.3 now and then (new translations), and a
+/// Horizon build only takes the versions it knows, so the launcher's current copy may not do.
+async fn pinned_version(client: &reqwest::Client, paths: &Paths, build: &str) -> Result<(super::versions::VersionJson, PathBuf)> {
+    let lock: serde_json::Value = serde_json::from_slice(&std::fs::read(build_dir(paths, build).join("research-lock.json")).context("reading research-lock.json")?)?;
+    let sha1 = lock["minecraft"]["manifest_sha1"]
+        .as_str()
+        .filter(|s| s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+        .ok_or_else(|| anyhow!("Horizon {build} pins no Minecraft {MINECRAFT} version file"))?;
+    let path = root(paths).join("minecraft").join(format!("{MINECRAFT}-{sha1}.json"));
+    let url = format!("https://piston-meta.mojang.com/v1/packages/{sha1}/{MINECRAFT}.json");
+    let vanilla = super::download::cached_json(client, &url, path.clone(), Some(sha1)).await?;
+    Ok((vanilla, path))
+}
+
 /// Makes sure `build` has its resources: from Minecraft 26.3's files (downloaded like vanilla's,
 /// for the signed-in owner) and its server jar. Fast when they are current.
 pub async fn prepare(client: &reqwest::Client, paths: &Paths, build: &str, progress: Progress<'_>, log: Log<'_>) -> Result<PathBuf> {
@@ -420,7 +435,9 @@ pub async fn prepare(client: &reqwest::Client, paths: &Paths, build: &str, progr
         return Ok(output);
     }
     launch_api(&preparer).await?;
-    let (vanilla, client_jar, java) = super::launch::vanilla_files(client, paths, MINECRAFT, progress).await?;
+    progress("Reading version", 0, 0);
+    let (vanilla, version_json) = pinned_version(client, paths, build).await?;
+    let (client_jar, java) = super::launch::vanilla_files(client, paths, &vanilla, progress).await?;
     let server = vanilla.downloads.as_ref().and_then(|d| d.server.clone()).ok_or_else(|| anyhow!("Minecraft {MINECRAFT} has no server jar"))?;
     let server_jar = root(paths).join(format!("server-{MINECRAFT}.jar"));
     download_all(client, vec![Download { url: server.url, path: server_jar.clone(), sha1: server.sha1, size: server.size, executable: false }], |d, t| progress("Downloading the server jar", d, t)).await?;
@@ -432,7 +449,7 @@ pub async fn prepare(client: &reqwest::Client, paths: &Paths, build: &str, progr
         .arg("--server-jar")
         .arg(&server_jar)
         .arg("--version-json")
-        .arg(paths.version_dir(MINECRAFT).join(format!("{MINECRAFT}.json")))
+        .arg(&version_json)
         .arg("--client-jar")
         .arg(&client_jar)
         .arg("--libraries-dir")
