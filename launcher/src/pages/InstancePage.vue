@@ -10,6 +10,7 @@ import ModpackPanel from "@/components/ModpackPanel.vue";
 import PlayerHead from "@/components/PlayerHead.vue";
 import SharedContentDialog from "@/components/SharedContentDialog.vue";
 import RowMenu, { type RowMenuItem } from "@/components/RowMenu.vue";
+import SwitchVersionDialog from "@/components/SwitchVersionDialog.vue";
 import SharePanel from "@/components/SharePanel.vue";
 import WorldsPanel from "@/components/WorldsPanel.vue";
 import IconEditor from "@/components/IconEditor.vue";
@@ -209,12 +210,18 @@ async function refresh() {
 
 /** Another version from the project's page. */
 const canChangeVersion = (f: ContentFile) => !!f.project_id && !isHorizon.value && f.kind !== "datapack";
+const switching = ref<ContentFile | null>(null);
 function changeVersion(f: ContentFile) {
-  router.push({ path: `/project/${f.project_id}`, query: { instance: props.id, ...(f.local && joined.value ? { local: "1" } : {}) } });
+  switching.value = f;
+}
+async function switched(i: Instance) {
+  inst.value = i;
+  switching.value = null;
+  await loadContent();
 }
 function rowMenu(f: ContentFile): RowMenuItem[] {
   const items: RowMenuItem[] = [];
-  if (canChangeVersion(f)) items.push({ label: "Other versions", icon: ArrowLeftRight, action: () => changeVersion(f) });
+  if (canChangeVersion(f)) items.push({ label: "Switch version", icon: ArrowLeftRight, action: () => changeVersion(f) });
   if (f.local && f.kind !== "datapack" && canShare.value) items.push({ label: "Add to the pack for everyone", icon: Users, action: () => shareFile(f) });
   if (!f.local && f.kind !== "datapack" && inst.value?.share_code) {
     items.push({
@@ -517,7 +524,7 @@ async function openFolder(world?: string) {
             <div class="hint ellipsis">{{ f.filename }}</div>
           </div>
           <div class="row" style="justify-content: flex-end; gap: 6px">
-            <button v-if="canChangeVersion(f)" class="btn btn-ghost btn-icon" :title="`Other versions of ${f.title}`" :aria-label="`Other versions of ${f.title}`" @click="changeVersion(f)"><ArrowLeftRight /></button>
+            <button v-if="canChangeVersion(f)" class="btn btn-ghost btn-icon" :title="`Switch version of ${f.title}`" :aria-label="`Switch version of ${f.title}`" @click="changeVersion(f)"><ArrowLeftRight /></button>
             <label class="switch" :title="f.enabled ? 'Turn off' : 'Turn on'">
               <input type="checkbox" :checked="f.enabled" :aria-label="`${f.title} turned on`" @change="toggle(f)" /><span />
             </label>
@@ -561,6 +568,7 @@ async function openFolder(world?: string) {
       @delete="fromSettings(() => (confirmDelete = true))"
       @share="fromSettings(() => goTab('share'))"
     />
+    <SwitchVersionDialog v-if="switching" :instance="inst" :file="switching" @close="switching = null" @switched="switched" />
     <SharedContentDialog
       v-if="viewingShared && joined"
       :instance="inst"
