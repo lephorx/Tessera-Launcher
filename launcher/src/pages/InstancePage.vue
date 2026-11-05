@@ -2,13 +2,14 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { RouterLink, useRouter } from "vue-router";
 import { open } from "@tauri-apps/plugin-dialog";
-import { ArrowLeft, Clock, Compass, Eye, FolderOpen, Globe, Inbox, Lock, Package, PackageCheck, Pencil, Plus, Search, Server, Settings, SquareTerminal, Trash2, Upload, UserPlus, Users, Wrench } from "lucide-vue-next";
+import { ArrowDownAZ, ArrowLeft, ArrowLeftRight, Clock, Filter, RefreshCw, Compass, Eye, FolderOpen, Globe, Inbox, Lock, Package, PackageCheck, Pencil, Plus, Search, Server, Settings, SquareTerminal, Trash2, Upload, UserPlus, Users, Wrench } from "lucide-vue-next";
 import AppDialog from "@/components/AppDialog.vue";
 import ExportDialog from "@/components/ExportDialog.vue";
 import InstanceSettingsDialog, { type InstanceSection } from "@/components/InstanceSettingsDialog.vue";
 import ModpackPanel from "@/components/ModpackPanel.vue";
 import PlayerHead from "@/components/PlayerHead.vue";
 import SharedContentDialog from "@/components/SharedContentDialog.vue";
+import RowMenu, { type RowMenuItem } from "@/components/RowMenu.vue";
 import SharePanel from "@/components/SharePanel.vue";
 import WorldsPanel from "@/components/WorldsPanel.vue";
 import IconEditor from "@/components/IconEditor.vue";
@@ -152,12 +153,88 @@ function fromSettings(then: () => void) {
 // the search matches a name, file name, version or world, in any order of words
 const shownContent = computed(() => {
   const words = contentQuery.value.toLowerCase().split(/\s+/).filter(Boolean);
-  return ownContent.value.filter((c) => {
+  const list = ownContent.value.filter((c) => {
     if (kindFilter.value !== "all" && c.kind !== kindFilter.value) return false;
     const text = `${c.title} ${c.filename} ${c.version ?? ""} ${c.world ?? ""}`.toLowerCase();
     return words.every((w) => text.includes(w));
   });
+  const byName = (a: ContentFile, b: ContentFile) => a.title.localeCompare(b.title, undefined, { sensitivity: "base" });
+  if (contentSort.value === "za") return list.sort((a, b) => byName(b, a));
+  if (contentSort.value === "off") return list.sort((a, b) => Number(a.enabled) - Number(b.enabled) || byName(a, b));
+  return list.sort(byName);
 });
+const contentSort = ref<"az" | "za" | "off">("az");
+/** Kinds there is something of (and the one picked, so it can be unpicked). */
+const shownKinds = computed(() => KINDS.value.filter((k) => k.id === "all" || countOf(k.id) || kindFilter.value === k.id));
+
+// ── picking several rows ──
+const keyOf = (f: ContentFile) => f.kind + (f.world ?? "") + f.filename;
+const selected = ref(new Set<string>());
+const selectedFiles = computed(() => ownContent.value.filter((f) => selected.value.has(keyOf(f))));
+const allSelected = computed(() => shownContent.value.length > 0 && shownContent.value.every((f) => selected.value.has(keyOf(f))));
+function selectAll() {
+  selected.value = allSelected.value ? new Set() : new Set(shownContent.value.map(keyOf));
+}
+function select(f: ContentFile) {
+  const next = new Set(selected.value);
+  if (!next.delete(keyOf(f))) next.add(keyOf(f));
+  selected.value = next;
+}
+const bulkBusy = ref(false);
+async function bulk(what: "on" | "off" | "remove") {
+  bulkBusy.value = true;
+  try {
+    for (const f of selectedFiles.value) {
+      if (what === "remove") inst.value = await api.instances.removeContent(props.id, f);
+      else if ((what === "on") !== f.enabled) await api.instances.toggleContent(props.id, f);
+    }
+    if (what === "remove") selected.value = new Set();
+  } catch (e) {
+    toast.error(errorText(e));
+  } finally {
+    bulkBusy.value = false;
+    await loadContent();
+  }
+}
+
+const refreshing = ref(false);
+async function refresh() {
+  refreshing.value = true;
+  try {
+    await reloadInstance();
+  } finally {
+    refreshing.value = false;
+  }
+}
+
+/** Another version from the project's page. */
+const canChangeVersion = (f: ContentFile) => !!f.project_id && !isHorizon.value && f.kind !== "datapack";
+function changeVersion(f: ContentFile) {
+  router.push({ path: `/project/${f.project_id}`, query: { instance: props.id, ...(f.local && joined.value ? { local: "1" } : {}) } });
+}
+function rowMenu(f: ContentFile): RowMenuItem[] {
+  const items: RowMenuItem[] = [];
+  if (canChangeVersion(f)) items.push({ label: "Other versions", icon: ArrowLeftRight, action: () => changeVersion(f) });
+  if (f.local && f.kind !== "datapack" && canShare.value) items.push({ label: "Add to the pack for everyone", icon: Users, action: () => shareFile(f) });
+  if (!f.local && f.kind !== "datapack" && inst.value?.share_code) {
+    items.push({
+      label: "Keep only on this computer",
+      icon: Lock,
+      action: async () => {
+        try {
+          inst.value = await api.instances.setLocal(props.id, f, true);
+          await loadContent();
+          toast.success(`${f.title} stays on this computer and leaves the pack for the others`);
+        } catch (e) {
+          toast.error(errorText(e));
+        }
+      },
+    });
+  }
+  items.push({ label: "Show in folder", icon: FolderOpen, action: () => openFolder(f.world ?? undefined) });
+  items.push({ label: "Remove", icon: Trash2, danger: true, action: () => removeFile(f) });
+  return items;
+}
 
 /** After a share update, leaving a share, or an ownership change. */
 async function reloadInstance() {
@@ -259,9 +336,9 @@ async function remove() {
   }
 }
 
-async function openFolder() {
+async function openFolder(world?: string) {
   try {
-    await api.instances.openFolder(props.id);
+    await api.instances.openFolder(props.id, world);
   } catch (e) {
     toast.error(errorText(e));
   }
@@ -292,7 +369,7 @@ async function openFolder() {
         </div>
       </div>
       <div class="row">
-        <button class="btn btn-lg" title="Open folder" @click="openFolder"><FolderOpen /> Folder</button>
+        <button class="btn btn-lg" title="Open folder" @click="openFolder()"><FolderOpen /> Folder</button>
         <button v-if="!isHorizon" class="btn btn-lg" title="Export as .tapack" @click="exporting = true"><PackageCheck /> Export</button>
         <button class="btn btn-lg" :title="isHorizon ? 'Create a Horizon server' : 'Create a server with these mods'" @click="router.push(`/servers/host?instance=${inst.id}`)"><Server /> Create server</button>
         <PlayButton :id="inst.id" large />
@@ -351,74 +428,105 @@ async function openFolder() {
       </div>
     </div>
 
-    <div v-else class="card stack">
-      <div class="row" style="flex-wrap: wrap">
+    <div v-else class="stack" style="gap: 14px">
+      <h3 v-if="joined" class="extras-title">Additional content</h3>
+      <ModpackPanel v-if="fromModpack" :key="inst.pack?.version_id ?? ''" :instance="inst" :added="addedCount" @changed="packChanged" />
+      <div class="row" style="gap: 10px">
+        <div class="input-icon" style="flex: 1; min-width: 180px">
+          <Search />
+          <input v-model="contentQuery" class="input content-search" :placeholder="`Search ${ownContent.length} project${ownContent.length === 1 ? '' : 's'}…`" aria-label="Search content" @keydown.esc="contentQuery = ''" />
+        </div>
+        <div v-if="canShare" class="input-icon add-for" title="Who gets what you add: everyone on the shared pack, or only this computer">
+          <component :is="onlyMe ? Lock : Users" />
+          <select v-model="onlyMe" class="select" aria-label="Who gets what you add">
+            <option :value="false">For everyone</option>
+            <option :value="true">Only for me</option>
+          </select>
+        </div>
+        <button v-if="!isHorizon" class="btn btn-lg" title="Add .jar mods and .zip resource packs or shaders from this computer" @click="uploadFiles"><FolderOpen /> Upload files</button>
+        <RouterLink :to="addRoute" class="btn btn-primary btn-lg"><Compass /> {{ isHorizon && !joined ? "Browse Horizon mods" : "Browse content" }}</RouterLink>
+      </div>
+      <div class="row" style="flex-wrap: wrap; gap: 10px">
+        <div class="input-icon content-sort">
+          <ArrowDownAZ />
+          <select v-model="contentSort" class="select" aria-label="Sort">
+            <option value="az">Name (A-Z)</option>
+            <option value="za">Name (Z-A)</option>
+            <option value="off">Turned off first</option>
+          </select>
+        </div>
+        <span class="vsep" />
+        <Filter :size="16" class="muted" />
         <div class="choices">
-          <button v-for="k in KINDS" :key="k.id" class="choice" style="height: 30px; padding: 0 10px" :class="{ on: kindFilter === k.id }" @click="kindFilter = k.id">
-            {{ k.label }}<span v-if="countOf(k.id)" class="choice-count num">{{ countOf(k.id) }}</span>
+          <button v-for="k in shownKinds" :key="k.id" class="choice" :class="{ on: kindFilter === k.id }" @click="kindFilter = k.id">
+            {{ k.label }}<span v-if="k.id !== 'all' && countOf(k.id)" class="choice-count num">{{ countOf(k.id) }}</span>
           </button>
         </div>
-        <div v-if="content.length" class="input-icon" style="flex: 1; min-width: 160px">
-          <Search />
-          <input v-model="contentQuery" class="input" style="height: 30px" placeholder="Search content" aria-label="Search content" @keydown.esc="contentQuery = ''" />
-        </div>
-        <span v-else class="spacer" />
-        <div v-if="canShare" class="choices" role="radiogroup" aria-label="Who gets what you add">
-          <button class="choice" style="height: 30px; padding: 0 10px" role="radio" :aria-checked="!onlyMe" :class="{ on: !onlyMe }" title="Added to the shared pack: everyone on it gets it" @click="onlyMe = false"><Users :size="14" /> For everyone</button>
-          <button class="choice" style="height: 30px; padding: 0 10px" role="radio" :aria-checked="onlyMe" :class="{ on: onlyMe }" title="Stays on this computer: the others don't get it" @click="onlyMe = true"><Lock :size="14" /> Only for me</button>
-        </div>
-        <button v-if="!isHorizon" class="btn btn-sm" title="Add .jar mods and .zip resource packs or shaders from this computer" @click="uploadFiles"><Upload /> Upload files</button>
-        <RouterLink :to="addRoute" class="btn btn-primary btn-sm"><Plus /> {{ isHorizon && !joined ? "Add Horizon mods" : joined && addsLocally ? "Add extra content" : "Add content" }}</RouterLink>
+        <span class="spacer" />
+        <button class="btn btn-ghost" :disabled="refreshing" title="Read the folder again" @click="refresh"><RefreshCw :class="{ spin: refreshing }" /> Refresh</button>
       </div>
-      <p v-if="joined" class="hint" style="margin: 0">
-        Your extra content: only on this computer, on top of the shared pack.{{ canEdit ? " What you add for everyone shows under Shared content." : "" }}
-      </p>
-      <ModpackPanel v-if="fromModpack" :key="inst.pack?.version_id ?? ''" :instance="inst" :added="addedCount" @changed="packChanged" />
-      <p v-if="content.length" class="hint" style="margin: 0">{{ summary }}</p>
-      <p v-if="!ownContent.length" class="hint">
-        Nothing here yet.
-        {{
-          isHorizon
-            ? "Add mods, resource packs and shaders from Horizon's registry. Native mods are compiled into the game the next time you press Play."
-            : inst.loader === "vanilla"
-              ? "Vanilla can use resource packs, data packs and shaders."
-              : "Add mods, resource packs and more from Discover."
-        }}
-      </p>
-      <p v-else-if="!shownContent.length" class="hint">
-        Nothing{{ contentQuery.trim() ? ` matches “${contentQuery.trim()}”` : " of this kind" }}.
-        <button v-if="contentQuery" class="btn btn-ghost btn-sm" @click="contentQuery = ''">Clear search</button>
-      </p>
-      <div v-for="f in shownContent" :key="f.kind + (f.world ?? '') + f.filename" class="inset row" style="gap: 12px" :style="f.enabled ? '' : 'opacity: .55'">
-        <img v-if="f.icon_url" :src="f.icon_url" alt="" width="36" height="36" style="border-radius: 9px" />
-        <span v-else class="tile tile-sm" style="--type: #a2a9b4"><Package /></span>
-        <div style="flex: 1; min-width: 0">
-          <RouterLink
-            v-if="f.project_id && !isHorizon"
-            :to="{ path: `/project/${f.project_id}`, query: { instance: inst.id } }"
-            class="content-title"
-            :title="`${f.title}: other versions`"
-          >{{ f.title }}</RouterLink>
-          <div v-else style="font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{ f.title }}</div>
-          <div class="hint mono" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap">
-            {{ f.version ?? f.filename }}{{ f.world ? ` · ${f.world}` : "" }}
+
+      <div v-if="selectedFiles.length" class="row bulk-bar">
+        <b class="num">{{ selectedFiles.length }} selected</b>
+        <span class="spacer" />
+        <button class="btn btn-sm" :disabled="bulkBusy" @click="bulk('on')">Turn on</button>
+        <button class="btn btn-sm" :disabled="bulkBusy" @click="bulk('off')">Turn off</button>
+        <button class="btn btn-sm btn-danger" :disabled="bulkBusy" @click="bulk('remove')"><Trash2 /> Remove</button>
+        <button class="btn btn-sm btn-ghost" @click="selected = new Set()">Clear</button>
+      </div>
+
+      <div class="content-table">
+        <div class="ct-row ct-head">
+          <input type="checkbox" :checked="allSelected" :disabled="!shownContent.length" aria-label="Select all" @change="selectAll" />
+          <span>Project</span><span>Version</span><span style="text-align: right">Actions</span>
+        </div>
+        <p v-if="!ownContent.length" class="hint ct-empty">
+          Nothing here yet.
+          {{
+            isHorizon
+              ? "Add mods, resource packs and shaders from Horizon's registry. Native mods are compiled into the game the next time you press Play."
+              : inst.loader === "vanilla"
+                ? "Vanilla can use resource packs, data packs and shaders."
+                : "Add mods, resource packs and more with Browse content."
+          }}
+        </p>
+        <p v-else-if="!shownContent.length" class="hint ct-empty">
+          Nothing{{ contentQuery.trim() ? ` matches “${contentQuery.trim()}”` : " of this kind" }}.
+          <button v-if="contentQuery" class="btn btn-ghost btn-sm" @click="contentQuery = ''">Clear search</button>
+        </p>
+        <div v-for="f in shownContent" :key="keyOf(f)" class="ct-row" :class="{ off: !f.enabled, picked: selected.has(keyOf(f)) }">
+          <input type="checkbox" :checked="selected.has(keyOf(f))" :aria-label="`Select ${f.title}`" @change="select(f)" />
+          <div class="row" style="gap: 14px; min-width: 0">
+            <img v-if="f.icon_url" :src="f.icon_url" alt="" width="48" height="48" class="ct-icon" />
+            <span v-else class="tile ct-icon" style="--type: #a2a9b4"><Package /></span>
+            <div style="min-width: 0">
+              <div class="row" style="gap: 6px; min-width: 0">
+                <Package :size="15" class="muted" style="flex-shrink: 0" />
+                <RouterLink v-if="canChangeVersion(f)" :to="{ path: `/project/${f.project_id}`, query: { instance: inst.id } }" class="content-title">{{ f.title }}</RouterLink>
+                <span v-else class="content-title">{{ f.title }}</span>
+              </div>
+              <div class="row hint ct-sub">
+                <span>{{ KINDS.find((k) => k.id === f.kind)?.label.replace(/s$/, "") }}{{ f.world ? ` · ${f.world}` : "" }}</span>
+                <span v-if="inst.pack?.files.length && !f.from_pack && f.kind !== 'datapack'" class="chip" title="Not part of the modpack: updates keep it">Added</span>
+                <span v-if="!joined && f.local" class="chip" title="Not in the shared pack: the others don't get it"><Lock /> Only for me</span>
+              </div>
+            </div>
+          </div>
+          <div style="min-width: 0">
+            <div class="ellipsis" style="font-weight: 600">{{ f.version ?? "—" }}</div>
+            <div class="hint ellipsis">{{ f.filename }}</div>
+          </div>
+          <div class="row" style="justify-content: flex-end; gap: 6px">
+            <button v-if="canChangeVersion(f)" class="btn btn-ghost btn-icon" :title="`Other versions of ${f.title}`" :aria-label="`Other versions of ${f.title}`" @click="changeVersion(f)"><ArrowLeftRight /></button>
+            <label class="switch" :title="f.enabled ? 'Turn off' : 'Turn on'">
+              <input type="checkbox" :checked="f.enabled" :aria-label="`${f.title} turned on`" @change="toggle(f)" /><span />
+            </label>
+            <button class="btn btn-ghost btn-icon" :title="`Remove ${f.title}`" :aria-label="`Remove ${f.title}`" @click="removeFile(f)"><Trash2 /></button>
+            <RowMenu :items="rowMenu(f)" :label="`${f.title}: more`" />
           </div>
         </div>
-        <span v-if="inst.pack?.files.length && !f.from_pack && f.kind !== 'datapack'" class="chip" title="Not part of the modpack: updates keep it">Added</span>
-        <span v-if="!joined && f.local" class="chip" title="Not in the shared pack: the others don't get it">Only on this computer</span>
-        <span class="chip">{{ KINDS.find((k) => k.id === f.kind)?.label.replace(/s$/, "") }}</span>
-        <button
-          v-if="f.local && f.kind !== 'datapack' && (canEdit || inst.share_code)"
-          class="btn btn-ghost btn-icon"
-          :title="`Add ${f.title} to the pack for everyone`"
-          :aria-label="`Add ${f.title} to the pack for everyone`"
-          @click="shareFile(f)"
-        ><Users /></button>
-        <label class="switch" :title="f.enabled ? 'Turn off' : 'Turn on'">
-          <input type="checkbox" :checked="f.enabled" :aria-label="`${f.title} turned on`" @change="toggle(f)" /><span />
-        </label>
-        <button class="btn btn-ghost btn-icon" :title="`Remove ${f.title}`" :aria-label="`Remove ${f.title}`" @click="removeFile(f)"><Trash2 /></button>
       </div>
+      <p v-if="ownContent.length" class="hint" style="margin: 0">{{ summary }}</p>
     </div>
     </section>
 
@@ -528,6 +636,93 @@ html .card.shared-card {
 }
 .extras-empty h3 {
   font-size: 20px;
+}
+.extras-title {
+  margin-top: 6px;
+  font-size: 20px;
+  font-weight: 700;
+}
+.content-search {
+  height: 44px;
+}
+.content-sort {
+  width: 200px;
+}
+.content-sort .select {
+  padding-left: 34px;
+}
+.add-for {
+  width: 160px;
+}
+.add-for .select {
+  height: 40px;
+  padding-left: 34px;
+}
+.vsep {
+  width: 1px;
+  height: 24px;
+  background: var(--border);
+}
+.bulk-bar {
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--fill);
+}
+.content-table {
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--card);
+  overflow: hidden;
+}
+.ct-row {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1.3fr) minmax(0, 1fr) 176px;
+  align-items: center;
+  gap: 18px;
+  padding: 12px 18px;
+}
+.ct-row + .ct-row {
+  border-top: 1px solid var(--border);
+}
+.ct-head {
+  padding-block: 14px;
+  background: var(--fill);
+  font-weight: 700;
+  color: var(--muted-foreground);
+}
+.ct-row.picked {
+  background: color-mix(in srgb, var(--tint) 7%, transparent);
+}
+.ct-row.off > :nth-child(2),
+.ct-row.off > :nth-child(3) {
+  opacity: 0.55;
+}
+.ct-icon {
+  flex-shrink: 0;
+  width: 48px;
+  height: 48px;
+  border-radius: 10px;
+}
+.ct-sub {
+  gap: 6px;
+  margin-top: 2px;
+}
+.ct-sub .chip {
+  height: 20px;
+  padding: 0 6px;
+  font-size: 11px;
+}
+.ct-sub .chip svg {
+  width: 11px;
+  height: 11px;
+}
+.ct-empty {
+  margin: 0;
+  padding: 28px 18px;
+  text-align: center;
+  border-top: 1px solid var(--border);
 }
 .choice-count {
   margin-left: 6px;
