@@ -68,8 +68,9 @@ fn host() -> Option<&'static Host> {
 pub fn build_root(paths: &Paths) -> PathBuf {
     let dir = super::root(paths).join("native");
     let _ = std::fs::create_dir_all(&dir);
-    // horizon-mixins refuses links: the folder itself, resolved
-    std::fs::canonicalize(&dir).unwrap_or(dir)
+    // horizon-mixins refuses links: the folder itself, resolved, without Windows' \\?\ prefix
+    // (MinGW's gcc then can't find its own crt2.o, kernel32 or user32)
+    dunce::canonicalize(&dir).unwrap_or(dir)
 }
 
 #[derive(Clone)]
