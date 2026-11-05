@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { RouterLink, useRouter } from "vue-router";
-import { ArrowLeft, FolderOpen, Globe, Package, PackageCheck, Pencil, Plus, Search, Server, Settings2, SquareTerminal, Trash2, UserPlus } from "lucide-vue-next";
+import { open } from "@tauri-apps/plugin-dialog";
+import { ArrowLeft, Clock, Compass, Eye, FolderOpen, Globe, Inbox, Lock, Package, PackageCheck, Pencil, Plus, Search, Server, Settings, SquareTerminal, Trash2, Upload, UserPlus, Users, Wrench } from "lucide-vue-next";
 import AppDialog from "@/components/AppDialog.vue";
 import ExportDialog from "@/components/ExportDialog.vue";
-import InstanceOptions from "@/components/InstanceOptions.vue";
+import InstanceSettingsDialog, { type InstanceSection } from "@/components/InstanceSettingsDialog.vue";
 import ModpackPanel from "@/components/ModpackPanel.vue";
+import PlayerHead from "@/components/PlayerHead.vue";
+import SharedContentDialog from "@/components/SharedContentDialog.vue";
 import SharePanel from "@/components/SharePanel.vue";
 import WorldsPanel from "@/components/WorldsPanel.vue";
 import IconEditor from "@/components/IconEditor.vue";
@@ -16,13 +19,13 @@ import { api, type ContentFile, type Icon, type Instance } from "@/lib/api";
 import { iconVersion } from "@/lib/iconCache";
 import { tabDirection, type PanelDirection } from "@/lib/tabSwitch";
 import { LOADERS, horizonBuild, relative } from "@/lib/format";
-import { logListeners, runOf } from "@/lib/store";
+import { logListeners, runOf, shareSync } from "@/lib/store";
 import { errorText, toast } from "@/lib/toast";
 
 const props = defineProps<{ id: string }>();
 const router = useRouter();
 const inst = ref<Instance | null>(null);
-const TAB_ORDER = ["content", "worlds", "logs", "share", "options"] as const;
+const TAB_ORDER = ["content", "worlds", "logs", "share"] as const;
 const tab = ref<(typeof TAB_ORDER)[number]>("content");
 const panelDir = ref<PanelDirection>("none");
 function goTab(to: (typeof TAB_ORDER)[number]) {
@@ -34,6 +37,9 @@ const kindFilter = ref<"all" | ContentFile["kind"]>("all");
 const contentQuery = ref("");
 const editingIcon = ref(false);
 const exporting = ref(false);
+/** The settings popup, on this section (null: closed). */
+const settingsAt = ref<InstanceSection | null>(null);
+const viewingShared = ref(false);
 type KindId = "all" | ContentFile["kind"];
 const KINDS = computed<{ id: KindId; label: string }[]>(() =>
   isHorizon.value
@@ -53,7 +59,7 @@ const KINDS = computed<{ id: KindId; label: string }[]>(() =>
       ],
 );
 const isHorizon = computed(() => inst.value?.loader === "horizon");
-const countOf = (kind: KindId) => content.value.filter((c) => kind === "all" || c.kind === kind).length;
+const countOf = (kind: KindId) => ownContent.value.filter((c) => kind === "all" || c.kind === kind).length;
 // "42 mods · 3 resource packs · 2 turned off" under the filters
 const summary = computed(() => {
   const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
@@ -63,7 +69,7 @@ const summary = computed(() => {
     countOf("shader") && plural(countOf("shader"), "shader", "shaders"),
     countOf("datapack") && plural(countOf("datapack"), "data pack", "data packs"),
   ].filter(Boolean);
-  const off = content.value.filter((c) => !c.enabled).length;
+  const off = ownContent.value.filter((c) => !c.enabled).length;
   if (off) parts.push(`${off} turned off`);
   return parts.join(" · ");
 });
@@ -75,10 +81,73 @@ async function packChanged(i: Instance) {
   inst.value = i;
   await loadContent();
 }
+// ── a copy of someone else's shared pack: the pack's content, and this computer's own on top ──
+const joined = computed(() => inst.value?.joined ?? null);
+const canEdit = computed(() => joined.value?.role === "editor");
+/** What the pack brings (data packs live in worlds: always this copy's own). */
+const sharedFiles = computed(() => (joined.value ? content.value.filter((c) => !c.local && c.kind !== "datapack") : []));
+/** Content listed on the page: on a joined pack only this computer's own. */
+const ownContent = computed(() => (joined.value ? content.value.filter((c) => c.local || c.kind === "datapack") : content.value));
+const sharedSummary = computed(() => {
+  const n = (kinds: ContentFile["kind"][]) => sharedFiles.value.filter((f) => kinds.includes(f.kind)).length;
+  const plural = (k: number, one: string, many: string) => k && `${k} ${k === 1 ? one : many}`;
+  return [plural(n(["mod", "horizon-mod", "native-mod"]), "mod", "mods"), plural(n(["resourcepack"]), "resource pack", "resource packs"), plural(n(["shader"]), "shader", "shaders")]
+    .filter(Boolean)
+    .join(" · ") || "Nothing yet";
+});
+const syncText = computed(() => {
+  const s = shareSync[props.id];
+  if (s?.state === "error") return "Last sync failed";
+  if (s?.state === "waiting") return "An update waits for the game to close";
+  if (s?.state === "paused") return "Paused: a new version waits for your answer";
+  if (s) return `Synced ${relative(new Date(s.at).toISOString()).toLowerCase()}`;
+  return "Live";
+});
+/** Where "Browse content" adds: on a joined pack, this computer only. */
+const addRoute = computed(() => {
+  const i = inst.value!;
+  const local = i.joined ? { local: "1" } : {};
+  if (i.loader === "horizon") return { path: `/instance/${i.id}/horizon`, query: local };
+  return { path: `/instance/${i.id}/add`, query: { type: i.loader === "vanilla" ? "resourcepack" : "mod", ...local } };
+});
+
+async function uploadFiles() {
+  const picked = await open({ multiple: true, title: "Add mods, resource packs or shaders", filters: [{ name: "Mods, resource packs and shaders", extensions: ["jar", "zip"] }] });
+  const files = Array.isArray(picked) ? picked : typeof picked === "string" ? [picked] : [];
+  if (!files.length) return;
+  try {
+    inst.value = await api.instances.addFiles(props.id, files, inst.value?.joined ? true : null);
+    await loadContent();
+    toast.success(files.length === 1 ? "Added" : `${files.length} files added`);
+  } catch (e) {
+    toast.error(errorText(e));
+  }
+}
+
+/** An editor puts a file of their own in the pack for everyone. */
+async function shareFile(f: ContentFile) {
+  try {
+    inst.value = await api.instances.setLocal(props.id, f, false);
+    await loadContent();
+    toast.success(`${f.title} goes to everyone on the pack`);
+  } catch (e) {
+    toast.error(errorText(e));
+  }
+}
+
+function openSettings(section: InstanceSection = "general") {
+  settingsAt.value = section;
+}
+/** From the settings popup: it closes first, so Escape only closes what's on top. */
+function fromSettings(then: () => void) {
+  settingsAt.value = null;
+  then();
+}
+
 // the search matches a name, file name, version or world, in any order of words
 const shownContent = computed(() => {
   const words = contentQuery.value.toLowerCase().split(/\s+/).filter(Boolean);
-  return content.value.filter((c) => {
+  return ownContent.value.filter((c) => {
     if (kindFilter.value !== "all" && c.kind !== kindFilter.value) return false;
     const text = `${c.title} ${c.filename} ${c.version ?? ""} ${c.world ?? ""}`.toLowerCase();
     return words.every((w) => text.includes(w));
@@ -222,6 +291,7 @@ async function openFolder() {
         <button v-if="!isHorizon" class="btn btn-lg" title="Export as .tapack" @click="exporting = true"><PackageCheck /> Export</button>
         <button class="btn btn-lg" :title="isHorizon ? 'Create a Horizon server' : 'Create a server with these mods'" @click="router.push(`/servers/host?instance=${inst.id}`)"><Server /> Create server</button>
         <PlayButton :id="inst.id" large />
+        <button class="btn btn-lg btn-icon" title="Settings" aria-label="Settings" @click="openSettings()"><Settings /></button>
       </div>
     </div>
 
@@ -235,12 +305,43 @@ async function openFolder() {
       <button :class="{ active: tab === 'worlds' }" @click="goTab('worlds')"><Globe />Worlds</button>
       <button :class="{ active: tab === 'logs' }" @click="goTab('logs')"><SquareTerminal />Logs</button>
       <button :class="{ active: tab === 'share' }" @click="goTab('share')"><UserPlus />Share</button>
-      <button :class="{ active: tab === 'options' }" @click="goTab('options')"><Settings2 />Options</button>
     </div>
 
     <div class="panel-host">
     <Transition :name="`panel-${panelDir}`">
-    <section v-if="tab === 'content'" class="card stack">
+    <section v-if="tab === 'content'" class="stack" style="gap: 16px">
+    <div v-if="joined" class="card shared-card">
+      <div class="row shared-card-head">
+        <div style="flex: 1; min-width: 0">
+          <h3 class="shared-card-title">Shared content</h3>
+          <div class="hint row" style="gap: 6px; margin-top: 4px"><Package :size="16" /> {{ sharedSummary }}</div>
+        </div>
+        <button class="btn" @click="viewingShared = true"><Eye /> View content</button>
+        <button class="btn btn-icon" title="Installation settings" aria-label="Installation settings" @click="openSettings('installation')"><Wrench /></button>
+      </div>
+      <div class="row shared-card-foot hint">
+        <span class="row" style="gap: 8px">
+          <Lock :size="16" /> Provided by
+          <PlayerHead v-if="joined.owner" :name="joined.owner" :size="22" />
+          <b class="ellipsis">{{ joined.owner ?? "a friend" }}</b>
+        </span>
+        <span class="sep-dot" />
+        <span class="row" style="gap: 6px"><Clock :size="16" /> {{ syncText }}</span>
+        <template v-if="canEdit"><span class="sep-dot" /><span class="row" style="gap: 6px"><Users :size="16" /> You can add content for everyone</span></template>
+      </div>
+    </div>
+
+    <div v-if="joined && !ownContent.length" class="empty extras-empty">
+      <Inbox />
+      <h3>No extra content installed</h3>
+      <p>Add content on top of this modpack. It stays on this computer; the others don't get it.</p>
+      <div class="row" style="margin-top: 8px">
+        <button v-if="!isHorizon" class="btn btn-lg" @click="uploadFiles"><Upload /> Upload files</button>
+        <RouterLink :to="addRoute" class="btn btn-primary btn-lg"><Compass /> Browse content</RouterLink>
+      </div>
+    </div>
+
+    <div v-else class="card stack">
       <div class="row" style="flex-wrap: wrap">
         <div class="choices">
           <button v-for="k in KINDS" :key="k.id" class="choice" style="height: 30px; padding: 0 10px" :class="{ on: kindFilter === k.id }" @click="kindFilter = k.id">
@@ -252,16 +353,13 @@ async function openFolder() {
           <input v-model="contentQuery" class="input" style="height: 30px" placeholder="Search content" aria-label="Search content" @keydown.esc="contentQuery = ''" />
         </div>
         <span v-else class="spacer" />
-        <RouterLink v-if="isHorizon" :to="`/instance/${inst.id}/horizon`" class="btn btn-primary btn-sm"><Plus /> Add Horizon mods</RouterLink>
-        <RouterLink
-          v-else
-          :to="{ path: `/instance/${inst.id}/add`, query: { type: inst.loader === 'vanilla' ? 'resourcepack' : 'mod' } }"
-          class="btn btn-primary btn-sm"
-        ><Plus /> Add content</RouterLink>
+        <button v-if="!isHorizon" class="btn btn-sm" title="Add .jar mods and .zip resource packs or shaders from this computer" @click="uploadFiles"><Upload /> Upload files</button>
+        <RouterLink :to="addRoute" class="btn btn-primary btn-sm"><Plus /> {{ isHorizon && !joined ? "Add Horizon mods" : joined ? "Add extra content" : "Add content" }}</RouterLink>
       </div>
+      <p v-if="joined" class="hint" style="margin: 0">Your extra content: only on this computer, on top of the shared pack.</p>
       <ModpackPanel v-if="fromModpack" :key="inst.pack?.version_id ?? ''" :instance="inst" :added="addedCount" @changed="packChanged" />
       <p v-if="content.length" class="hint" style="margin: 0">{{ summary }}</p>
-      <p v-if="!content.length" class="hint">
+      <p v-if="!ownContent.length" class="hint">
         Nothing here yet.
         {{
           isHorizon
@@ -291,12 +389,21 @@ async function openFolder() {
           </div>
         </div>
         <span v-if="inst.pack?.files.length && !f.from_pack && f.kind !== 'datapack'" class="chip" title="Not part of the modpack: updates keep it">Added</span>
+        <span v-if="!joined && f.local" class="chip" title="Not in the shared pack: the others don't get it">Only on this computer</span>
         <span class="chip">{{ KINDS.find((k) => k.id === f.kind)?.label.replace(/s$/, "") }}</span>
+        <button
+          v-if="f.local && f.kind !== 'datapack' && (canEdit || inst.share_code)"
+          class="btn btn-ghost btn-icon"
+          :title="`Add ${f.title} to the pack for everyone`"
+          :aria-label="`Add ${f.title} to the pack for everyone`"
+          @click="shareFile(f)"
+        ><Users /></button>
         <label class="switch" :title="f.enabled ? 'Turn off' : 'Turn on'">
           <input type="checkbox" :checked="f.enabled" :aria-label="`${f.title} turned on`" @change="toggle(f)" /><span />
         </label>
         <button class="btn btn-ghost btn-icon" :title="`Remove ${f.title}`" :aria-label="`Remove ${f.title}`" @click="removeFile(f)"><Trash2 /></button>
       </div>
+    </div>
     </section>
 
     <section v-else-if="tab === 'logs'">
@@ -313,17 +420,32 @@ async function openFolder() {
       <WorldsPanel :instance="inst" />
     </section>
 
-    <section v-else-if="tab === 'share'">
-      <SharePanel :key="`${inst.joined?.code ?? ''}${inst.share_code ?? ''}`" :instance="inst" @changed="reloadInstance" />
-    </section>
-
     <section v-else>
-      <InstanceOptions :instance="inst" @saved="(i) => (inst = i)" @delete="confirmDelete = true" />
+      <SharePanel :key="`${inst.joined?.code ?? ''}${inst.share_code ?? ''}`" :instance="inst" @changed="reloadInstance" />
     </section>
     </Transition>
     </div>
 
     <ExportDialog v-if="exporting" :instance="inst" @close="exporting = false" />
+    <InstanceSettingsDialog
+      v-if="settingsAt"
+      :instance="inst"
+      :section="settingsAt"
+      @close="settingsAt = null"
+      @saved="(i) => (inst = i, loadContent())"
+      @icon="fromSettings(() => (editingIcon = true))"
+      @delete="fromSettings(() => (confirmDelete = true))"
+      @share="fromSettings(() => goTab('share'))"
+    />
+    <SharedContentDialog
+      v-if="viewingShared && joined"
+      :instance="inst"
+      :files="sharedFiles"
+      :owner="joined.owner"
+      :can-edit="canEdit"
+      @close="viewingShared = false"
+      @changed="reloadInstance"
+    />
     <IconEditor v-if="editingIcon" :icon="inst.icon" @close="editingIcon = false" @save="saveIcon" />
 
     <AppDialog v-if="confirmDelete" title="Delete this instance?" @close="confirmDelete = false">
@@ -348,6 +470,48 @@ async function openFolder() {
 }
 .content-title:hover {
   color: var(--tint);
+}
+html .card.shared-card {
+  padding: 0;
+  overflow: hidden;
+}
+.shared-card-head {
+  gap: 10px;
+  padding: 18px 20px;
+}
+.shared-card-title {
+  font-size: 17px;
+  font-weight: 700;
+}
+.shared-card-foot {
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+  background: var(--fill);
+  font-weight: 600;
+}
+.sep-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.5;
+}
+.extras-empty {
+  padding: 48px 24px 56px;
+}
+.extras-empty > svg {
+  width: 56px;
+  height: 56px;
+  opacity: 0.5;
+}
+.extras-empty .btn svg {
+  width: 16px;
+  height: 16px;
+}
+.extras-empty h3 {
+  font-size: 20px;
 }
 .choice-count {
   margin-left: 6px;

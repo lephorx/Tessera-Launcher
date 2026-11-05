@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   ArrowLeft, Boxes, Bug, Check, ChevronDown, ChevronRight, Code, Download, ExternalLink, Globe, Heart, History, Image, Layers, Loader2,
@@ -15,6 +15,8 @@ import { tabDirection, type PanelDirection } from "@/lib/tabSwitch";
 /** A Modrinth project: its versions, and for modpacks what's inside. `instanceId`: opened from "Add content". */
 const props = defineProps<{ id: string; instanceId?: string | null }>();
 const router = useRouter();
+/** ?local=1 (from a shared pack's extra content): installs into it stay on this computer. */
+const local = useRoute().query.local === "1";
 
 const project = ref<ProjectDetail | null>(null);
 const versions = ref<ProjectVersion[]>([]);
@@ -343,6 +345,7 @@ const links = computed(() => {
       :hit="asHit"
       :version="installing.version"
       :preselect="instance?.id"
+      :local="local"
       @close="installing = null"
       @installed="installed"
     />

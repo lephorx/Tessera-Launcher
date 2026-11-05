@@ -29,6 +29,7 @@ use super::account::api;
 use super::instances::{self, Instance, ShareSync};
 use super::paths::Paths;
 use super::share::{pack_bytes, query};
+use super::sharelocal;
 use super::sharetrust::{self, Prepared};
 use super::tapack::{self, rel_string, walk};
 
@@ -55,12 +56,16 @@ static SEEN: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(|| Mutex::
 /// One sync at a time per instance (the loop and "Sync now" can overlap).
 static BUSY: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
 
-/// Fingerprint of the watched folders (paths, sizes, change times) and the content files.
+/// Fingerprint of the watched folders (paths, sizes, change times) and the content files,
+/// without what this copy keeps to itself (`sharelocal`).
 pub fn local_state(paths: &Paths, id: &str) -> (String, Vec<String>) {
     let game = paths.game_dir(id);
     let mut files = Vec::new();
     for folder in WATCHED {
         walk(&game, PathBuf::from(folder), &mut files);
+    }
+    if let Ok(inst) = instances::get(paths, id) {
+        files.retain(|f| !sharelocal::own(&inst, &rel_string(f)));
     }
     let mut lines: Vec<String> = files
         .iter()
@@ -172,9 +177,19 @@ async fn pull(client: &reqwest::Client, paths: &Paths, id: &str, code: &str, kee
         std::fs::create_dir_all(to.parent().unwrap_or(&stash))?;
         std::fs::copy(game.join(rel), &to)?;
     }
+    // the pack's own version of what this copy doesn't take, for its uploads
+    let _ = std::fs::copy(&safe, sharelocal::base_path(paths, id));
+    let kept = match sharelocal::stash(paths, &before) {
+        Ok(k) => k,
+        Err(e) => {
+            let _ = std::fs::remove_file(&safe);
+            return Err(e);
+        }
+    };
     let result = tapack::apply_update(client, paths, id, &safe, &|_, _, _| {}).await;
     let _ = std::fs::remove_file(&safe);
     let mut inst = result?;
+    sharelocal::restore(paths, &before, kept, &mut inst)?;
 
     // put this copy's changes back on top
     for rel in &added {
@@ -231,7 +246,7 @@ pub async fn tick(client: &reqwest::Client, paths: &Paths, running: &HashSet<Str
         let Some(r) = remote.get(&code) else { continue }; // removed from the share, or it's gone
         // the servers linked to the pack: mine go up, the others' into the game's list
         super::shareservers::publish(client, &inst, &code).await;
-        if let Some(servers) = super::shareservers::from_sync(r) {
+        if let Some(servers) = super::shareservers::from_sync(r).filter(|_| !inst.unsynced.iter().any(|k| k == "servers")) {
             match super::shareservers::apply(paths, &inst.id, &servers, running.contains(&inst.id)) {
                 Ok(added) if !added.is_empty() => events.push(SyncEvent { instance: inst.id.clone(), name: inst.name.clone(), state: "servers", by: None, message: Some(added.join(", ")) }),
                 Ok(_) => {}
@@ -301,6 +316,10 @@ pub async fn tick(client: &reqwest::Client, paths: &Paths, running: &HashSet<Str
                     None => Ok(extra),
                 }
             } else if remote_newer && !(changed && can_write) {
+                // a member's content put in the folder by hand stays theirs
+                if !can_write {
+                    sharelocal::adopt(paths, &inst.id, &sync.files)?;
+                }
                 match pull(client, paths, &inst.id, &code, None, rev, by.as_deref()).await? {
                     Pulled::Paused => Ok(vec![ev("paused", by.clone(), None)]),
                     Pulled::Applied { asking, summary } => {

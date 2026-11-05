@@ -53,9 +53,8 @@ pub struct Player {
     pub online: bool,
 }
 
-#[cfg(test)]
 impl Player {
-    /// For tests: offline accounts use the same UUID the vanilla server derives for offline-mode players.
+    /// For tests and Repair (which stops before the game starts): offline accounts use the same UUID the vanilla server derives for offline-mode players.
     pub fn offline(name: &str) -> Self {
         let mut bytes: [u8; 16] = <md5::Md5 as md5::Digest>::digest(format!("OfflinePlayer:{name}").as_bytes()).into();
         bytes[6] = (bytes[6] & 0x0f) | 0x30;

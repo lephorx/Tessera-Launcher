@@ -57,10 +57,13 @@ pub(crate) async fn pack_bytes(
     let tmp = std::env::temp_dir().join(format!("tessera-share-{}.tapack", inst.id));
     let opts = ExportOptions { name: inst.name.clone(), version: "1".into(), author: String::new(), summary: String::new(), include, format: Default::default() };
     let made = async {
+        let base = super::sharelocal::base(client, paths, inst).await?;
         tapack::export(client, paths, &inst.id, &tmp, opts, progress).await?;
         super::sharetrust::carry_held(paths, &inst.id, &tmp)?;
         // the last server joined is this computer's business
         super::sharetrust::strip_last_server(&tmp)?;
+        // so is what this copy keeps to itself
+        super::sharelocal::filter_upload(&tmp, inst, base.as_deref())?;
         Ok::<_, anyhow::Error>(std::fs::read(&tmp)?)
     }
     .await;

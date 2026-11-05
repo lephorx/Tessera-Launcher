@@ -65,12 +65,34 @@ pub async fn cached_json<T: DeserializeOwned>(
     Ok(serde_json::from_slice(&bytes)?)
 }
 
+tokio::task_local! {
+    /// Set by `verifying`: files of the right size are hashed too.
+    static VERIFY: bool;
+}
+
+/// Runs `f` with every download checked against its SHA-1, not only its size (Repair).
+pub async fn verifying<F: std::future::Future>(f: F) -> F::Output {
+    VERIFY.scope(true, f).await
+}
+
 /// A file counts as present when it exists with the expected size (hashing thousands of
 /// asset files on every launch would be slow). Fresh downloads are always hash-checked.
 async fn present(d: &Download) -> bool {
     match tokio::fs::metadata(&d.path).await {
-        Ok(m) => d.size.is_none_or(|s| m.len() == s),
-        Err(_) => false,
+        Ok(m) if d.size.is_none_or(|s| m.len() == s) => match (&d.sha1, VERIFY.try_with(|v| *v).unwrap_or(false)) {
+            (Some(sha1), true) => {
+                let path = d.path.clone();
+                let hash = tokio::task::spawn_blocking(move || -> std::io::Result<String> {
+                    let mut h = Sha1::new();
+                    std::io::copy(&mut std::fs::File::open(path)?, &mut h)?;
+                    Ok(hex::encode(h.finalize()))
+                })
+                .await;
+                matches!(hash, Ok(Ok(h)) if h.eq_ignore_ascii_case(sha1))
+            }
+            _ => true,
+        },
+        _ => false,
     }
 }
 

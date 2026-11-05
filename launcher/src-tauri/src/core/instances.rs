@@ -79,6 +79,13 @@ pub struct Instance {
     /// Servers the others on its share linked, as last put in the game's server list.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shared_servers: Vec<super::shareservers::SharedServer>,
+    /// Content this copy of a shared pack keeps to itself (relative paths without ".disabled"):
+    /// not published, kept through updates (see `sharelocal`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub local_content: Vec<String>,
+    /// Parts of its pack a member's copy doesn't take: "options", "servers", "resourcepacks".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unsynced: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -246,6 +253,8 @@ pub fn create(
         joined: None,
         share_sync: None,
         shared_servers: Vec::new(),
+        local_content: Vec::new(),
+        unsynced: Vec::new(),
     };
     save(paths, &inst)?;
     Ok(inst)
@@ -332,12 +341,15 @@ pub struct ContentFile {
     pub world: Option<String>,
     /// Put there by the instance's modpack (false: added since, or not a modpack instance).
     pub from_pack: bool,
+    /// On a shared instance: this computer's own, not the pack's.
+    pub local: bool,
 }
 
 /// Everything in mods/, resourcepacks/, shaderpacks/ and the worlds' datapacks/, including
 /// files that weren't installed through Modrinth (imported, copied by hand).
 pub fn content(paths: &Paths, inst: &Instance) -> Vec<ContentFile> {
     let game = paths.game_dir(&inst.id);
+    let linked = super::livesync::link(inst).is_some();
     let mut out = Vec::new();
     let mut scan = |dir: std::path::PathBuf, kind: &str, world: Option<String>| {
         let Ok(entries) = std::fs::read_dir(&dir) else { return };
@@ -351,6 +363,7 @@ pub fn content(paths: &Paths, inst: &Instance) -> Vec<ContentFile> {
             let known = inst.mods.iter().find(|m| m.filename == base && m.kind == kind);
             let rel = format!("{}/{base}", content_dir(kind));
             let from_pack = world.is_none() && inst.pack.as_ref().is_some_and(|p| p.files.contains(&rel));
+            let local = world.is_none() && linked && super::sharelocal::own(inst, &rel);
             out.push(ContentFile {
                 kind: kind.into(),
                 filename: filename.clone(),
@@ -361,6 +374,7 @@ pub fn content(paths: &Paths, inst: &Instance) -> Vec<ContentFile> {
                 project_id: known.map(|m| m.project_id.clone()),
                 world: world.clone(),
                 from_pack,
+                local,
             });
         }
     };

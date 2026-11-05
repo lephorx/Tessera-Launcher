@@ -41,7 +41,14 @@ export interface Instance {
   shared_servers?: { name: string; address: string }[];
   /** CSCM servers made from this instance. */
   servers?: { machine_id: string; server_id: number; name: string; address: string | null }[];
+  /** On a shared pack: content this copy keeps to itself ("mods/x.jar"). */
+  local_content?: string[];
+  /** Parts of its pack a member's copy doesn't take. */
+  unsynced?: UnsyncKey[];
 }
+
+/** What a member's copy can stop taking from its pack: game settings, the pack's servers, its resource packs. */
+export type UnsyncKey = "options" | "servers" | "resourcepacks";
 
 /** Where a modpack instance came from. */
 export interface PackSource {
@@ -88,6 +95,8 @@ export interface ContentFile {
   world: string | null;
   /** Came with the instance's modpack (false: added since). */
   from_pack: boolean;
+  /** On a shared instance: this computer's own, not the pack's. */
+  local: boolean;
 }
 
 export interface World {
@@ -647,6 +656,13 @@ export const api = {
     /** All the server-side mods to one linked server; true: it's running and needs a restart to install them. */
     syncServer: (id: string, serverId: number) => call<boolean>("sync_instance_server", { id, serverId }),
     stop: (id: string) => call<void>("stop_instance", { id }),
+    /** Files picked on the computer (.jar mods, .zip resource packs and shaders); `local`: on a shared pack, only on this computer. */
+    addFiles: (id: string, files: string[], local: boolean | null = null) => call<Instance>("add_content_files", { id, files, local }),
+    /** A shared instance's file: only on this computer, or in the pack for everyone. */
+    setLocal: (id: string, f: ContentFile, local: boolean) => call<Instance>("content_set_local", { id, kind: f.kind, filename: f.filename, local }),
+    setUnsynced: (id: string, key: UnsyncKey, unsynced: boolean) => call<Instance>("instance_set_unsynced", { id, key, unsynced }),
+    /** Checks Minecraft's and the loader's files against their hashes; the instance's run state follows it. */
+    repair: (id: string) => call<void>("repair_instance", { id }),
   },
   groups: {
     create: (name: string) => call<string[]>("create_group", { name }),
@@ -658,7 +674,8 @@ export const api = {
   /** Horizon's mod registry (Tessera Launcher Nightly). */
   horizon: {
     mods: (query: string, kind: HorizonKind | null = null) => call<HorizonProject[]>("horizon_mods", { query, kind }),
-    install: (instanceId: string, projectId: string, version: string | null = null) => call<Instance>("horizon_install", { instanceId, projectId, version }),
+    install: (instanceId: string, projectId: string, version: string | null = null, local: boolean | null = null) =>
+      call<Instance>("horizon_install", { instanceId, projectId, version, local }),
     /** [project id, newest version] for each installed one with a newer version */
     updates: (instanceId: string) => call<[string, string][]>("horizon_updates", { instanceId }),
   },
@@ -673,8 +690,9 @@ export const api = {
       offset?: number;
     }) => call<SearchResult>("search_projects", o),
     /** The newest compatible version, or `versionId` (replacing the version the instance has). */
-    install: (instanceId: string, projectId: string, kind: ProjectType, world: string | null = null, versionId: string | null = null) =>
-      call<Instance>("install_project", { instanceId, projectId, kind, world, versionId }),
+    /** `local`: on a shared pack, only on this computer (null: members who can only play add locally, editors for everyone). */
+    install: (instanceId: string, projectId: string, kind: ProjectType, world: string | null = null, versionId: string | null = null, local: boolean | null = null) =>
+      call<Instance>("install_project", { instanceId, projectId, kind, world, versionId, local }),
     installModpack: (projectId: string, versionId: string | null = null) => call<Instance>("install_modpack", { projectId, versionId }),
     /** By id or slug. */
     detail: (id: string) => call<ProjectDetail>("project_detail", { id }),

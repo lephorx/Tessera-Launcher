@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /** "Add Horizon mods" for a Horizon instance: Horizon's own registry (github.com/horizon-rust/horizon-mods). */
 import { computed, onMounted, ref, watch } from "vue";
-import { RouterLink } from "vue-router";
+import { RouterLink, useRoute } from "vue-router";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ArrowLeft, Check, Cpu, Download, ExternalLink, Image, Loader2, Package, Plus, RefreshCw, Search, ShieldAlert, Sun, Puzzle } from "lucide-vue-next";
 import AppDialog from "@/components/AppDialog.vue";
@@ -11,6 +11,8 @@ import { compact, horizonBuild } from "@/lib/format";
 import { errorText, toast } from "@/lib/toast";
 
 const props = defineProps<{ instanceId: string }>();
+/** ?local=1 (a shared pack's extra content): installs stay on this computer. */
+const local = useRoute().query.local === "1" ? true : null;
 
 const TABS = [
   { kind: "native-mod", label: "Native mods", icon: Cpu },
@@ -82,7 +84,7 @@ async function trustAndInstall() {
 async function doInstall(p: HorizonProject) {
   pending.value = new Set(pending.value).add(p.id);
   try {
-    instance.value = await api.horizon.install(props.instanceId, p.id);
+    instance.value = await api.horizon.install(props.instanceId, p.id, null, local);
     const u = new Map(updates.value);
     u.delete(p.id);
     updates.value = u;

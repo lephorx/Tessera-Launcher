@@ -68,6 +68,11 @@ export async function startEvents() {
   });
   await listen<{ instance: string; state: string; message: string | null }>("instance-state", ({ payload }) => {
     const prev = runOf(payload.instance);
+    if (payload.state === "repaired") {
+      delete runs[payload.instance];
+      toast.success("Repaired: every file was checked, and broken ones downloaded again");
+      return;
+    }
     if (payload.state === "stopped") delete runs[payload.instance];
     else runs[payload.instance] = { ...prev, state: payload.state as RunState };
     if (payload.state === "error") {

@@ -15,7 +15,7 @@ use crate::core::instances::{self, ContentFile, Icon, Instance, Loader, Resoluti
 use crate::core::launch::{prepare, QuickPlay};
 use crate::core::paths::Paths;
 use crate::core::settings::{self, Settings};
-use crate::core::{account, hostlocal, http_client, livesync, loaders, modrinth, mrpack, serverlist, serverpack, msauth, servers, share, skins, storage, tapack, versions};
+use crate::core::{sharelocal, account, hostlocal, http_client, livesync, loaders, modrinth, mrpack, serverlist, serverpack, msauth, servers, share, skins, storage, tapack, versions};
 
 const MAX_LOG_LINES: usize = 5000;
 
@@ -44,7 +44,7 @@ struct ProgressEvent<'a> {
 #[derive(Serialize, Clone)]
 struct StateEvent<'a> {
     instance: &'a str,
-    /// "preparing" | "running" | "stopped" | "error"
+    /// "preparing" | "running" | "stopped" | "error" | "repaired" (Repair is done)
     state: &'a str,
     message: Option<String>,
 }
@@ -650,10 +650,19 @@ async fn horizon_mods(state: State<'_, AppState>, query: String, kind: Option<St
 }
 
 #[tauri::command]
-async fn horizon_install(app: AppHandle, state: State<'_, AppState>, instance_id: String, project_id: String, version: Option<String>) -> CmdResult<Instance> {
+async fn horizon_install(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    instance_id: String,
+    project_id: String,
+    version: Option<String>,
+    local: Option<bool>,
+) -> CmdResult<Instance> {
+    let before = sharelocal::content_files(&state.paths, &instance_id);
     let inst = core::horizon::registry::install(&state.client, &state.paths, &instance_id, &project_id, version.as_deref()).await.map_err(err)?;
+    sharelocal::mark_new(&state.paths, &instance_id, &before, local.unwrap_or_else(|| sharelocal::adds_locally(&inst))).map_err(err)?;
     schedule_server_sync(&app, &instance_id);
-    Ok(inst)
+    instances::get(&state.paths, &instance_id).map_err(err)
 }
 
 #[tauri::command]
@@ -671,12 +680,75 @@ async fn install_project(
     kind: String,
     world: Option<String>,
     version_id: Option<String>,
+    local: Option<bool>,
 ) -> CmdResult<Instance> {
+    let before = sharelocal::content_files(&state.paths, &instance_id);
     let inst = modrinth::install(&state.client, &state.paths, &instance_id, &project_id, &kind, world.as_deref(), version_id.as_deref())
         .await
         .map_err(err)?;
+    // on a shared pack: for everyone, or (members who can only play) this computer only
+    sharelocal::mark_new(&state.paths, &instance_id, &before, local.unwrap_or_else(|| sharelocal::adds_locally(&inst))).map_err(err)?;
     schedule_server_sync(&app, &instance_id);
+    instances::get(&state.paths, &instance_id).map_err(err)
+}
+
+/// Mods, resource packs and shaders picked on the computer, copied into the instance.
+#[tauri::command]
+fn add_content_files(app: AppHandle, state: State<AppState>, id: String, files: Vec<String>, local: Option<bool>) -> CmdResult<Instance> {
+    let inst = sharelocal::add_files(&state.paths, &id, &files, local).map_err(err)?;
+    schedule_server_sync(&app, &id);
     Ok(inst)
+}
+
+/// A shared instance's content file: kept on this computer only, or in the pack for everyone.
+#[tauri::command]
+fn content_set_local(state: State<AppState>, id: String, kind: String, filename: String, local: bool) -> CmdResult<Instance> {
+    sharelocal::set_local(&state.paths, &id, &kind, &filename, local).map_err(err)
+}
+
+/// A member's copy stops (or starts again) taking a part of its pack: "options", "servers", "resourcepacks".
+#[tauri::command]
+fn instance_set_unsynced(state: State<AppState>, id: String, key: String, unsynced: bool) -> CmdResult<Instance> {
+    sharelocal::set_unsynced(&state.paths, &id, &key, unsynced).map_err(err)
+}
+
+/// Checks every file Minecraft and the loader need against its hash and downloads the
+/// broken or missing ones, like a launch that stops before starting the game.
+#[tauri::command]
+fn repair_instance(app: AppHandle, state: State<AppState>, id: String) -> CmdResult<()> {
+    let inst = instances::get(&state.paths, &id).map_err(err)?;
+    if inst.loader == Loader::Horizon {
+        return Err("Horizon checks its own files every time it starts".into());
+    }
+    {
+        let mut running = state.running.lock().unwrap();
+        if running.contains_key(&id) {
+            return Err("Close the game first".into());
+        }
+        running.insert(id.clone(), None);
+    }
+    let _ = app.emit("instance-state", StateEvent { instance: &id, state: "preparing", message: None });
+    tauri::async_runtime::spawn(async move {
+        let state = app.state::<AppState>();
+        let memory = inst.memory_mb.unwrap_or(settings::load(&state.paths).memory_mb);
+        let progress = |stage: &str, done: usize, total: usize| {
+            let _ = app.emit("launch-progress", ProgressEvent { instance: &id, stage, done, total });
+        };
+        let player = core::launch::Player::offline("Player");
+        let result = core::download::verifying(prepare(&state.client, &state.paths, &inst, &player, memory, None, &progress)).await;
+        state.running.lock().unwrap().remove(&id);
+        match result {
+            Ok(_) => {
+                push_log(&app, &id, "[Tessera] Repaired: every file was checked");
+                let _ = app.emit("instance-state", StateEvent { instance: &id, state: "repaired", message: None });
+            }
+            Err(e) => {
+                push_log(&app, &id, &format!("[Tessera] Repair failed: {e:#}"));
+                let _ = app.emit("instance-state", StateEvent { instance: &id, state: "error", message: Some(format!("{e:#}")) });
+            }
+        }
+    });
+    Ok(())
 }
 
 #[tauri::command]
@@ -2384,6 +2456,10 @@ pub fn run() {
             list_worlds,
             search_projects,
             install_project,
+            add_content_files,
+            content_set_local,
+            instance_set_unsynced,
+            repair_instance,
             install_modpack,
             project_detail,
             project_versions,

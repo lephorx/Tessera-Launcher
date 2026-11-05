@@ -12,6 +12,8 @@ const props = defineProps<{
   hit: Pick<ProjectHit, "project_id" | "project_type" | "title" | "versions" | "categories">;
   version?: ProjectVersion | null;
   preselect?: string;
+  /** Into `preselect` (a shared pack): only on this computer. */
+  local?: boolean;
 }>();
 const emit = defineEmits<{ close: []; installed: [Instance] }>();
 
@@ -49,7 +51,7 @@ async function install() {
   busy.value = true;
   try {
     const dpWorld = props.hit.project_type === "datapack" ? world.value : null;
-    const inst = await api.projects.install(target.value, props.hit.project_id, props.hit.project_type, dpWorld, props.version?.id ?? null);
+    const inst = await api.projects.install(target.value, props.hit.project_id, props.hit.project_type, dpWorld, props.version?.id ?? null, props.local && target.value === props.preselect ? true : null);
     toast.success(`${props.hit.title} added to ${inst.name}`);
     emit("installed", inst);
   } catch (e) {

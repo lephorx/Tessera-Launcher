@@ -19,6 +19,8 @@ import { tabDirection, type PanelDirection } from "@/lib/tabSwitch";
 const props = defineProps<{ instanceId?: string }>();
 const route = useRoute();
 const router = useRouter();
+/** ?local=1: on a shared pack, what's added stays on this computer (null: the instance's default). */
+const local = route.query.local === "1" ? true : null;
 
 const TABS = [
   { type: "modpack", label: "Modpacks", icon: Boxes },
@@ -95,7 +97,7 @@ function addNow(h: ProjectHit) {
   const dpWorld = h.project_type === "datapack" ? world.value : null;
   queue = queue.then(async () => {
     try {
-      instance.value = await api.projects.install(inst.id, h.project_id, h.project_type, dpWorld);
+      instance.value = await api.projects.install(inst.id, h.project_id, h.project_type, dpWorld, null, local);
       toast.success(`${h.title} added`);
     } catch (e) {
       toast.error(`${h.title}: ${errorText(e)}`);
@@ -145,7 +147,7 @@ onBeforeUnmount(() => {
 
 /** The project's page: versions, and for a modpack the mods in it. */
 function openProject(h: ProjectHit) {
-  router.push({ path: `/project/${h.project_id}`, query: props.instanceId ? { instance: props.instanceId } : {} });
+  router.push({ path: `/project/${h.project_id}`, query: props.instanceId ? { instance: props.instanceId, ...(local ? { local: "1" } : {}) } : {} });
 }
 
 let timer: ReturnType<typeof setTimeout> | undefined;
