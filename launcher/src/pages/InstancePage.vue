@@ -103,10 +103,15 @@ const syncText = computed(() => {
   if (s) return `Synced ${relative(new Date(s.at).toISOString()).toLowerCase()}`;
   return "Live";
 });
-/** Where "Browse content" adds: on a joined pack, this computer only. */
+/** May change the shared pack (owner or editor): what they add goes to everyone unless they pick "Only for me". */
+const canShare = computed(() => !!inst.value?.share_code || canEdit.value);
+const onlyMe = ref(false);
+/** What's added now stays on this computer: always for members who can only play. */
+const addsLocally = computed(() => (joined.value && !canEdit.value) || (canShare.value && onlyMe.value));
+/** Where "Browse content" adds (?local=1: this computer only). */
 const addRoute = computed(() => {
   const i = inst.value!;
-  const local = i.joined ? { local: "1" } : {};
+  const local = addsLocally.value ? { local: "1" } : {};
   if (i.loader === "horizon") return { path: `/instance/${i.id}/horizon`, query: local };
   return { path: `/instance/${i.id}/add`, query: { type: i.loader === "vanilla" ? "resourcepack" : "mod", ...local } };
 });
@@ -116,7 +121,7 @@ async function uploadFiles() {
   const files = Array.isArray(picked) ? picked : typeof picked === "string" ? [picked] : [];
   if (!files.length) return;
   try {
-    inst.value = await api.instances.addFiles(props.id, files, inst.value?.joined ? true : null);
+    inst.value = await api.instances.addFiles(props.id, files, addsLocally.value ? true : canShare.value ? false : null);
     await loadContent();
     toast.success(files.length === 1 ? "Added" : `${files.length} files added`);
   } catch (e) {
@@ -334,7 +339,12 @@ async function openFolder() {
     <div v-if="joined && !ownContent.length" class="empty extras-empty">
       <Inbox />
       <h3>No extra content installed</h3>
-      <p>Add content on top of this modpack. It stays on this computer; the others don't get it.</p>
+      <p v-if="canEdit">Add content to the pack for everyone, or on top of it only for you.</p>
+      <p v-else>Add content on top of this modpack. It stays on this computer; the others don't get it.</p>
+      <div v-if="canEdit" class="choices" role="radiogroup" aria-label="Who gets what you add" style="margin-top: 4px">
+        <button class="choice" role="radio" :aria-checked="!onlyMe" :class="{ on: !onlyMe }" @click="onlyMe = false"><Users :size="14" /> For everyone</button>
+        <button class="choice" role="radio" :aria-checked="onlyMe" :class="{ on: onlyMe }" @click="onlyMe = true"><Lock :size="14" /> Only for me</button>
+      </div>
       <div class="row" style="margin-top: 8px">
         <button v-if="!isHorizon" class="btn btn-lg" @click="uploadFiles"><Upload /> Upload files</button>
         <RouterLink :to="addRoute" class="btn btn-primary btn-lg"><Compass /> Browse content</RouterLink>
@@ -353,10 +363,16 @@ async function openFolder() {
           <input v-model="contentQuery" class="input" style="height: 30px" placeholder="Search content" aria-label="Search content" @keydown.esc="contentQuery = ''" />
         </div>
         <span v-else class="spacer" />
+        <div v-if="canShare" class="choices" role="radiogroup" aria-label="Who gets what you add">
+          <button class="choice" style="height: 30px; padding: 0 10px" role="radio" :aria-checked="!onlyMe" :class="{ on: !onlyMe }" title="Added to the shared pack: everyone on it gets it" @click="onlyMe = false"><Users :size="14" /> For everyone</button>
+          <button class="choice" style="height: 30px; padding: 0 10px" role="radio" :aria-checked="onlyMe" :class="{ on: onlyMe }" title="Stays on this computer: the others don't get it" @click="onlyMe = true"><Lock :size="14" /> Only for me</button>
+        </div>
         <button v-if="!isHorizon" class="btn btn-sm" title="Add .jar mods and .zip resource packs or shaders from this computer" @click="uploadFiles"><Upload /> Upload files</button>
-        <RouterLink :to="addRoute" class="btn btn-primary btn-sm"><Plus /> {{ isHorizon && !joined ? "Add Horizon mods" : joined ? "Add extra content" : "Add content" }}</RouterLink>
+        <RouterLink :to="addRoute" class="btn btn-primary btn-sm"><Plus /> {{ isHorizon && !joined ? "Add Horizon mods" : joined && addsLocally ? "Add extra content" : "Add content" }}</RouterLink>
       </div>
-      <p v-if="joined" class="hint" style="margin: 0">Your extra content: only on this computer, on top of the shared pack.</p>
+      <p v-if="joined" class="hint" style="margin: 0">
+        Your extra content: only on this computer, on top of the shared pack.{{ canEdit ? " What you add for everyone shows under Shared content." : "" }}
+      </p>
       <ModpackPanel v-if="fromModpack" :key="inst.pack?.version_id ?? ''" :instance="inst" :added="addedCount" @changed="packChanged" />
       <p v-if="content.length" class="hint" style="margin: 0">{{ summary }}</p>
       <p v-if="!ownContent.length" class="hint">

@@ -247,6 +247,9 @@ function pageList(): (number | "…")[] {
             <p class="page-sub">
               To <b>{{ instance.name }}</b> · {{ LOADERS[instance.loader].label }} {{ instance.game_version }}. Only what works with it is shown;
               Install adds it right away.
+              <template v-if="local"> It stays on this computer only.</template>
+              <template v-else-if="instance.share_code || instance.joined?.role === 'editor'"> Everyone on the shared pack gets it.</template>
+              <template v-else-if="instance.joined"> It stays on this computer only.</template>
             </p>
           </div>
         </div>
